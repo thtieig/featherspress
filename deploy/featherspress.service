@@ -1,0 +1,46 @@
+[Unit]
+Description=Featherspress dynamic blog engine
+After=network.target
+
+[Service]
+Type=simple
+
+# Dedicated, non-root system user (created in docs/DEPLOY.md). It needs to read
+# the engine code and read/write the content + media data dir.
+User=featherspress
+Group=featherspress
+
+# The engine code lives here (git checkout / unpacked release). Code only:
+# no content, no media, no secrets.
+WorkingDirectory=/opt/featherspress
+
+# Isolated Node runtime (standalone tarball under /opt/node, NOT a distro
+# package). See docs/DEPLOY.md. Adjust if you symlink node elsewhere.
+ExecStart=/opt/node/bin/node server.js
+
+# All runtime config (paths, port, secret, site chrome) lives in this file so
+# the unit itself carries no environment-specific values or secrets.
+EnvironmentFile=/etc/featherspress/featherspress.env
+
+# systemd's default PATH won't include /opt/node/bin; the engine shells out to
+# nothing, but keep node's dir on PATH for good measure.
+Environment=PATH=/opt/node/bin:/usr/bin:/usr/local/bin
+Environment=NODE_ENV=production
+
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening (the process only needs to read code + write the data dir) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# The one writable location: the content + media + auth-config data dir.
+ReadWritePaths=/var/lib/featherspress
+
+# The engine binds to 127.0.0.1 via the PORT env (see featherspress.env); it is
+# reachable from the internet only through Apache's reverse proxy in the
+# *-le-ssl vhost, which fronts the /admin password + 2FA login.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="/admin/favicon.ico" sizes="any">
+<title>Featherspress · authoring</title>
+<link rel="stylesheet" href="/admin/vendor/toastui-editor.css">
+<style>
+  :root {
+    --bg: #FFFFFF; --bg-2: #FAF8F5; --ink: #121212; --ink-soft: #67665F; --ink-faint: #A9A79E;
+    --rule: #ECE9E2; --accent: #B5451B; --accent-wash: #FBE7D9;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+  header { border-bottom: 1px solid var(--rule); padding: 20px 28px; }
+  header h1 { margin: 0; font-size: 1.1rem; }
+  header .sub { color: var(--ink-faint); font-size: 0.85rem; margin-top: 2px; }
+  .tabs { display: flex; gap: 4px; padding: 0 28px; border-bottom: 1px solid var(--rule); }
+  .tab { padding: 12px 16px; cursor: pointer; color: var(--ink-soft); font-size: 0.88rem; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  main { max-width: 900px; margin: 0 auto; padding: 32px 28px 80px; }
+  [hidden] { display: none !important; }
+  label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); margin: 18px 0 6px; }
+  label:first-child { margin-top: 0; }
+  input[type=text], select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--rule); border-radius: 6px;
+    background: var(--bg-2); color: var(--ink); font-family: var(--sans); font-size: 0.92rem;
+  }
+  #editor { border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+  .attach-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .attach-row .hint { color: var(--ink-faint); font-size: 0.8rem; }
+  /* Toast UI's "Markdown" mode isn't a plain textarea -- by default it
+     live-renders the source (headings full-size and bold, emphasis
+     markers actually bolded or italicized, code fences shaded) which
+     looks like a second WYSIWYG view and defeats the point of Markdown
+     mode: showing the literal source so edits to the 208 migrated posts
+     (which use a non-standard lang+title fence convention) can't be
+     silently misread. Flatten it to uniform plain monospace text; this
+     only changes the CSS painted over the source, not the stored or
+     returned Markdown itself. */
+  .toastui-editor-md-container .ProseMirror,
+  .toastui-editor-md-container .ProseMirror * {
+    font-family: var(--mono) !important;
+    font-size: 14px !important;
+    font-weight: normal !important;
+    font-style: normal !important;
+    color: var(--ink) !important;
+    background: none !important;
+  }
+  .toastui-editor-md-container .toastui-editor-md-delimiter { opacity: 1 !important; }
+  /* Tighten the toolbar so all button groups fit without collapsing into the
+     "..." overflow menu. Default vendor spacing (button margin 7px 5px,
+     dividers 14px 12px, toolbar padding 0 25px) needs ~900px; this reclaims
+     ~180px so the full toolbar fits the widened form. */
+  .toastui-editor-defaultUI-toolbar { padding: 0 10px !important; }
+  .toastui-editor-defaultUI-toolbar button { margin: 7px 2px !important; }
+  .toastui-editor-toolbar-divider { margin: 14px 6px !important; }
+  label .hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-faint); }
+  .row { display: flex; gap: 16px; }
+  .row > div { flex: 1; }
+  .radio-group { display: flex; gap: 18px; margin-top: 4px; }
+  .radio-group label { display: flex; align-items: center; gap: 6px; font-weight: 500; margin: 0; color: var(--ink); }
+  button {
+    margin-top: 22px; background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 10px 18px; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: var(--sans);
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary { background: none; border: 1px solid var(--rule); color: var(--ink-soft); }
+  .status { margin-top: 14px; padding: 10px 14px; border-radius: 6px; font-size: 0.85rem; }
+  .status.ok { background: #E9F3EC; color: #2E5C3A; }
+  .status.err { background: #FBE7E4; color: #8A2A1B; }
+  .status.pending { background: var(--bg-2); color: var(--ink-soft); }
+  .post-list { display: flex; flex-direction: column; gap: 2px; }
+  .post-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--rule); cursor: pointer; }
+  .post-item:hover .post-item-title { color: var(--accent); }
+  .post-item-title { font-weight: 500; }
+  .post-item-meta { color: var(--ink-faint); font-size: 0.8rem; }
+  .stat-row { display: flex; gap: 28px; margin-bottom: 24px; }
+  .stat { }
+  .stat b { display: block; font-size: 1.6rem; }
+  .stat span { color: var(--ink-faint); font-size: 0.8rem; }
+  .dupe-group { padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.88rem; }
+  .dupe-group b { color: var(--accent); }
+  .hint { color: var(--ink-faint); font-size: 0.78rem; margin-top: 4px; }
+
+  .tag-input-wrap { position: relative; border: 1px solid var(--rule); border-radius: 6px; background: var(--bg-2); padding: 8px; margin-bottom: 18px; }
+  .tag-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .tag-chips:empty { display: none; }
+  .tag-chip {
+    display: inline-flex; align-items: center; gap: 6px; background: var(--accent-wash); color: var(--accent);
+    border-radius: 999px; padding: 3px 6px 3px 12px; font-size: 0.82rem; font-weight: 600;
+  }
+  .tag-chip button {
+    background: none; border: none; color: inherit; cursor: pointer; font-size: 1rem; line-height: 1;
+    padding: 2px 6px; border-radius: 50%; margin: 0;
+  }
+  .tag-chip button:hover { background: rgba(0,0,0,0.08); }
+  .tag-input-wrap input[type=text] { width: 100%; border: none; background: none; padding: 4px; font-family: var(--sans); font-size: 0.9rem; color: var(--ink); outline: none; }
+  .tag-suggestions {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: var(--bg); border: 1px solid var(--rule);
+    border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,0.08); z-index: 10; overflow: hidden;
+  }
+  .tag-suggestion { padding: 8px 12px; font-size: 0.85rem; cursor: pointer; display: flex; justify-content: space-between; }
+  .tag-suggestion:hover, .tag-suggestion.active { background: var(--bg-2); }
+  .tag-suggestion .count { color: var(--ink-faint); font-size: 0.78rem; }
+  .tag-suggestion.create-new { color: var(--accent); font-weight: 600; }
+
+  /* Save-success banner with a real clickable link (Bug 1) */
+  .status.ok a { color: #2E5C3A; font-weight: 700; text-decoration: underline; }
+  .status .banner-title { font-weight: 700; margin-right: 8px; }
+
+  /* Edit-list controls + rows (Bug 2 + Bug 4) */
+  .list-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .list-controls .sort-label { color: var(--ink-faint); font-size: 0.78rem; }
+  .list-controls select { width: auto; padding: 5px 8px; font-size: 0.82rem; }
+  .post-item { align-items: center; }
+  .post-item-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .type-badge { flex: none; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;
+    padding: 2px 7px; border-radius: 999px; background: var(--bg-2); color: var(--ink-soft); border: 1px solid var(--rule); }
+  .type-badge.page { background: var(--accent-wash); color: var(--accent); border-color: var(--accent-wash); }
+  .draft-badge { flex: none; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;
+    padding: 2px 7px; border-radius: 999px; background: #FBE7E4; color: #8A2A1B; border: 1px solid #F3D2CC; }
+  .post-item-right { display: flex; align-items: center; gap: 14px; flex: none; }
+  .row-delete { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 0.8rem; margin: 0; padding: 4px 6px; }
+  .row-delete:hover { color: var(--accent); }
+
+  /* Media library (Bug 2.1) */
+  .media-filter { display: flex; gap: 8px; margin-bottom: 12px; }
+  .media-filter .mf-btn { margin: 0; padding: 5px 12px; font-size: 0.8rem; background: none;
+    border: 1px solid var(--rule); color: var(--ink-soft); border-radius: 999px; font-weight: 500; }
+  .media-filter .mf-btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .media-filter .mf-btn.active { background: var(--accent-wash); color: var(--accent); border-color: var(--accent-wash); font-weight: 600; }
+  .media-filter .mf-btn.danger:hover { color: #8A2A1B; border-color: #8A2A1B; }
+  .media-filter-spacer { flex: 1; }
+  .media-toolbar { color: var(--ink-faint); font-size: 0.8rem; margin-bottom: 16px; }
+  .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
+  .media-card { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-2); }
+  .media-thumb { height: 110px; display: flex; align-items: center; justify-content: center; background: #fff; cursor: pointer; overflow: hidden; }
+  .media-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .media-thumb .file-icon { font-size: 2rem; color: var(--ink-faint); }
+  .media-meta { padding: 8px 10px; font-size: 0.72rem; color: var(--ink-soft); }
+  .media-name { word-break: break-all; color: var(--ink); font-weight: 500; margin-bottom: 3px; }
+  .media-usage { color: var(--ink-faint); }
+  .media-usage.orphan { color: var(--accent); }
+  .media-usage .usage-link { color: var(--ink-soft); text-decoration: underline; }
+  .media-usage .usage-link:hover { color: var(--accent); }
+  .media-actions { display: flex; gap: 6px; padding: 0 10px 10px; }
+  .media-actions button { margin: 0; padding: 5px 8px; font-size: 0.72rem; }
+  .media-actions .insert-btn { flex: 1; }
+
+  /* Confirm modal */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal { background: var(--bg); border-radius: 10px; padding: 24px; max-width: 440px; width: 90%; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
+  .modal h3 { margin: 0 0 10px; font-size: 1rem; }
+  .modal p { margin: 0 0 12px; font-size: 0.88rem; color: var(--ink-soft); }
+  .modal .orphan-opt { display: flex; align-items: flex-start; gap: 8px; font-size: 0.85rem; margin: 12px 0; color: var(--ink); }
+  .modal .orphan-opt input { margin-top: 3px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+  .modal-actions button { margin: 0; }
+  .modal .danger { background: var(--accent); }
+  .modal .warn-text { color: #8A2A1B; font-size: 0.82rem; }
+</style>
+</head>
+<body>
+
+<header style="display:flex; align-items:baseline; justify-content:space-between;">
+  <div>
+    <h1>Featherspress · authoring</h1>
+    <div class="sub">Writes Markdown files under content/ · publishes instantly (no build)</div>
+  </div>
+  <a href="#" id="logout-link" style="font-size:0.82rem; color:var(--ink-faint);">Sign out</a>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="new">New</div>
+  <div class="tab" data-tab="edit">Edit existing</div>
+  <div class="tab" data-tab="media">Media</div>
+  <div class="tab" data-tab="tags">Tags</div>
+</div>
+
+<main>
+  <!-- NEW / EDIT (shared form) -->
+  <section id="view-form">
+    <label>Type</label>
+    <div class="radio-group">
+      <label><input type="radio" name="type" value="post" checked> Post</label>
+      <label><input type="radio" name="type" value="page"> Page</label>
+    </div>
+
+    <label for="f-title">Title</label>
+    <input type="text" id="f-title">
+
+    <label>Tags <span class="hint">(type to search existing tags, or type a new one and press Enter)</span></label>
+    <div class="tag-input-wrap">
+      <div class="tag-chips" id="tag-chips"></div>
+      <input type="text" id="tag-input" placeholder="Search or add a tag…" autocomplete="off">
+      <div class="tag-suggestions" id="tag-suggestions" hidden></div>
+    </div>
+
+    <label>Body <span class="hint" id="mode-hint"></span></label>
+    <div id="editor"></div>
+    <div class="attach-row">
+      <button type="button" class="secondary" id="btn-attach">Attach file</button>
+      <span class="hint">PDF, zip, doc/docx, xls/xlsx, 25MB max. Images go in via the toolbar's image button, or just drag one in.</span>
+    </div>
+    <input type="file" id="attach-input" accept=".pdf,.zip,.doc,.docx,.xls,.xlsx" hidden>
+
+    <div>
+      <button id="btn-save">Save &amp; publish</button>
+      <button class="secondary" id="btn-save-draft">Save as draft</button>
+      <button class="secondary" id="btn-preview" hidden>Preview ↗</button>
+      <button class="secondary" id="btn-cancel-edit" hidden>Cancel edit</button>
+    </div>
+    <div id="status"></div>
+  </section>
+
+  <!-- EDIT: post/page picker -->
+  <section id="view-edit-list" hidden>
+    <div class="list-controls">
+      <span class="sort-label">Sort by</span>
+      <select id="sort-select">
+        <option value="date-desc">Date (newest)</option>
+        <option value="date-asc">Date (oldest)</option>
+        <option value="title-asc">Title (A–Z)</option>
+        <option value="title-desc">Title (Z–A)</option>
+      </select>
+    </div>
+    <div id="list-status"></div>
+    <div class="post-list" id="postList"></div>
+  </section>
+
+  <!-- MEDIA library -->
+  <section id="view-media" hidden>
+    <div class="media-filter" id="media-filter">
+      <button type="button" class="mf-btn active" data-filter="all">All</button>
+      <button type="button" class="mf-btn" data-filter="used">Used</button>
+      <button type="button" class="mf-btn" data-filter="unused">Unused</button>
+      <span class="media-filter-spacer"></span>
+      <button type="button" class="mf-btn" id="btn-media-upload">Upload file</button>
+      <button type="button" class="mf-btn danger" id="btn-delete-unused">Delete all unused</button>
+    </div>
+    <input type="file" id="media-upload-input" hidden>
+    <div class="media-toolbar" id="media-toolbar">Loading…</div>
+    <div class="media-grid" id="mediaGrid"></div>
+  </section>
+
+  <!-- TAGS audit -->
+  <section id="view-tags" hidden>
+    <div class="stat-row">
+      <div class="stat"><b id="tag-total">–</b><span>tags in use</span></div>
+      <div class="stat"><b id="tag-single">–</b><span>used exactly once</span></div>
+      <div class="stat"><b id="tag-dupes">–</b><span>likely near-duplicate groups</span></div>
+    </div>
+    <div id="dupeList"></div>
+  </section>
+</main>
+
+<script src="/admin/vendor/toastui-editor.bundle.js"></script>
+<script>
+(function () {
+  var currentEditSlug = null;
+  var currentEditType = null;
+  var currentEditStatus = 'published';
+
+  function el(id) { return document.getElementById(id); }
+
+  function previewUrl(type, slug) {
+    return '/admin/preview/' + encodeURIComponent(type) + '/' + encodeURIComponent(slug);
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  el('logout-link').addEventListener('click', function (e) {
+    e.preventDefault();
+    fetch('/admin/api/logout', { method: 'POST' }).then(function () {
+      window.location.href = '/admin/login';
+    });
+  });
+
+  // New posts open in WYSIWYG (nice writing experience for fresh content).
+  // Editing an existing post opens in Markdown-source mode by default --
+  // the 208 migrated posts use conventions (e.g. the ```lang title="..."
+  // caption syntax) that aren't standard Markdown, and a WYSIWYG round-trip
+  // risks silently normalizing that away the first time you open an old
+  // post to fix a typo. A toggle to WYSIWYG is still one click away.
+  var editor = new window.ToastEditor({
+    el: el('editor'),
+    height: '420px',
+    initialEditType: 'wysiwyg',
+    previewStyle: 'tab',
+    usageStatistics: false,
+    toolbarItems: [
+      ['heading', 'bold', 'italic', 'strike'],
+      ['hr', 'quote'],
+      ['ul', 'ol', 'indent', 'outdent'],
+      ['table', 'image', 'link'],
+      ['code', 'codeblock'],
+    ],
+    hooks: {
+      // Without this hook, Toast UI inlines a dropped, pasted or picked image
+      // straight into the Markdown source as a base64 data URI -- which would
+      // bloat the .md file and never produce a real file on disk. Upload it
+      // instead and insert the /media/... path the server returns (the same
+      // path all migrated posts use for their media).
+      addImageBlobHook: function (blob, callback) {
+        setStatus('Uploading image…', 'pending');
+        uploadFile(blob).then(function (url) {
+          callback(url, blob.name || '');
+          setStatus('Image uploaded.', 'ok');
+        }).catch(function (e) {
+          setStatus('Image upload failed: ' + e.message, 'err');
+        });
+        // Returning false suppresses Toast UI's default base64 inlining.
+        return false;
+      },
+    },
+  });
+
+  function setEditorMode(mode) {
+    editor.changeMode(mode, true);
+    el('mode-hint').textContent = mode === 'wysiwyg' ? '(WYSIWYG. Switch to Markdown via the tab above for advanced syntax like code captions)' : '(Markdown source)';
+  }
+  setEditorMode('wysiwyg');
+
+  function setStatus(msg, kind) {
+    var s = el('status');
+    s.textContent = msg;
+    s.className = 'status ' + (kind || '');
+  }
+
+  // Pasted images arrive from Toast UI's addImageBlobHook as a nameless
+  // Blob -- no .name at all, just a .type MIME string. Without a filename,
+  // the browser sends "blob" with no extension, and the server's
+  // magic-byte allowlist keys off the extension, so a perfectly valid PNG
+  // gets rejected as "Unsupported file type". Map the known image MIME
+  // types to the extensions the server allows so pasted images still land
+  // with a real filename.
+  var MIME_TO_EXT = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  };
+
+  function uploadFile(file) {
+    var form = new FormData();
+    var name = file.name;
+    if (!name) {
+      var ext = MIME_TO_EXT[file.type];
+      if (ext) name = 'pasted-image.' + ext;
+    }
+    if (name) {
+      form.append('file', file, name);
+    } else {
+      form.append('file', file);
+    }
+    return fetch('/admin/api/upload', { method: 'POST', body: form })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error(data.error || 'Upload failed');
+          return data.url;
+        });
+      });
+  }
+
+  el('btn-attach').addEventListener('click', function () {
+    el('attach-input').click();
+  });
+
+  el('attach-input').addEventListener('change', function () {
+    var file = this.files && this.files[0];
+    // Reset immediately, so picking the same file twice in a row still fires
+    // a change event the second time.
+    this.value = '';
+    if (!file) return;
+
+    setStatus('Uploading ' + file.name + '…', 'pending');
+    uploadFile(file).then(function (url) {
+      // exec('addLink') rather than inserting literal "[name](url)" text:
+      // it produces a real link node in WYSIWYG mode and Markdown link syntax
+      // in Markdown mode, so one code path is correct in both.
+      editor.exec('addLink', { linkUrl: url, linkText: file.name });
+      setStatus('Attached ' + file.name, 'ok');
+    }).catch(function (e) {
+      setStatus('Attachment failed: ' + e.message, 'err');
+    });
+  });
+
+  function activateTab(name) {
+    document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
+    el('view-form').hidden = name !== 'new';
+    el('view-edit-list').hidden = name !== 'edit';
+    el('view-media').hidden = name !== 'media';
+    el('view-tags').hidden = name !== 'tags';
+  }
+
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      activateTab(t.dataset.tab);
+      if (t.dataset.tab === 'new') resetForm();
+      if (t.dataset.tab === 'edit') loadPostList();
+      if (t.dataset.tab === 'media') loadMedia();
+      if (t.dataset.tab === 'tags') loadTagAudit();
+    });
+  });
+
+  var vocab = { tags: [] };
+
+  // Chip input: type to search a vocabulary (ranked by usage, capped to 8
+  // matches so hundreds of tags don't dump into one list), click or Enter
+  // to add, or type something new entirely.
+  function createChipInput(opts) {
+    var selected = [];
+    var chipsEl = el(opts.chipsId);
+    var inputEl = el(opts.inputId);
+    var suggEl = el(opts.suggestionsId);
+
+    function render() {
+      chipsEl.innerHTML = selected.map(function (name) {
+        return '<span class="tag-chip">' + name + '<button type="button" data-name="' + name + '" aria-label="Remove">&times;</button></span>';
+      }).join('');
+      chipsEl.querySelectorAll('button').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          selected = selected.filter(function (t) { return t !== btn.dataset.name; });
+          render();
+        });
+      });
+    }
+
+    function hideSuggestions() {
+      suggEl.hidden = true;
+      suggEl.innerHTML = '';
+    }
+
+    function add(name) {
+      name = name.trim();
+      if (!name) return;
+      var already = selected.some(function (t) { return t.toLowerCase() === name.toLowerCase(); });
+      if (!already) selected.push(name);
+      render();
+      inputEl.value = '';
+      hideSuggestions();
+    }
+
+    inputEl.addEventListener('input', function () {
+      var q = this.value.trim().toLowerCase();
+      if (!q) { hideSuggestions(); return; }
+      var pool = opts.getVocab();
+      var matches = pool
+        .filter(function (t) { return t.name.toLowerCase().indexOf(q) !== -1; })
+        .filter(function (t) { return !selected.some(function (s) { return s.toLowerCase() === t.name.toLowerCase(); }); })
+        .sort(function (a, b) { return b.count - a.count; })
+        .slice(0, 8);
+
+      var html = matches.map(function (t) {
+        return '<div class="tag-suggestion" data-name="' + t.name + '"><span>' + t.name + '</span><span class="count">' + t.count + '</span></div>';
+      }).join('');
+      var exactExists = pool.some(function (t) { return t.name.toLowerCase() === q; });
+      if (!exactExists) {
+        html += '<div class="tag-suggestion create-new" data-name="' + this.value.trim() + '">+ Add new ' + opts.label + ' "' + this.value.trim() + '"</div>';
+      }
+      suggEl.innerHTML = html;
+      suggEl.hidden = false;
+      suggEl.querySelectorAll('.tag-suggestion').forEach(function (item) {
+        item.addEventListener('click', function () { add(item.dataset.name); });
+      });
+    });
+
+    inputEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        var active = suggEl.querySelector('.tag-suggestion');
+        add(active ? active.dataset.name : this.value);
+      } else if (e.key === 'Backspace' && !this.value && selected.length) {
+        selected.pop();
+        render();
+      } else if (e.key === 'Escape') {
+        hideSuggestions();
+      }
+    });
+
+    document.addEventListener('click', function (e) {
+      if (!chipsEl.parentElement.contains(e.target)) hideSuggestions();
+    });
+
+    return {
+      get: function () { return selected; },
+      set: function (names) { selected = names.slice(); render(); },
+      clear: function () { selected = []; render(); },
+    };
+  }
+
+  var tagInput = createChipInput({
+    chipsId: 'tag-chips', inputId: 'tag-input', suggestionsId: 'tag-suggestions',
+    label: 'tag', getVocab: function () { return vocab.tags; },
+  });
+
+  function resetForm() {
+    currentEditSlug = null;
+    currentEditType = null;
+    currentEditStatus = 'published';
+    el('f-title').value = '';
+    tagInput.clear();
+    editor.setMarkdown('');
+    setEditorMode('wysiwyg');
+    document.querySelector('input[name=type][value=post]').checked = true;
+    el('btn-cancel-edit').hidden = true;
+    el('btn-preview').hidden = true;
+    el('status').textContent = '';
+    el('status').className = 'status';
+  }
+
+  // Point the Preview button at the current item and reveal it.
+  function showPreviewButton(type, slug) {
+    var btn = el('btn-preview');
+    btn.hidden = false;
+    btn.onclick = function () { window.open(previewUrl(type, slug), '_blank', 'noopener'); };
+  }
+
+  function loadMeta() {
+    return fetch('/admin/api/meta').then(function (r) { return r.json(); }).then(function (data) {
+      vocab = data;
+    });
+  }
+
+  var loadedContent = [];
+  var listSort = 'date-desc';
+
+  function sortContent(items) {
+    var arr = items.slice();
+    arr.sort(function (a, b) {
+      if (listSort === 'title-asc') return String(a.title).localeCompare(String(b.title));
+      if (listSort === 'title-desc') return String(b.title).localeCompare(String(a.title));
+      if (listSort === 'date-asc') return String(a.date).localeCompare(String(b.date));
+      return String(b.date).localeCompare(String(a.date)); // date-desc default
+    });
+    return arr;
+  }
+
+  function renderPostList() {
+    var items = sortContent(loadedContent);
+    el('postList').innerHTML = items.map(function (p, i) {
+      return '<div class="post-item" data-i="' + i + '">' +
+        '<div class="post-item-left">' +
+          '<span class="type-badge ' + (p.type === 'page' ? 'page' : 'post') + '">' + (p.type === 'page' ? 'Page' : 'Post') + '</span>' +
+          (p.status === 'draft' ? '<span class="draft-badge">Draft</span>' : '') +
+          '<span class="post-item-title">' + esc(p.title) + '</span>' +
+        '</div>' +
+        '<div class="post-item-right">' +
+          '<span class="post-item-meta">' + esc(String(p.date).slice(0, 10)) + '</span>' +
+          '<button type="button" class="row-delete" data-i="' + i + '">Delete</button>' +
+        '</div></div>';
+    }).join('');
+    // The rendered order is the sorted order, so map clicks back through it.
+    document.querySelectorAll('#postList .post-item').forEach(function (row) {
+      var item = items[Number(row.dataset.i)];
+      row.querySelector('.post-item-left').addEventListener('click', function () { editPost(item.type, item.slug); });
+      row.querySelector('.row-delete').addEventListener('click', function (e) {
+        e.stopPropagation();
+        confirmDelete(item);
+      });
+    });
+  }
+
+  function setListStatus(msg, kind) {
+    var s = el('list-status');
+    s.textContent = msg || '';
+    s.className = msg ? 'status ' + (kind || '') : '';
+  }
+
+  function loadPostList(keepStatus) {
+    if (!keepStatus) setListStatus('');
+    fetch('/admin/api/posts').then(function (r) { return r.json(); }).then(function (items) {
+      loadedContent = items || [];
+      el('sort-select').value = listSort;
+      renderPostList();
+    });
+  }
+
+  el('sort-select').addEventListener('change', function () {
+    listSort = this.value;
+    renderPostList();
+  });
+
+  function editPost(type, slug) {
+    fetch('/admin/api/post/' + encodeURIComponent(type) + '/' + encodeURIComponent(slug))
+      .then(function (r) { return r.json(); }).then(function (p) {
+        currentEditSlug = p.slug;
+        currentEditType = p.type;
+        currentEditStatus = p.status || 'published';
+        el('f-title').value = p.title || '';
+        tagInput.set((p.postTags || []).map(function (t) { return t.name; }));
+        editor.setMarkdown(p.body || '');
+        setEditorMode('markdown');
+        document.querySelector('input[name=type][value=' + (p.type === 'page' ? 'page' : 'post') + ']').checked = true;
+        el('btn-cancel-edit').hidden = false;
+        showPreviewButton(p.type, p.slug);
+        activateTab('new');
+        var label = p.type === 'page' ? 'page' : 'post';
+        var draftNote = currentEditStatus === 'draft' ? ' (currently a draft; “Save & publish” to make it live)' : '';
+        setStatus('Editing "' + p.title + '": saving will overwrite this ' + label + '.' + draftNote, 'pending');
+      });
+  }
+
+  // ---- Delete (with orphan-attachment cleanup) ----
+  function confirmDelete(item) {
+    var label = item.type === 'page' ? 'page' : 'post';
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML =
+      '<div class="modal">' +
+        '<h3>Delete this ' + label + '?</h3>' +
+        '<p>&ldquo;' + esc(item.title) + '&rdquo; will be permanently removed.</p>' +
+        '<div id="orphan-wrap"></div>' +
+        '<div class="modal-actions">' +
+          '<button type="button" class="secondary" id="del-cancel">Cancel</button>' +
+          '<button type="button" class="danger" id="del-confirm">Delete</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(backdrop);
+    function close() { document.body.removeChild(backdrop); }
+    backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+    el('del-cancel').addEventListener('click', close);
+
+    // Ask the server which attachments only this item uses.
+    fetch('/admin/api/post/' + encodeURIComponent(item.type) + '/' + encodeURIComponent(item.slug) + '/orphans')
+      .then(function (r) { return r.json(); }).then(function (data) {
+        var orphans = (data && data.orphans) || [];
+        if (orphans.length) {
+          el('orphan-wrap').innerHTML =
+            '<label class="orphan-opt"><input type="checkbox" id="del-orphans" checked>' +
+            '<span>Also delete the ' + orphans.length + ' file' + (orphans.length > 1 ? 's' : '') +
+            ' used only by this ' + label + '</span></label>';
+        }
+      });
+
+    el('del-confirm').addEventListener('click', function () {
+      var orphanBox = el('del-orphans');
+      var deleteOrphans = !!(orphanBox && orphanBox.checked);
+      el('del-confirm').disabled = true;
+      fetch('/admin/api/post/' + encodeURIComponent(item.type) + '/' + encodeURIComponent(item.slug), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleteOrphans: deleteOrphans }),
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+        .then(function (res) {
+          close();
+          if (!res.ok) { setListStatus((res.data && res.data.error) || 'Delete failed.', 'err'); return; }
+          var n = (res.data.deletedAttachments || []).length;
+          var title = item.title;
+          loadPostList(true);
+          loadMeta();
+          setListStatus('Deleted "' + title + '"' + (n ? ' and ' + n + ' unused file' + (n > 1 ? 's' : '') : '') + '.', 'ok');
+        }).catch(function (e) { close(); setListStatus('Delete request failed: ' + e.message, 'err'); });
+    });
+  }
+
+  el('btn-cancel-edit').addEventListener('click', function () { resetForm(); activateTab('new'); });
+
+  // Persistent success banner built via DOM (href/textContent), never HTML
+  // string concatenation -- so the server-generated URL can't inject markup.
+  // Success banner. Published items link to the live URL; drafts link to the
+  // authenticated preview. Built via DOM (href/textContent), never HTML string
+  // concatenation, so a server-generated URL can't inject markup.
+  function setSavedBanner(res, type) {
+    var s = el('status');
+    s.className = 'status ok';
+    s.innerHTML = '';
+    var title = document.createElement('span');
+    title.className = 'banner-title';
+    var a = document.createElement('a');
+    a.target = '_blank';
+    a.rel = 'noopener';
+    if (res.status === 'draft') {
+      title.textContent = 'Saved as draft.';
+      a.href = previewUrl(type, res.slug);
+      a.textContent = 'Preview ↗';
+    } else {
+      title.textContent = 'Saved & published.';
+      a.href = res.url;
+      a.textContent = 'View ' + (type === 'page' ? 'page' : 'post') + ' ↗';
+    }
+    s.appendChild(title);
+    s.appendChild(a);
+  }
+
+  function save(status) {
+    var payload = {
+      title: el('f-title').value,
+      type: document.querySelector('input[name=type]:checked').value,
+      tags: tagInput.get().join(', '),
+      body: editor.getMarkdown(),
+      status: status,
+    };
+    if (!payload.title.trim()) { setStatus('Title is required.', 'err'); return; }
+
+    setStatus(status === 'draft' ? 'Saving draft…' : 'Saving…', 'pending');
+    el('btn-save').disabled = true;
+    el('btn-save-draft').disabled = true;
+
+    var req = currentEditSlug
+      ? fetch('/admin/api/post/' + encodeURIComponent(currentEditType) + '/' + encodeURIComponent(currentEditSlug), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      : fetch('/admin/api/post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+
+    req.then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (res) {
+        el('btn-save').disabled = false;
+        el('btn-save-draft').disabled = false;
+        if (!res.ok) { setStatus(res.data.error || 'Something went wrong.', 'err'); return; }
+        // After a new create, adopt the returned slug + type so an immediate
+        // second save UPDATEs this item instead of re-POSTing and colliding
+        // with its own slug (409).
+        currentEditSlug = res.data.slug;
+        currentEditType = res.data.type || payload.type;
+        currentEditStatus = res.data.status || status;
+        el('btn-cancel-edit').hidden = false;
+        showPreviewButton(currentEditType, currentEditSlug);
+        setSavedBanner(res.data, currentEditType);
+        loadMeta();
+      })
+      .catch(function (e) {
+        el('btn-save').disabled = false;
+        el('btn-save-draft').disabled = false;
+        setStatus('Request failed: ' + e.message, 'err');
+      });
+  }
+
+  el('btn-save').addEventListener('click', function () { save('published'); });
+  el('btn-save-draft').addEventListener('click', function () { save('draft'); });
+
+  function loadTagAudit() {
+    fetch('/admin/api/tag-audit').then(function (r) { return r.json(); }).then(function (data) {
+      el('tag-total').textContent = data.total;
+      el('tag-single').textContent = data.singleUseCount;
+      el('tag-dupes').textContent = data.nearDuplicates.length;
+      el('dupeList').innerHTML = data.nearDuplicates.length
+        ? data.nearDuplicates.map(function (g) {
+            return '<div class="dupe-group">' + g.map(function (t) { return '<b>' + t.name + '</b> (' + t.count + ')'; }).join(' &nbsp;vs&nbsp; ') + '</div>';
+          }).join('')
+        : '<p class="hint">No likely near-duplicates found.</p>';
+    });
+  }
+
+  // ---- Media library ----
+  function fmtSize(bytes) {
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+    return bytes + ' B';
+  }
+
+  function fileName(p) { return p.slice(p.lastIndexOf('/') + 1); }
+
+  var loadedMedia = [];
+  var mediaFilter = 'all';
+
+  function loadMedia() {
+    el('media-toolbar').textContent = 'Loading…';
+    el('mediaGrid').innerHTML = '';
+    fetch('/admin/api/media').then(function (r) { return r.json(); }).then(function (files) {
+      loadedMedia = files || [];
+      renderMedia();
+    }).catch(function (e) {
+      el('media-toolbar').textContent = 'Could not load media: ' + e.message;
+    });
+  }
+
+  // Filter buttons (All / Used / Unused). Only the data-filter buttons toggle;
+  // the action buttons (upload, delete-unused) are wired separately below.
+  document.querySelectorAll('#media-filter .mf-btn[data-filter]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      mediaFilter = btn.dataset.filter;
+      document.querySelectorAll('#media-filter .mf-btn[data-filter]').forEach(function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      renderMedia();
+    });
+  });
+
+  // Upload straight from the Media tab (same endpoint as the editor).
+  el('btn-media-upload').addEventListener('click', function () { el('media-upload-input').click(); });
+  el('media-upload-input').addEventListener('change', function () {
+    var file = this.files && this.files[0];
+    this.value = '';
+    if (!file) return;
+    el('media-toolbar').textContent = 'Uploading ' + file.name + '…';
+    uploadFile(file).then(function () { loadMedia(); }).catch(function (e) {
+      el('media-toolbar').textContent = 'Upload failed: ' + e.message;
+    });
+  });
+
+  // Bulk-delete every unused file (unused => no force needed server-side).
+  el('btn-delete-unused').addEventListener('click', function () {
+    var unused = loadedMedia.filter(function (f) { return !f.usage.length; });
+    if (!unused.length) { el('media-toolbar').textContent = 'No unused files to delete.'; return; }
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML =
+      '<div class="modal"><h3>Delete all unused files?</h3>' +
+      '<p>' + unused.length + ' file' + (unused.length > 1 ? 's' : '') + ' not referenced by any post or page will be permanently removed.</p>' +
+      '<div class="modal-actions">' +
+        '<button type="button" class="secondary" id="du-cancel">Cancel</button>' +
+        '<button type="button" class="danger" id="du-confirm">Delete ' + unused.length + '</button>' +
+      '</div></div>';
+    document.body.appendChild(backdrop);
+    function close() { document.body.removeChild(backdrop); }
+    backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+    el('du-cancel').addEventListener('click', close);
+    el('du-confirm').addEventListener('click', function () {
+      el('du-confirm').disabled = true;
+      el('media-toolbar').textContent = 'Deleting ' + unused.length + ' unused file' + (unused.length > 1 ? 's' : '') + '…';
+      Promise.all(unused.map(function (f) {
+        return fetch('/admin/api/media', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: f.path }),
+        });
+      })).then(function () { close(); loadMedia(); })
+        .catch(function (e) { close(); el('media-toolbar').textContent = 'Bulk delete failed: ' + e.message; });
+    });
+  });
+
+  function renderMedia() {
+    var all = loadedMedia;
+    var unused = all.filter(function (f) { return !f.usage.length; }).length;
+    var used = all.length - unused;
+    // Apply the current filter to what's shown; counts reflect the whole library.
+    var files = mediaFilter === 'used' ? all.filter(function (f) { return f.usage.length; })
+      : mediaFilter === 'unused' ? all.filter(function (f) { return !f.usage.length; })
+      : all;
+    var summary = all.length + ' file' + (all.length !== 1 ? 's' : '') + ' · ' + used + ' used · ' + unused + ' unused.';
+    if (mediaFilter !== 'all') summary += ' Showing ' + files.length + ' ' + mediaFilter + '.';
+    else summary += ' Click a file to insert it into the current editor.';
+    el('media-toolbar').textContent = summary;
+    el('mediaGrid').innerHTML = files.map(function (f, i) {
+      var name = fileName(f.path);
+      var thumb = f.kind === 'image'
+        ? '<div class="media-thumb" data-i="' + i + '"><img loading="lazy" src="' + esc(f.path) + '" alt=""></div>'
+        : '<div class="media-thumb" data-i="' + i + '"><span class="file-icon">📄</span></div>';
+      var usage;
+      if (f.usage.length) {
+        var links = f.usage.map(function (u) {
+          return '<a class="usage-link" href="/' + encodeURIComponent(u.slug) + '/" target="_blank" rel="noopener" title="' + esc(u.title) + '">' + esc(u.title) + '</a>';
+        }).join(', ');
+        usage = '<div class="media-usage">Used in ' + f.usage.length + ' ' + (f.usage.length > 1 ? 'posts' : 'post') + ': ' + links + '</div>';
+      } else {
+        usage = '<div class="media-usage orphan">Unused</div>';
+      }
+      return '<div class="media-card">' + thumb +
+        '<div class="media-meta"><div class="media-name">' + esc(name) + '</div>' +
+        '<div>' + fmtSize(f.size) + '</div>' + usage + '</div>' +
+        '<div class="media-actions">' +
+          '<button type="button" class="secondary insert-btn" data-i="' + i + '">Insert</button>' +
+          '<button type="button" class="secondary del-btn" data-i="' + i + '">Delete</button>' +
+        '</div></div>';
+    }).join('');
+    document.querySelectorAll('#mediaGrid .media-thumb, #mediaGrid .insert-btn').forEach(function (elm) {
+      elm.addEventListener('click', function () { insertMedia(files[Number(elm.dataset.i)]); });
+    });
+    document.querySelectorAll('#mediaGrid .del-btn').forEach(function (elm) {
+      elm.addEventListener('click', function () { deleteMedia(files[Number(elm.dataset.i)]); });
+    });
+  }
+
+  function insertMedia(f) {
+    if (f.kind === 'image') editor.exec('addImage', { imageUrl: f.path, altText: '' });
+    else editor.exec('addLink', { linkUrl: f.path, linkText: fileName(f.path) });
+    activateTab('new');
+    setStatus('Inserted ' + fileName(f.path) + ' into the editor.', 'ok');
+  }
+
+  function deleteMedia(f) {
+    var used = f.usage.length;
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    var warn = used
+      ? '<p class="warn-text">This file is used in ' + used + ' ' + (used > 1 ? 'posts/pages' : 'post/page') +
+        '. Deleting it will leave broken links until those are edited.</p>'
+      : '<p>This file is not referenced by any post or page.</p>';
+    backdrop.innerHTML =
+      '<div class="modal"><h3>Delete this file?</h3>' +
+      '<p>&ldquo;' + esc(fileName(f.path)) + '&rdquo;</p>' + warn +
+      '<div class="modal-actions">' +
+        '<button type="button" class="secondary" id="m-cancel">Cancel</button>' +
+        '<button type="button" class="danger" id="m-confirm">' + (used ? 'Delete anyway' : 'Delete') + '</button>' +
+      '</div></div>';
+    document.body.appendChild(backdrop);
+    function close() { document.body.removeChild(backdrop); }
+    backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
+    el('m-cancel').addEventListener('click', close);
+    el('m-confirm').addEventListener('click', function () {
+      el('m-confirm').disabled = true;
+      fetch('/admin/api/media', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: f.path, force: used > 0 }),
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+        .then(function (res) {
+          close();
+          if (!res.ok) { el('media-toolbar').textContent = (res.data && res.data.error) || 'Delete failed.'; return; }
+          loadMedia();
+        }).catch(function (e) { close(); el('media-toolbar').textContent = 'Delete request failed: ' + e.message; });
+    });
+  }
+
+  loadMeta();
+})();
+</script>
+</body>
+</html>

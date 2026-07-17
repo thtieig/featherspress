@@ -1,0 +1,21 @@
+{% extends "base.njk" %}
+{% block main %}
+<a href="{{ site.postsPath }}" class="back-link">← Back</a>
+<div class="post-header">
+  <h1>{{ post.title }}</h1>
+  <div class="post-meta">
+    <span>{{ post.date | date }}</span>
+  </div>
+</div>
+<article class="prose">
+{{ post.bodyHtml | safe }}
+</article>
+{%- if post.tags.length %}
+<div class="post-footer">
+  <span class="label">Tagged</span>
+  <div class="post-tags">
+    {% for t in post.tags %}<a class="tag" href="/tag/{{ t.slug }}/">{{ t.name }}</a>{% endfor %}
+  </div>
+</div>
+{%- endif %}
+{% endblock %}

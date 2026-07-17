@@ -1,0 +1,36 @@
+# A real site's content & media live outside the engine, so never commit them.
+# site.json is a site's manifest (part of its private Site Package), not the
+# shippable engine. (The bundled demo lives under example-site/ and IS tracked.)
+/content/
+/media/
+/site.json
+
+# Site-specific skins are customizations, not the engine. The bundled default
+# skin (skins/notepad) is tracked; site-specific skins are kept on disk but out
+# of the repo. (gvm recreates a commercial WPZOOM theme, and its CSS/fonts
+# aren't ours to redistribute.)
+/skins/gvm/
+
+# Secrets / local auth state.
+auth-config.json
+
+# Dependencies & build output.
+node_modules/
+
+# Python virtualenv for the converter (created per the migration guide).
+.venv/
+/converter/.venv/
+
+# Editor / OS cruft.
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Scratch
+*.tmp
+/wp-content/
+
+# Python bytecode
+__pycache__/
+*.pyc

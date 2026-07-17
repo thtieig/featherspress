@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>{% if title %}{{ title }} · {{ site.title }}{% else %}{{ site.title }}{% endif %}</title>
+<link rel="stylesheet" href="/theme/assets/style.css">
+</head>
+<body>
+
+<div class="masthead">
+  <div class="masthead-inner">
+    <div class="brand-block">
+      <h1><a href="/" style="color:inherit">{{ site.title }}</a></h1>
+      <div class="tagline">{{ site.tagline }}</div>
+    </div>
+    <div class="nav-row">
+      <div class="nav-links">
+        {% for item in site.nav %}<a href="{{ item.href }}"{% if item.newTab %} target="_blank" rel="noopener"{% endif %}{% if item.href == currentPath %} class="current"{% endif %}>{{ item.label }}</a>
+        {% endfor %}
+      </div>
+      <button class="theme-toggle" id="themeToggle" type="button">☀ / ☾</button>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+  <main>
+    {% block main %}{% endblock %}
+  </main>
+
+  <aside class="sidebar">
+    <div class="widget">
+      <h3>Search</h3>
+      <input class="search-field" id="search" type="text" placeholder="Search posts, tags, code…" autocomplete="off">
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+    <div class="widget">
+      <h3>Tags</h3>
+      <div class="tag-cloud">{% for t in tagCloud %}<a href="/tag/{{ t.slug }}/" style="font-size: {{ (0.78 + t.weight * 0.55) | round(2) }}rem" title="{{ t.count }} posts">{{ t.name }}</a>{% endfor %}</div>
+    </div>
+  </aside>
+</div>
+
+<script src="/theme/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "title": "Page Mode Blog",
+  "tagline": "home is a pinned page",
+  "url": "http://localhost:3000",
+  "skin": "notepad",
+  "homeMode": "page:welcome",
+  "nav": [
+    { "label": "Home", "href": "/" },
+    { "label": "Contatti", "href": "/contatti/", "newTab": true }
+  ]
+}

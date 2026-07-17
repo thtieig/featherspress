@@ -1,0 +1,14 @@
+{
+  "title": "Featherspress",
+  "tagline": "A blog engine light as feathers.",
+  "url": "http://localhost:3000",
+  "skin": "notepad",
+  "homeMode": "feed",
+  "postsPath": "/posts/",
+  "postsHeading": "All posts",
+  "nav": [
+    { "label": "Home", "href": "/" },
+    { "label": "All posts", "href": "/posts/" },
+    { "label": "About", "href": "/about/" }
+  ]
+}

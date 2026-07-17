@@ -1,0 +1,30 @@
+{
+  "name": "featherspress",
+  "version": "0.1.0",
+  "description": "A blog engine light as feathers. Plural.",
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node setup.js",
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "express-session": "^1.19.0",
+    "file-type": "^21.3.4",
+    "gray-matter": "^4.0.3",
+    "markdown-it": "^14.1.0",
+    "multer": "^2.2.0",
+    "nunjucks": "^3.2.4",
+    "otplib": "^13.4.1",
+    "qrcode-terminal": "^0.12.0",
+    "shiki": "^4.3.1"
+  }
+}
