@@ -130,6 +130,18 @@ router.use((req, res, next) => {
 
 router.use(express.static(PUBLIC_DIR));
 
+// ---- update status (read-only) -------------------------------------------
+// The root update timer writes UPDATE_STATUS_FILE into the data dir; we only
+// read it here to render the admin banner. The app never runs git or restarts.
+router.get("/api/update-status", (req, res) => {
+  try {
+    res.json(JSON.parse(fs.readFileSync(config.UPDATE_STATUS_FILE, "utf8")));
+  } catch (e) {
+    if (e.code === "ENOENT") return res.json({ available: false, checkedAt: null });
+    res.status(500).json({ error: "update status unreadable" });
+  }
+});
+
 // ---- content helpers -----------------------------------------------------
 
 // The body is Markdown, authored by the single, authenticated site owner, and

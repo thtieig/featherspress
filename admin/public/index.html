@@ -173,6 +173,10 @@
   <a href="#" id="logout-link" style="font-size:0.82rem; color:var(--ink-faint);">Sign out</a>
 </header>
 
+<div id="update-banner" hidden style="background:var(--accent-wash); border-bottom:1px solid var(--rule); padding:10px 28px; font-size:0.85rem; color:var(--ink);">
+  <span id="update-banner-text"></span>
+</div>
+
 <div class="tabs">
   <div class="tab active" data-tab="new">New</div>
   <div class="tab" data-tab="edit">Edit existing</div>
@@ -908,7 +912,22 @@
     });
   }
 
+  // Show a banner when the root update timer reports a newer engine version.
+  // Read-only: applying the update is an operator action (see docs/DEPLOY.md).
+  function checkUpdateStatus() {
+    fetch('/admin/api/update-status').then(function (r) { return r.json(); }).then(function (s) {
+      if (!s || !s.available) return;
+      var msg = 'Engine update available';
+      if (s.behind) msg += ' (' + s.behind + ' commit' + (s.behind > 1 ? 's' : '') + ' behind)';
+      if (s.availableCommit) msg += ' — ' + String(s.availableCommit).slice(0, 7);
+      msg += '. Apply it from the server (see DEPLOY.md).';
+      el('update-banner-text').textContent = msg;
+      el('update-banner').hidden = false;
+    }).catch(function () {});
+  }
+
   loadMeta();
+  checkUpdateStatus();
 })();
 </script>
 </body>

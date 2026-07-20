@@ -1,0 +1,251 @@
+"use strict";
+
+// The Site Package pack/unpack primitive. One artifact (a .tar.gz with the
+// canonical data-dir layout: site.json + content/ + media/ + skins/<name>/ +
+// favicon/ [+ auth-config.json]); one code path used by export, backup, and
+// import. These tests drive the low-level, path-injected core directly (no env
+// gymnastics, no subprocess) so behaviour is pinned precisely.
+
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+const sp = require("../tools/site-package");
+
+// Build a throwaway data dir laid out like /var/lib/featherspress.
+function makeDataDir(extra = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-pkg-"));
+  fs.mkdirSync(path.join(dir, "content", "posts"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "content", "pages"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "media", "2024", "01"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "content", "posts", "hello.md"), "---\ntitle: Hello\n---\nHi");
+  fs.writeFileSync(path.join(dir, "media", "2024", "01", "pic.png"), "PNGDATA");
+  fs.writeFileSync(
+    path.join(dir, "site.json"),
+    JSON.stringify({ title: "T", skin: "notepad", homeMode: "feed", nav: [] })
+  );
+  fs.writeFileSync(
+    path.join(dir, "auth-config.json"),
+    JSON.stringify({ passwordHash: "x", totpSecret: "SECRET", recoveryCodeHashes: [] })
+  );
+  return dir;
+}
+
+function paths(dir) {
+  return {
+    contentDir: path.join(dir, "content"),
+    mediaDir: path.join(dir, "media"),
+    manifestPath: path.join(dir, "site.json"),
+    authConfigPath: path.join(dir, "auth-config.json"),
+    faviconDir: null,
+    skin: null,
+  };
+}
+
+function listTar(tarball) {
+  return execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+    .split("\n")
+    .map((s) => s.replace(/^\.\//, "").replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
+// Build a canonical Site Package *directory* (as the converter emits, or as an
+// export unpacks to). `withAuth` adds credentials; `skin` adds skins/<name>/.
+function makePackageDir(opts = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-src-"));
+  fs.mkdirSync(path.join(dir, "content", "posts"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "media", "2024", "01"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "content", "posts", "hello.md"), "---\ntitle: Hello\n---\nHi");
+  fs.writeFileSync(path.join(dir, "media", "2024", "01", "pic.png"), "PNGDATA");
+  fs.writeFileSync(
+    path.join(dir, "site.json"),
+    JSON.stringify({ title: "T", skin: opts.skin || "notepad", homeMode: "feed", nav: [] })
+  );
+  if (opts.skin) {
+    fs.mkdirSync(path.join(dir, "skins", opts.skin, "templates"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "skins", opts.skin, "templates", "home.njk"), "X");
+  }
+  if (opts.withAuth) {
+    fs.writeFileSync(
+      path.join(dir, "auth-config.json"),
+      JSON.stringify({ passwordHash: "pkg", totpSecret: "PKG", recoveryCodeHashes: [] })
+    );
+  }
+  return dir;
+}
+
+// Empty target data dir + the target-path bundle importPackage writes into.
+function makeTarget() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-dst-"));
+  return {
+    dir,
+    contentDir: path.join(dir, "content"),
+    mediaDir: path.join(dir, "media"),
+    manifestPath: path.join(dir, "site.json"),
+    authConfigPath: path.join(dir, "auth-config.json"),
+    skinsDir: path.join(dir, "skins"),
+    faviconDir: path.join(dir, "favicon"),
+    bundledSkinsDir: path.join(__dirname, "..", "skins"),
+  };
+}
+
+test("export --profile site omits auth-config.json but keeps site.json, content, media", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "out.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "site", outFile: out });
+    const entries = listTar(out);
+    assert.ok(entries.includes("site.json"), "site.json present");
+    assert.ok(entries.includes("content/posts/hello.md"), "content present");
+    assert.ok(entries.includes("media/2024/01/pic.png"), "media present");
+    assert.ok(!entries.includes("auth-config.json"), "auth-config.json must be excluded from site profile");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("import installs a package directory into the configured data dir", () => {
+  const src = makePackageDir();
+  const t = makeTarget();
+  try {
+    sp.importPackage({ src, ...t, force: true });
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "hello.md")), "content restored");
+    assert.ok(fs.existsSync(path.join(t.mediaDir, "2024", "01", "pic.png")), "media restored");
+    assert.ok(fs.existsSync(t.manifestPath), "site.json restored");
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("export then import round-trips through a .tar.gz to an identical tree", () => {
+  const data = makeDataDir();
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fp-out-")), "pkg.tar.gz");
+  const t = makeTarget();
+  try {
+    sp.exportPackage({ ...paths(data), profile: "site", outFile: out });
+    sp.importPackage({ src: out, ...t, force: true });
+    assert.strictEqual(
+      fs.readFileSync(path.join(t.contentDir, "posts", "hello.md"), "utf8"),
+      fs.readFileSync(path.join(data, "content", "posts", "hello.md"), "utf8")
+    );
+    assert.ok(fs.existsSync(path.join(t.mediaDir, "2024", "01", "pic.png")));
+    assert.ok(!fs.existsSync(t.authConfigPath), "site-profile tar carries no auth to restore");
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(path.dirname(out), { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("import refuses to overwrite existing content without force", () => {
+  const src = makePackageDir();
+  const t = makeTarget();
+  fs.mkdirSync(path.join(t.contentDir, "posts"), { recursive: true });
+  fs.writeFileSync(path.join(t.contentDir, "posts", "existing.md"), "keep me");
+  try {
+    assert.throws(() => sp.importPackage({ src, ...t, force: false }), /without force/i);
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "existing.md")), "existing content untouched");
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("import uses replace semantics: stale files not in the package are gone", () => {
+  const src = makePackageDir();
+  const t = makeTarget();
+  fs.mkdirSync(path.join(t.contentDir, "posts"), { recursive: true });
+  fs.writeFileSync(path.join(t.contentDir, "posts", "stale.md"), "old");
+  try {
+    sp.importPackage({ src, ...t, force: true });
+    assert.ok(!fs.existsSync(path.join(t.contentDir, "posts", "stale.md")), "stale post removed");
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "hello.md")), "package post present");
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("import rejects a tarball containing a path-traversal entry", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "fp-evil-"));
+  const evil = path.join(base, "evil.tar.gz");
+  fs.writeFileSync(path.join(base, "payload"), "pwned");
+  // Rewrite the stored name to escape the extraction dir.
+  execFileSync("tar", [
+    "-czf", evil, "-C", base, "--transform", "s|payload|../escape.txt|", "payload",
+  ]);
+  const t = makeTarget();
+  try {
+    assert.throws(() => sp.importPackage({ src: evil, ...t, force: true }), /unsafe path/i);
+    assert.ok(!fs.existsSync(path.join(base, "escape.txt")), "nothing extracted outside the target");
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("import restores auth only when present AND restoreAuth is set", () => {
+  const t1 = makeTarget();
+  const src1 = makePackageDir({ withAuth: true });
+  try {
+    sp.importPackage({ src: src1, ...t1, force: true, restoreAuth: false });
+    assert.ok(!fs.existsSync(t1.authConfigPath), "auth NOT restored without --restore-auth");
+  } finally {
+    fs.rmSync(src1, { recursive: true, force: true });
+    fs.rmSync(t1.dir, { recursive: true, force: true });
+  }
+
+  const t2 = makeTarget();
+  const src2 = makePackageDir({ withAuth: true });
+  try {
+    sp.importPackage({ src: src2, ...t2, force: true, restoreAuth: true });
+    assert.ok(fs.existsSync(t2.authConfigPath), "auth restored with --restore-auth");
+  } finally {
+    fs.rmSync(src2, { recursive: true, force: true });
+    fs.rmSync(t2.dir, { recursive: true, force: true });
+  }
+});
+
+test("import fails loudly if the manifest names a skin absent from package and engine", () => {
+  const src = makePackageDir();
+  // Point the manifest at a skin that exists nowhere.
+  fs.writeFileSync(
+    path.join(src, "site.json"),
+    JSON.stringify({ title: "T", skin: "ghost-skin", homeMode: "feed", nav: [] })
+  );
+  const t = makeTarget();
+  try {
+    assert.throws(() => sp.importPackage({ src, ...t, force: true }), /ghost-skin/);
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("export --profile full includes auth-config.json, the custom skin, and favicon", () => {
+  const dir = makeDataDir();
+  fs.mkdirSync(path.join(dir, "skins", "gvm", "templates"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "skins", "gvm", "templates", "home.njk"), "X");
+  fs.mkdirSync(path.join(dir, "favicon"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "favicon", "favicon.ico"), "ICO");
+  const out = path.join(dir, "full.tar.gz");
+  try {
+    sp.exportPackage({
+      ...paths(dir),
+      skin: { name: "gvm", dir: path.join(dir, "skins", "gvm") },
+      faviconDir: path.join(dir, "favicon"),
+      profile: "full",
+      outFile: out,
+    });
+    const entries = listTar(out);
+    assert.ok(entries.includes("auth-config.json"), "auth included in full profile");
+    assert.ok(entries.includes("skins/gvm/templates/home.njk"), "custom skin included");
+    assert.ok(entries.includes("favicon/favicon.ico"), "favicon included");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

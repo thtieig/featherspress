@@ -20,12 +20,15 @@ content + media + secrets in a data dir **outside** the code. Nothing compiles
 
 ```
 /opt/node                     Node LTS runtime (symlink to the unpacked tarball)
-/opt/featherspress            Engine CODE only (from `git archive`)
+/opt/featherspress            Engine CODE only (a git checkout; updatable)
 /var/lib/featherspress/       DATA (treat like a database, and back it up):
     content/  posts/*.md, pages/*.md
     media/    uploaded images/attachments (served at /media/)
     site.json your site's manifest (identity, skin, nav, home mode)
+    skins/    your per-site custom skin(s), if any
+    favicon/  your per-site icons, if any
     auth-config.json          password hash + TOTP secret + recovery hashes
+    update-status.json        written by the update timer; read by the admin UI
 /etc/featherspress/featherspress.env       runtime config (paths, port, secret)
 /etc/systemd/system/featherspress.service
 ```
@@ -60,28 +63,38 @@ sudo ln -sfn /opt/node-$NODE_VER-linux-x64 /opt/node
 
 To upgrade Node later: unpack a new tarball, re-point the `/opt/node` symlink.
 
-## 3. Ship the engine code (code only)
+## 3. Ship the engine code (a git checkout)
 
-From the repo on your workstation (`git archive` omits gitignored
-content/media/node_modules/auth-config):
-
-```sh
-git archive --format=tar.gz -o /tmp/featherspress.tgz HEAD
-scp /tmp/featherspress.tgz you@your-server:/tmp/
-```
-
-On the server:
+Deploy the code as a **git clone** (this is what lets the update timer in
+"Updates" below fast-forward it). Content/media/auth are gitignored, so the
+checkout never collides with your data in `/var/lib/featherspress`.
 
 ```sh
-sudo tar -xzf /tmp/featherspress.tgz -C /opt/featherspress
-sudo chown -R featherspress:featherspress /opt/featherspress
+sudo -u featherspress git clone https://github.com/you/featherspress.git /opt/featherspress
 cd /opt/featherspress
 sudo -u featherspress env PATH=/opt/node/bin:$PATH npm ci --omit=dev
+sudo chown -R featherspress:featherspress /opt/featherspress
 ```
 
 (`npm`'s shebang is `#!/usr/bin/env node`, so it needs `/opt/node/bin` on `PATH`
 to find `node` — calling `node` directly, as elsewhere in this doc, doesn't
 have this problem since there's no shebang involved.)
+
+**Migrating an existing `git archive` install** (a code dir with no `.git`):
+clone fresh alongside it, verify, then swap — and **pin the currently-deployed
+commit first** so you don't silently jump to the tip of `main`:
+
+```sh
+DEPLOYED=<the commit sha you last shipped>     # from your release notes / CI
+sudo -u featherspress git clone https://github.com/you/featherspress.git /opt/featherspress.new
+cd /opt/featherspress.new
+sudo -u featherspress git reset --hard "$DEPLOYED"    # match what's live, don't leap ahead
+sudo -u featherspress env PATH=/opt/node/bin:$PATH npm ci --omit=dev
+sudo chown -R featherspress:featherspress /opt/featherspress.new
+# verify it boots (temp port), then swap and restart once:
+sudo mv /opt/featherspress /opt/featherspress.old && sudo mv /opt/featherspress.new /opt/featherspress
+sudo systemctl restart featherspress
+```
 
 ## 4. Runtime config
 
@@ -165,9 +178,50 @@ Write at `https://your-domain/admin`. Saving publishes instantly (the engine
 writes the `.md` and refreshes its in-memory list, with no build). Drafts save
 privately and preview at `/admin/preview/…`; publish when ready.
 
-**Backups:** `/var/lib/featherspress` is your data, so back it up with rsync or
-host snapshots. Posts are plain Markdown, media is plain files, there is no
-database.
+**Backups / import / export:** `/var/lib/featherspress` is your data (plain
+Markdown + files, no database). The engine ships a one-artifact backup +
+import/export toolchain — a **Site Package** (`site.json` + `content/` + `media/`
++ your skin + favicon [+ credentials]) that `export`, `import`, and `backup` all
+speak. See **[BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md)** for the full
+guide; the short version:
+
+```sh
+# one-off portable export (no credentials) — a shareable/movable Site Package:
+cd /opt/featherspress && sudo -u featherspress npm run export -- --out /tmp/site.tar.gz
+
+# scheduled off-box backups (full, incl. credentials, age-encrypted to cloud):
+sudo cp deploy/backup.env.example /etc/featherspress/backup.env   # then edit
+sudo cp deploy/featherspress-backup.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now featherspress-backup.timer
+
+# restore (or migrate a whole site) from any artifact:
+sudo -u featherspress npm run import -- /path/to/backup.tar.gz --force --restore-auth
+```
+
+The engine code itself is *not* backed up — it's recoverable from git.
+`/etc/featherspress/featherspress.env` is disposable too (losing it just forces
+everyone to re-log-in; regenerate `SESSION_SECRET`).
+
+## Updates
+
+A root systemd timer checks the git remote and writes `update-status.json` into
+the data dir; the admin UI shows an "update available" banner. By default it
+only notifies — you apply on your terms; set `AUTO_APPLY=1` for hands-off apply
+(pull → reinstall → restart → health-check → auto-rollback on failure).
+
+```sh
+sudo cp deploy/update.conf.example /etc/featherspress/update.conf   # AUTO_APPLY=0 by default
+sudo cp deploy/featherspress-update.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now featherspress-update.timer
+
+# apply an update by hand (the default, notify-only workflow):
+sudo /opt/featherspress/deploy/update.sh   # with AUTO_APPLY=1 to actually apply
+```
+
+Applying happens as root (the app can't write its own code dir or restart
+itself — by design). `AUTO_APPLY=1` trades that safety step for convenience:
+a compromised upstream commit would auto-run within a timer tick, so opt in
+per box, knowingly.
 
 ## 2FA recovery
 

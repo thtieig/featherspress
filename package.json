@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "setup": "node setup.js",
+    "export": "node tools/site-package.js export",
+    "import": "node tools/site-package.js import",
     "test": "node --test"
   },
   "license": "MIT",

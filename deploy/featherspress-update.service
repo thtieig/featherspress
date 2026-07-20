@@ -1,0 +1,11 @@
+[Unit]
+Description=Featherspress engine update check (and apply if AUTO_APPLY=1)
+OnFailure=status-email@%n.service
+
+[Service]
+Type=oneshot
+# Root: writes the code dir (on apply) and restarts the service. Whether it
+# applies or only notifies is controlled by AUTO_APPLY in update.conf.
+ExecStart=/opt/featherspress/deploy/update.sh
+Environment=FP_ENV=/etc/featherspress/featherspress.env
+Environment=UPDATE_CONF=/etc/featherspress/update.conf

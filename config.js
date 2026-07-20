@@ -67,4 +67,12 @@ const config = {
   SITE_URL: env("SITE_URL", "http://localhost:3000"),
 };
 
+// Update status file: written by the root update timer (deploy/update.sh) into
+// the data root, and READ (only) by the admin UI to show an "update available"
+// banner. Defaults beside content/ so it lives in the writable data dir.
+config.UPDATE_STATUS_FILE = env(
+  "UPDATE_STATUS_FILE",
+  path.join(config.CONTENT_DIR, "..", "update-status.json")
+);
+
 module.exports = config;

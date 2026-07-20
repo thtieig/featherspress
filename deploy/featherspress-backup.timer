@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Featherspress data backup
+
+[Timer]
+# Daily, a few minutes after midnight, with jitter; catch up if the box was off.
+OnCalendar=*-*-* 00:20:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target
