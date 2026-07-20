@@ -50,7 +50,7 @@ sudo chown -R featherspress:featherspress /var/lib/featherspress
 Pick the current LTS from <https://nodejs.org/dist/>:
 
 ```sh
-NODE_VER=v22.20.0            # check the site for the latest LTS
+NODE_VER=v24.18.0            # check the site for the latest LTS
 cd /tmp
 curl -fsSLO https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz
 sudo tar -xJf node-$NODE_VER-linux-x64.tar.xz -C /opt
@@ -76,8 +76,12 @@ On the server:
 sudo tar -xzf /tmp/featherspress.tgz -C /opt/featherspress
 sudo chown -R featherspress:featherspress /opt/featherspress
 cd /opt/featherspress
-sudo -u featherspress /opt/node/bin/npm ci --omit=dev
+sudo -u featherspress env PATH=/opt/node/bin:$PATH npm ci --omit=dev
 ```
+
+(`npm`'s shebang is `#!/usr/bin/env node`, so it needs `/opt/node/bin` on `PATH`
+to find `node` — calling `node` directly, as elsewhere in this doc, doesn't
+have this problem since there's no shebang involved.)
 
 ## 4. Runtime config
 

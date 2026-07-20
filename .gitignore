@@ -5,11 +5,12 @@
 /media/
 /site.json
 
-# Site-specific skins are customizations, not the engine. The bundled default
-# skin (skins/notepad) is tracked; site-specific skins are kept on disk but out
-# of the repo. (gvm recreates a commercial WPZOOM theme, and its CSS/fonts
-# aren't ours to redistribute.)
-/skins/gvm/
+# Site-specific skins are customizations, not the engine: a site's look travels
+# with its Site Package, not this repo. The bundled default skin (skins/notepad)
+# is tracked; anything else under skins/ is a per-site skin kept on disk but out
+# of the repo (it may also recreate a third-party theme we can't redistribute).
+/skins/*
+!/skins/notepad/
 
 # Secrets / local auth state.
 auth-config.json
