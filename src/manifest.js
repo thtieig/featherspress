@@ -19,6 +19,9 @@ const config = require("../config");
 // pinned page shown as the home). Nav is a list of { label, href, newTab? }.
 // postsPath: the URL of the full post listing (a generic archive); a real page
 // at the same slug overrides it. postsHeading: that listing's heading.
+// pinnedPage (optional): a page slug shown ABOVE the feed when homeMode is
+// "feed" (ignored in "page:<slug>" mode, which already replaces the whole
+// home). Lets a site pin a static intro above its chronological feed.
 function synthesize() {
   return {
     title: config.SITE_TITLE,

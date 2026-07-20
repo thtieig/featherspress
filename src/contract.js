@@ -7,7 +7,8 @@
 //   always      site      = { title, tagline, url, skin, homeMode, nav[] }
 //               tagCloud  = [{ name, slug, count, weight }]   weight ∈ [0,1]
 //               currentPath                                    (nav highlighting)
-//   home        recentPosts[]  (feed mode)  OR  page {title, bodyHtml}  (page mode)
+//   home        recentPosts[]  (feed mode, + optional pinned {title, slug, bodyHtml})
+//               OR  page {title, bodyHtml}  (page mode)
 //   post        { title, slug, date, tags[], bodyHtml }
 //   page        { title, slug, bodyHtml }
 //   archive     { heading, posts[] }        (tag pages and the all-posts page)
@@ -93,6 +94,12 @@ function home() {
         : { title: "", slug, bodyHtml: "" };
   } else {
     ctx.recentPosts = posts.publishedPosts().map(listItem);
+    if (site.pinnedPage) {
+      const pg = posts.pageBySlug(site.pinnedPage);
+      if (pg && pg.status !== "draft") {
+        ctx.pinned = { title: pg.title, slug: pg.slug, bodyHtml: render.render(pg) };
+      }
+    }
   }
   return skin.render("home", ctx);
 }

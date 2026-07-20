@@ -30,6 +30,7 @@ node_modules/
 # Scratch
 *.tmp
 /wp-content/
+plans/
 
 # Python bytecode
 __pycache__/
