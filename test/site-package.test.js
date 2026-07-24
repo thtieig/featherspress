@@ -338,3 +338,68 @@ test("import into an existing but EMPTY content dir does not need --force", () =
     for (const d of [srcDir, dst]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+// The skin name is read from the PACKAGE's site.json — untrusted — and used as a
+// path segment under skinsDir, where replaceDir()'s first act is a recursive
+// delete. "../media" therefore aims that rm -rf at the operator's data dir, and
+// deeper prefixes escape it entirely. Verified destructive before the guard.
+test("import rejects a manifest skin name that escapes the skins dir", () => {
+  const pkg = fs.mkdtempSync(path.join(os.tmpdir(), "fp-skinesc-"));
+  const t = makeTarget();
+  try {
+    fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, "content", "posts", "a.md"), "hi");
+    // The package supplies media/templates/ so the "is the skin present?" probe
+    // resolves through the traversal and passes.
+    fs.mkdirSync(path.join(pkg, "media", "templates"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, "media", "templates", "home.njk"), "X");
+    fs.writeFileSync(
+      path.join(pkg, "site.json"),
+      JSON.stringify({ title: "Evil", skin: "../media", homeMode: "feed", nav: [] })
+    );
+
+    fs.mkdirSync(t.mediaDir, { recursive: true });
+    fs.writeFileSync(path.join(t.mediaDir, "precious.jpg"), "MUST SURVIVE");
+
+    assert.throws(
+      () => sp.importPackage({ src: pkg, ...t, force: true }),
+      /unsafe skin/,
+      "a traversing skin name must be refused"
+    );
+    assert.ok(fs.existsSync(path.join(t.mediaDir, "precious.jpg")), "media dir not destroyed");
+
+    for (const bad of ["../../etc", "a/b", "..", ".", "/abs"]) {
+      fs.writeFileSync(
+        path.join(pkg, "site.json"),
+        JSON.stringify({ title: "E", skin: bad, homeMode: "feed", nav: [] })
+      );
+      assert.throws(() => sp.importPackage({ src: pkg, ...t, force: true }), /unsafe skin/, `rejects ${bad}`);
+    }
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+// A full artifact must never exist at the ambient umask, and tar must not follow
+// a symlink planted at a predictable output path.
+test("export --profile full will not write through a symlink at the output path", () => {
+  const data = makeDataDir();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-symout-"));
+  const victim = path.join(outDir, "victim.txt");
+  const out = path.join(outDir, "artifact.tar.gz");
+  try {
+    fs.writeFileSync(victim, "ORIGINAL");
+    fs.symlinkSync(victim, out);
+    sp.exportPackage({ ...paths(data), profile: "full", outFile: out });
+    assert.strictEqual(fs.readFileSync(victim, "utf8"), "ORIGINAL", "symlink target untouched");
+    assert.ok(!fs.lstatSync(out).isSymbolicLink(), "symlink replaced by a real file");
+    assert.strictEqual(fs.statSync(out).mode & 0o777, 0o600, "artifact is 0600");
+    // Re-exporting to the same path must still work.
+    sp.exportPackage({ ...paths(data), profile: "full", outFile: out });
+    assert.strictEqual(fs.statSync(out).mode & 0o777, 0o600, "re-export still 0600");
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});

@@ -197,9 +197,30 @@ are pruned automatically.
 
 ## Failure notifications
 
-The systemd units declare `OnFailure=status-email@%n.service` — a silent backup
-failure means no backup when you need one. Point that at your own notifier
-(email/ntfy/…), or replace it with whatever you already use for systemd alerts.
+**You have none until you set one up.** Both units ship with
+`OnFailure=status-email@%n.service` **commented out**, deliberately: systemd
+silently ignores an `OnFailure=` naming a unit that is not installed (it logs
+`Failed to enqueue OnFailure= job, ignoring`), which is worse than nothing —
+the config reads as though failures are covered when they are not.
+
+A silent backup failure means no backup on the day you need one, so wire this
+up: uncomment the line in `deploy/featherspress-backup.service` (and
+`…-update.service`), point it at your own notifier — email, ntfy, whatever you
+already use for systemd alerts — and then **prove it fires** by forcing a
+failure:
+
+```sh
+sudo RCLONE_REMOTE=nosuchremote: systemctl start featherspress-backup.service
+systemctl is-failed featherspress-backup.service     # expect: failed
+```
+
+Until then, check on it by hand:
+
+```sh
+systemctl is-failed featherspress-backup.service
+systemctl list-timers featherspress-backup.timer
+journalctl -u featherspress-backup.service --since -7d | grep -iE 'refus|error'
+```
 
 ## If your media ever gets large
 

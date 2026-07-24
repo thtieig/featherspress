@@ -51,11 +51,20 @@ function exportPackage(opts) {
       fs.copyFileSync(authConfigPath, path.join(stage, "auth-config.json"));
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
-    execFileSync("tar", ["-czf", outFile, "-C", stage, "."]);
     // A "full" artifact carries the password hash and the TOTP secret in
-    // cleartext. tar creates the file with the ambient umask (0644 on a stock
-    // box), which in a shared dir like /tmp means any local user can read your
-    // credentials out of it. Lock it down to the owner.
+    // cleartext, so it must never exist at the ambient umask (0644) even briefly,
+    // and tar must not be allowed to follow a symlink planted at the output path.
+    // Create it ourselves first: O_EXCL fails on an existing name (symlink or
+    // not), and the 0600 survives because tar then truncates a file that is
+    // already there rather than creating one.
+    if (profile === "full") {
+      // Unlink first so re-exporting to the same path still works — on a symlink
+      // this removes the LINK, not its target, so the O_EXCL create below lands
+      // on a real file we own.
+      fs.rmSync(outFile, { force: true });
+      fs.closeSync(fs.openSync(outFile, "wx", 0o600));
+    }
+    execFileSync("tar", ["-czf", outFile, "-C", stage, "."]);
     if (profile === "full") fs.chmodSync(outFile, 0o600);
     return outFile;
   } finally {
@@ -162,6 +171,26 @@ function importPackage(opts) {
     if (!fs.existsSync(path.join(dir, "content"))) throw new Error("package missing content/");
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, "site.json"), "utf8"));
     const skinName = manifest.skin;
+    // The skin name comes from the PACKAGE's site.json — untrusted input — and is
+    // used below as a path segment under skinsDir, where replaceDir()'s first act
+    // is a recursive delete. A name like "../media" therefore aims that delete at
+    // whatever the operator's data dir holds, and deeper prefixes escape the data
+    // dir entirely. It must be one plain directory name, nothing else.
+    if (skinName !== undefined && skinName !== null && skinName !== "") {
+      if (
+        typeof skinName !== "string" ||
+        skinName.includes("/") ||
+        skinName.includes("\\") ||
+        skinName === "." ||
+        skinName === ".." ||
+        path.basename(skinName) !== skinName
+      ) {
+        throw new Error(
+          `package manifest names an unsafe skin "${skinName}": ` +
+            `a skin must be a single directory name, with no path separators`
+        );
+      }
+    }
     if (skinName) {
       const inPkg = fs.existsSync(path.join(dir, "skins", skinName, "templates"));
       const inBundled =
@@ -170,6 +199,25 @@ function importPackage(opts) {
         throw new Error(
           `package manifest names skin "${skinName}" but it is neither in the package nor bundled with the engine`
         );
+      }
+    }
+
+    // Everything this package will need a destination for must be known BEFORE
+    // the first replaceDir: a missing path discovered later throws with content
+    // and media already gone, leaving a half-restored data dir and no rollback.
+    const required = [
+      ["contentDir", contentDir],
+      ["mediaDir", mediaDir],
+      ["manifestPath", manifestPath],
+    ];
+    if (skinName && fs.existsSync(path.join(dir, "skins", skinName))) required.push(["skinsDir", skinsDir]);
+    if (fs.existsSync(path.join(dir, "favicon"))) required.push(["faviconDir", faviconDir]);
+    if (restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
+      required.push(["authConfigPath", authConfigPath]);
+    }
+    for (const [name, value] of required) {
+      if (typeof value !== "string" || value === "") {
+        throw new Error(`cannot import: this package needs a ${name}, but none was configured`);
       }
     }
 
@@ -237,16 +285,16 @@ function resolvePackagePaths(config, manifest) {
     skin = { name: skinName, dir: path.join(skinsDir, skinName) };
   }
 
-  // The PER-SITE favicon dir. config.FAVICON_DIR points at the engine's bundled
-  // placeholders unless the operator overrode it, and those are engine code:
-  // never an import target, never worth packing. So when it is the default,
-  // resolve the per-site location beside content/, as skins and site.json do.
-  // Export still packs this only if it exists on disk, so a site that never set
-  // its own icons exports nothing here.
+  // The PER-SITE favicon dir — the same path config.SITE_FAVICON_DIR gives the
+  // runtime, so what import writes is what server.js serves. An explicitly-set
+  // FAVICON_DIR still wins (it is also first in config.FAVICON_ROOTS). The
+  // engine's bundled placeholders are code: never an import target, never packed.
+  // Export packs this only if it exists, so a site with no icons of its own
+  // exports nothing here.
   const faviconDir =
     config.FAVICON_DIR && path.resolve(config.FAVICON_DIR) !== path.resolve(defaultFavicon)
       ? config.FAVICON_DIR
-      : path.join(config.CONTENT_DIR, "..", "favicon");
+      : config.SITE_FAVICON_DIR || path.join(config.CONTENT_DIR, "..", "favicon");
 
   return {
     contentDir: config.CONTENT_DIR,
@@ -275,13 +323,18 @@ function reownAfterRootRestore(paths) {
     return null;
   }
   if (owner.uid === 0 && owner.gid === 0) return null; // data root is root's own; nothing to hand back
+  // The whole per-site skins dir, not `paths.skin`: that was resolved BEFORE the
+  // import, so on a fresh box (no site.json yet) it is null, and the custom skin
+  // the import just wrote — along with the skins dir it created — would stay
+  // root-owned. The site would still render, which is exactly the silent
+  // half-broken state this function exists to prevent.
   const targets = [
     paths.contentDir,
     paths.mediaDir,
     paths.manifestPath,
     paths.faviconDir,
     paths.authConfigPath,
-    paths.skin && paths.skin.name ? path.join(paths.skinsDir, paths.skin.name) : null,
+    paths.skinsDir,
   ].filter((p) => p && fs.existsSync(p));
 
   // lchown, not chown, and never recurse through a link: chown() FOLLOWS symlinks,
@@ -301,6 +354,15 @@ function reownAfterRootRestore(paths) {
   };
   for (const t of targets) chownTree(t);
   return { uid: owner.uid, gid: owner.gid, count: targets.length };
+}
+
+// A private 0700 directory for credential-bearing artifacts. The pre-restore
+// snapshot used to go straight into /tmp under a fully predictable name
+// (featherspress-prerestore-<UTC timestamp>.tar.gz) in a world-WRITABLE dir, so
+// a local user could pre-create that path as a symlink and have tar write the
+// archive — and the later chmod — through it.
+function safeTmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "featherspress-prerestore-"));
 }
 
 function timestamp() {
@@ -396,8 +458,20 @@ function main(argv = process.argv.slice(2)) {
     );
     // Pre-restore safety backup of the CURRENT data (full, so nothing is lost),
     // written outside the data dir so a failed restore can't evict it.
-    if (fs.existsSync(paths.contentDir) && fs.readdirSync(paths.contentDir).length) {
-      const safety = path.join(os.tmpdir(), `featherspress-prerestore-${timestamp()}.tar.gz`);
+    //
+    // Only once we know the import will actually be attempted: this snapshot is a
+    // "full" export (password hash + cleartext TOTP secret), and an import that is
+    // about to be refused for want of --force should not leave one lying around
+    // for an operator who reasonably assumes nothing happened.
+    const hasExistingData =
+      fs.existsSync(paths.contentDir) && fs.readdirSync(paths.contentDir).length > 0;
+    if (hasExistingData && !flags.force) {
+      throw new Error(
+        `refusing to overwrite existing content at ${paths.contentDir} without --force`
+      );
+    }
+    if (hasExistingData) {
+      const safety = path.join(safeTmpDir(), `featherspress-prerestore-${timestamp()}.tar.gz`);
       exportPackage({ ...paths, profile: "full", outFile: safety });
       process.stderr.write(`pre-restore backup of current data → ${safety}\n`);
     }

@@ -77,6 +77,25 @@ config.SITE_SKINS_DIR = env(
   PKG ? path.join(PKG, "skins") : path.join(config.CONTENT_DIR, "..", "skins")
 );
 
+// The PER-SITE favicon dir, resolved exactly like SITE_SKINS_DIR and for the
+// same reason: `import` writes a package's favicon/ beside content/, so the
+// runtime has to look there or a restored site silently serves the engine's
+// placeholder icons.
+config.SITE_FAVICON_DIR = env(
+  "SITE_FAVICON_DIR",
+  PKG ? path.join(PKG, "favicon") : path.join(config.CONTENT_DIR, "..", "favicon")
+);
+
+// Ordered favicon roots, first hit wins — "custom takes priority, default stays",
+// as with skins. An explicitly-set FAVICON_DIR wins outright; then the per-site
+// dir; then the engine's bundled placeholders.
+const BUNDLED_FAVICON = path.join(__dirname, "public", "favicon");
+config.FAVICON_ROOTS = [];
+if (path.resolve(config.FAVICON_DIR) !== path.resolve(BUNDLED_FAVICON)) {
+  config.FAVICON_ROOTS.push(config.FAVICON_DIR);
+}
+config.FAVICON_ROOTS.push(config.SITE_FAVICON_DIR, BUNDLED_FAVICON);
+
 // Update status file: written by the root update timer (deploy/update.sh) into
 // the data root, and READ (only) by the admin UI to show an "update available"
 // banner. Defaults beside content/ so it lives in the writable data dir.

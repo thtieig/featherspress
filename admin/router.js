@@ -50,8 +50,11 @@ const loginLimiter = rateLimit({
 function writeAuthConfigAtomic(data) {
   const tmpPath = AUTH_CONFIG_PATH + ".tmp";
   // 0600 on the temp file, so the rename can never publish a world-readable
-  // copy of the TOTP secret even for an instant.
+  // copy of the TOTP secret even for an instant. writeFileSync's mode applies
+  // only when it CREATES the file, so a 0644 leftover from an earlier crash
+  // would otherwise keep its mode and be renamed into place — chmod explicitly.
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.chmodSync(tmpPath, 0o600);
   fs.renameSync(tmpPath, AUTH_CONFIG_PATH);
 }
 

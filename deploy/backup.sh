@@ -69,11 +69,25 @@ fi
 case "$DEST_TYPE" in
   local)
     : "${LOCAL_DIR:?set LOCAL_DIR for DEST_TYPE=local}"
-    mkdir -p "$LOCAL_DIR"
     # Every artifact here is a "full" export: password hash + TOTP secret. When
-    # no AGE_RECIPIENT is set it is PLAINTEXT, and the default 0755/0644 let any
-    # local account read the credentials straight out of it. Owner-only.
-    chmod 0700 "$LOCAL_DIR"
+    # no AGE_RECIPIENT is set it is PLAINTEXT, so the destination must not be
+    # world-readable. Tighten a directory we create ourselves; if one already
+    # exists with wider permissions, say so rather than silently re-permissioning
+    # a path the operator may share with other jobs.
+    if [ -d "$LOCAL_DIR" ]; then
+      MODE="$(stat -c %a "$LOCAL_DIR")"
+      case "$MODE" in
+        700|750|*00) : ;;
+        *)
+          echo "[backup] warning: $LOCAL_DIR is mode $MODE — readable beyond its owner." >&2
+          echo "[backup]          Backups contain your password hash and TOTP secret." >&2
+          echo "[backup]          Run: chmod 700 $LOCAL_DIR   (or set AGE_RECIPIENT to encrypt)" >&2
+          ;;
+      esac
+    else
+      mkdir -p "$LOCAL_DIR"
+      chmod 0700 "$LOCAL_DIR"
+    fi
     # Sweep any truncated leftovers from a run that died mid-copy (see below).
     rm -f "$LOCAL_DIR"/.featherspress-full-*.partial
     # Copy to a temp name in the SAME dir, then rename. A plain `cp` to the final

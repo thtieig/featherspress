@@ -4,6 +4,7 @@
 // added in Task 5) from one shared in-memory post list. Render on request,
 // no build step, no cache.
 
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const config = require("./config");
@@ -44,7 +45,12 @@ const ICONS = {
 };
 for (const [route, file] of Object.entries(ICONS)) {
   app.get(route, (req, res) => {
-    res.sendFile(path.join(config.FAVICON_DIR, file), (err) => {
+    // First root that actually has this icon: a per-site favicon/ (what `import`
+    // restores) beats the engine's bundled placeholders, and an explicit
+    // FAVICON_DIR beats both. See config.FAVICON_ROOTS.
+    const root = config.FAVICON_ROOTS.find((r) => fs.existsSync(path.join(r, file)));
+    if (!root) return res.status(404).end();
+    res.sendFile(path.join(root, file), (err) => {
       if (err) res.status(404).end();
     });
   });
