@@ -202,6 +202,44 @@ function resolvePackagePaths(config, manifest) {
   };
 }
 
+// Restoring as root leaves root-owned files in the data dir. The site still
+// RENDERS (reads work), so nothing looks wrong — but the unprivileged service
+// can no longer publish a post or accept an upload, and you find out later.
+// When running as root, hand the restored tree back to whoever owns the data
+// root, which is the app user on a standard install.
+function reownAfterRootRestore(paths) {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return null;
+  const dataRoot = path.dirname(path.resolve(paths.contentDir));
+  let owner;
+  try {
+    owner = fs.statSync(dataRoot);
+  } catch {
+    return null;
+  }
+  if (owner.uid === 0 && owner.gid === 0) return null; // data root is root's own; nothing to hand back
+  const targets = [
+    paths.contentDir,
+    paths.mediaDir,
+    paths.manifestPath,
+    paths.faviconDir,
+    paths.authConfigPath,
+    paths.skin && paths.skin.name ? path.join(paths.skinsDir, paths.skin.name) : null,
+  ].filter((p) => p && fs.existsSync(p));
+
+  const chownTree = (p) => {
+    fs.chownSync(p, owner.uid, owner.gid);
+    let st;
+    try {
+      st = fs.statSync(p);
+    } catch {
+      return;
+    }
+    if (st.isDirectory()) for (const e of fs.readdirSync(p)) chownTree(path.join(p, e));
+  };
+  for (const t of targets) chownTree(t);
+  return { uid: owner.uid, gid: owner.gid, count: targets.length };
+}
+
 function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "").replace(/-/g, "").replace("T", "-").slice(0, 15);
 }
@@ -301,6 +339,10 @@ function main(argv = process.argv.slice(2)) {
       process.stderr.write(`pre-restore backup of current data → ${safety}\n`);
     }
     importPackage({ src, ...paths, force: !!flags.force, restoreAuth: !!flags.restoreAuth });
+    const reowned = reownAfterRootRestore(paths);
+    if (reowned) {
+      process.stderr.write(`restored as root — handed the data back to uid ${reowned.uid}:${reowned.gid}\n`);
+    }
     process.stderr.write(`imported package from ${src}\n`);
     return;
   }
