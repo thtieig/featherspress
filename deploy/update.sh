@@ -41,7 +41,12 @@ cd "$ENGINE_DIR"
 REPO_OWNER="$(stat -c %U "$ENGINE_DIR")"
 run_as_owner() {
   if [ "$(id -u)" = "0" ] && [ "$REPO_OWNER" != "root" ]; then
-    sudo -u "$REPO_OWNER" --preserve-env=PATH "$@"
+    # `env PATH=…` rather than relying on --preserve-env=PATH alone: sudoers
+    # `secure_path` (set by default on Debian) replaces PATH, and while root's
+    # sudo does honour --preserve-env here, setting it explicitly inside the
+    # target command removes the dependency on that. Without node's dir on PATH,
+    # npm's `#!/usr/bin/env node` shebang cannot start.
+    sudo -u "$REPO_OWNER" env PATH="$PATH" "$@"
   else
     "$@"
   fi
