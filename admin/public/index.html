@@ -185,6 +185,7 @@
   <div class="tab" data-tab="edit">Edit existing</div>
   <div class="tab" data-tab="media">Media</div>
   <div class="tab" data-tab="tags">Tags</div>
+  <div class="tab" data-tab="backups">Backups</div>
 </div>
 
 <main>
@@ -261,6 +262,60 @@
       <div class="stat"><b id="tag-dupes">–</b><span>likely near-duplicate groups</span></div>
     </div>
     <div id="dupeList"></div>
+  </section>
+
+  <!-- BACKUPS -->
+  <section id="view-backups" hidden>
+    <div id="bk-status" class="sub" style="margin-bottom:16px;">Loading backup status…</div>
+
+    <div id="bk-form" hidden>
+      <label>Destination</label>
+      <div style="margin:4px 0 14px;">
+        <label style="font-weight:400;"><input type="radio" name="bk-dest" value="local"> Local (this server)</label>
+        <label style="font-weight:400; margin-left:18px;"><input type="radio" name="bk-dest" value="rclone"> Off-box (rclone)</label>
+      </div>
+
+      <div id="bk-local-row" style="margin-bottom:14px;">
+        <label>Local directory <span class="hint">under /var/backups</span></label>
+        <input type="text" id="bk-localdir" value="/var/backups/featherspress">
+      </div>
+
+      <div id="bk-rclone-row" hidden style="margin-bottom:14px;">
+        <label>Remote</label>
+        <select id="bk-remote"></select>
+        <label style="margin-top:8px;">Path in remote</label>
+        <input type="text" id="bk-remotepath" placeholder="featherspress">
+      </div>
+
+      <div id="bk-rclone-note" hidden class="hint" style="margin-bottom:14px;"></div>
+      <div id="bk-encrypt-note" hidden class="hint" style="margin-bottom:14px;"></div>
+
+      <label>Keep last</label>
+      <div style="margin:4px 0 14px;"><input type="number" id="bk-keeplast" min="1" max="365" value="14" style="width:90px;"> backups</div>
+
+      <label>Schedule</label>
+      <div style="margin:4px 0 18px;">
+        <select id="bk-preset">
+          <option value="hourly">Hourly</option>
+          <option value="daily" selected>Daily</option>
+          <option value="twice-daily">Twice daily</option>
+          <option value="weekly">Weekly</option>
+        </select>
+        <span id="bk-time-wrap">at <input type="time" id="bk-time" value="00:24"></span>
+        <span id="bk-weekday-wrap" hidden>on
+          <select id="bk-weekday">
+            <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option>
+            <option>Fri</option><option>Sat</option><option>Sun</option>
+          </select>
+        </span>
+      </div>
+
+      <div class="actions">
+        <button id="bk-save">Save changes</button>
+        <button class="secondary" id="bk-run">Back up now</button>
+      </div>
+      <div id="bk-msg" style="margin-top:12px;"></div>
+    </div>
   </section>
 </main>
 
@@ -405,6 +460,7 @@
     el('view-edit-list').hidden = name !== 'edit';
     el('view-media').hidden = name !== 'media';
     el('view-tags').hidden = name !== 'tags';
+    el('view-backups').hidden = name !== 'backups';
   }
 
   document.querySelectorAll('.tab').forEach(function (t) {
@@ -414,6 +470,7 @@
       if (t.dataset.tab === 'edit') loadPostList();
       if (t.dataset.tab === 'media') loadMedia();
       if (t.dataset.tab === 'tags') loadTagAudit();
+      if (t.dataset.tab === 'backups') loadBackups();
     });
   });
 
@@ -919,6 +976,140 @@
         }).catch(function (e) { close(); el('media-toolbar').textContent = 'Delete request failed: ' + e.message; });
     });
   }
+
+  // ---- Backups panel ------------------------------------------------------
+  // Reads root-written backup-status.json; writes a request the root agent
+  // applies. The app itself never touches systemd or /etc.
+  var bkLastStatus = null;
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+
+  function renderBackupStatus(s) {
+    bkLastStatus = s;
+    if (!s || s.configured === false) {
+      el('bk-status').textContent = 'Backups are not configured on this server yet.';
+      el('bk-form').hidden = true;
+      return;
+    }
+    el('bk-form').hidden = false;
+    var parts = [];
+    if (s.lastRun) parts.push((s.lastRun.ok ? '✓' : '✗') + ' last run ' + fmtTime(s.lastRun.at) + (s.lastRun.ok ? '' : ' — ' + (s.lastRun.error || 'failed')));
+    else parts.push('no run yet');
+    if (s.nextRun) parts.push('next ' + fmtTime(s.nextRun));
+    parts.push(s.artifactCount + ' kept');
+    parts.push(s.encrypted ? 'encrypted (age)' : 'NOT encrypted');
+    if (s.lastRequestOk === false && s.lastRequestError) parts.push('· last change rejected: ' + s.lastRequestError);
+    el('bk-status').textContent = parts.join(' · ');
+
+    // Populate the form from the effective config (only when not mid-edit).
+    var c = s.config || {};
+    var dest = c.destType || 'local';
+    document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.checked = r.value === dest; });
+    if (c.localDir) el('bk-localdir').value = c.localDir;
+    if (typeof c.keepLast === 'number') el('bk-keeplast').value = c.keepLast;
+
+    // Off-box availability + encryption progressive disclosure.
+    var remotes = s.availableRemotes || [];
+    var sel = el('bk-remote');
+    sel.innerHTML = '';
+    remotes.forEach(function (name) { var o = document.createElement('option'); o.value = name; o.textContent = name; sel.appendChild(o); });
+    if (c.remote) sel.value = c.remote;
+    if (c.remotePath) el('bk-remotepath').value = c.remotePath;
+
+    var offboxRadio = document.querySelector('input[name=bk-dest][value=rclone]');
+    var canOffbox = remotes.length > 0 && s.encrypted;
+    offboxRadio.disabled = !canOffbox;
+    if (!s.encrypted) {
+      el('bk-encrypt-note').hidden = false;
+      el('bk-encrypt-note').textContent = 'Off-box backups must be encrypted. Set an age key on the server (age-keygen; add AGE_RECIPIENT to /etc/featherspress/backup.env), then it unlocks here.';
+    } else { el('bk-encrypt-note').hidden = true; }
+    if (remotes.length === 0) {
+      el('bk-rclone-note').hidden = false;
+      el('bk-rclone-note').textContent = 'To enable off-box backups, run `rclone config` as root on the server — configured remotes appear here automatically.';
+    } else { el('bk-rclone-note').hidden = true; }
+    syncBackupDestRows();
+    syncScheduleRows();
+  }
+
+  function syncBackupDestRows() {
+    var dest = (document.querySelector('input[name=bk-dest]:checked') || {}).value || 'local';
+    el('bk-local-row').hidden = dest !== 'local';
+    el('bk-rclone-row').hidden = dest !== 'rclone';
+  }
+  function syncScheduleRows() {
+    var p = el('bk-preset').value;
+    el('bk-time-wrap').hidden = p === 'hourly';
+    el('bk-weekday-wrap').hidden = p !== 'weekly';
+  }
+
+  function loadBackups() {
+    el('bk-msg').textContent = '';
+    fetch('/admin/api/backup-status').then(function (r) { return r.json(); })
+      .then(renderBackupStatus)
+      .catch(function () { el('bk-status').textContent = 'Could not load backup status.'; });
+  }
+
+  // Poll until the agent records our requestId (applied or rejected), then render.
+  function pollBackupApplied(requestId, done) {
+    var tries = 0;
+    (function tick() {
+      tries++;
+      fetch('/admin/api/backup-status').then(function (r) { return r.json(); }).then(function (s) {
+        if (s && s.appliedRequestId >= requestId) { renderBackupStatus(s); done(s.lastRequestOk === false ? (s.lastRequestError || 'rejected') : null); return; }
+        if (tries > 30) { done('timed out waiting for the server agent'); return; }
+        setTimeout(tick, 1000);
+      }).catch(function () { if (tries > 30) done('status unreadable'); else setTimeout(tick, 1000); });
+    })();
+  }
+
+  function currentBackupRequest() {
+    var dest = (document.querySelector('input[name=bk-dest]:checked') || {}).value || 'local';
+    var destination = dest === 'rclone'
+      ? { type: 'rclone', remote: el('bk-remote').value, remotePath: el('bk-remotepath').value.trim() }
+      : { type: 'local', localDir: el('bk-localdir').value.trim() };
+    var preset = el('bk-preset').value;
+    var schedule = { preset: preset, timeOfDay: el('bk-time').value || '00:24' };
+    if (preset === 'weekly') schedule.weekday = el('bk-weekday').value;
+    return { destination: destination, keepLast: parseInt(el('bk-keeplast').value, 10), schedule: schedule };
+  }
+
+  document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.addEventListener('change', syncBackupDestRows); });
+  el('bk-preset') && el('bk-preset').addEventListener('change', syncScheduleRows);
+
+  el('bk-save') && el('bk-save').addEventListener('click', function () {
+    el('bk-save').disabled = true; el('bk-msg').textContent = 'Saving…';
+    fetch('/admin/api/backup-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentBackupRequest()) })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        pollBackupApplied(res.requestId, function (err) {
+          el('bk-save').disabled = false;
+          el('bk-msg').textContent = err ? ('Not applied: ' + err) : 'Saved and applied.';
+        });
+      }).catch(function (e) { el('bk-save').disabled = false; el('bk-msg').textContent = 'Save failed: ' + e.message; });
+  });
+
+  el('bk-run') && el('bk-run').addEventListener('click', function () {
+    el('bk-run').disabled = true; el('bk-msg').textContent = 'Running a backup now…';
+    var prevAt = bkLastStatus && bkLastStatus.lastRun ? bkLastStatus.lastRun.at : null;
+    fetch('/admin/api/backup-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        var tries = 0;
+        (function wait() {
+          tries++;
+          fetch('/admin/api/backup-status').then(function (r) { return r.json(); }).then(function (s) {
+            var ranNew = s && s.lastRun && s.lastRun.at !== prevAt;
+            if (ranNew) { renderBackupStatus(s); el('bk-run').disabled = false; el('bk-msg').textContent = s.lastRun.ok ? 'Backup complete.' : ('Backup failed: ' + (s.lastRun.error || 'unknown')); return; }
+            if (tries > 60) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Backup started; still running (check the server).'; return; }
+            setTimeout(wait, 1000);
+          }).catch(function () { if (tries > 60) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Status unreadable.'; } else setTimeout(wait, 1000); });
+        })();
+      }).catch(function (e) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Run failed: ' + e.message; });
+  });
 
   // Show a banner when the root update timer reports a newer engine version.
   // Read-only: applying the update is an operator action (see docs/DEPLOY.md).
