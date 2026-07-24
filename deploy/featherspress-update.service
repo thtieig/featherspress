@@ -1,6 +1,8 @@
 [Unit]
 Description=Featherspress engine update check (and apply if AUTO_APPLY=1)
-OnFailure=status-email@%n.service
+# Commented out deliberately — see the note in featherspress-backup.service:
+# an OnFailure= naming a unit you have not installed is silently ignored.
+#OnFailure=status-email@%n.service
 
 [Service]
 Type=oneshot

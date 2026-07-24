@@ -64,7 +64,12 @@ case "$DEST_TYPE" in
   local)
     : "${LOCAL_DIR:?set LOCAL_DIR for DEST_TYPE=local}"
     mkdir -p "$LOCAL_DIR"
-    cp -f "$ARTIFACT" "$LOCAL_DIR/$BASENAME"
+    # Copy to a temp name in the SAME dir, then rename. A plain `cp` to the final
+    # name leaves a truncated file behind if the run is killed mid-copy (a full
+    # disk, a reboot, systemd timing it out) — and that stub then looks like a
+    # backup, counts against KEEP_LAST, and can push a real backup out.
+    cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
+    mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
     echo "[backup] stored $LOCAL_DIR/$BASENAME"
     # Prune: keep newest N (names sort chronologically by timestamp).
     mapfile -t OLD < <(ls -1 "$LOCAL_DIR"/featherspress-full-*.tar.gz* 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)

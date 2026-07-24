@@ -1,9 +1,20 @@
 [Unit]
 Description=Featherspress data backup (Site Package, full profile)
-# Notify on failure — a silent backup failure means no backup when you need one.
-# Point this at your own notifier unit (email/ntfy/etc.); status-email@%n is a
-# common convention. Comment it out if you have no handler yet.
-OnFailure=status-email@%n.service
+# A silent backup failure means no backup when you need one — so wire up a
+# notifier. Left COMMENTED OUT on purpose: with no such unit installed, systemd
+# just logs "Failed to enqueue OnFailure= job, ignoring: Unit
+# status-email@….service not found" and every failure passes in silence. An
+# OnFailure= pointing at nothing is worse than no line at all, because it reads
+# like failures are covered.
+#
+# Uncomment once you have a handler (email/ntfy/…), and TEST it by forcing a
+# failure: point RCLONE_REMOTE at a bad name and `systemctl start` this unit.
+#OnFailure=status-email@%n.service
+#
+# Until then, check on it yourself:
+#   systemctl is-failed featherspress-backup.service
+#   systemctl list-timers featherspress-backup.timer
+#   journalctl -u featherspress-backup.service --since -7d
 
 [Service]
 Type=oneshot
