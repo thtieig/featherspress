@@ -40,12 +40,27 @@ content + media + secrets in a data dir **outside** the code. Nothing compiles
 - A TLS certificate for your domain (e.g. Let's Encrypt / certbot).
 - No system Node needed, since you install your own under `/opt`.
 
+## 0. Packages
+
+A minimal cloud image has none of these. `git` is not optional: the update
+timer needs a real checkout, not an unpacked tarball.
+
+```sh
+sudo apt update
+sudo apt install -y git curl ca-certificates xz-utils apache2
+# only if you will use the backup timer (see BACKUP-IMPORT-EXPORT.md):
+sudo apt install -y age            # and rclone, for off-box destinations
+```
+
 ## 1. Service user + directories
 
 ```sh
 sudo useradd --system --home /var/lib/featherspress --shell /usr/sbin/nologin featherspress
 sudo mkdir -p /opt/featherspress /var/lib/featherspress/content /var/lib/featherspress/media /etc/featherspress
 sudo chown -R featherspress:featherspress /var/lib/featherspress
+# Step 3 clones into /opt/featherspress AS the featherspress user, so that dir
+# has to be writable by it — otherwise the clone dies on ".git: Permission denied".
+sudo chown featherspress:featherspress /opt/featherspress
 ```
 
 ## 2. Isolated Node runtime
@@ -103,20 +118,40 @@ sudo cp /opt/featherspress/deploy/featherspress.env.example /etc/featherspress/f
 sudo nano /etc/featherspress/featherspress.env
 #   - set a real SESSION_SECRET:  openssl rand -hex 32
 #   - confirm PORT (default 8787) matches the ProxyPass in the vhost
+#   - set SITE_URL to your real origin (http://… if you are not terminating TLS here)
 sudo chown root:featherspress /etc/featherspress/featherspress.env
 sudo chmod 640 /etc/featherspress/featherspress.env
 ```
 
+> **Quote any value containing a space** (`SITE_TITLE="My Blog"`). systemd reads
+> this file literally, but `backup.sh` and `update.sh` `source` it with a shell,
+> which would read a bare `SITE_TITLE=My Blog` as the assignment `SITE_TITLE=My`
+> followed by the command `Blog` — and abort before doing any work.
+
 ## 5. Put your content in place
 
-Your **Site Package** is the content. Either copy a package's `content/`,
-`media/`, and `site.json` into `/var/lib/featherspress/`, or point
-`SITE_PACKAGE=/path/to/package` in the env file. Coming from WordPress? Build a
-package first; see [MIGRATING-FROM-WORDPRESS.md](MIGRATING-FROM-WORDPRESS.md).
+Your **Site Package** is the content. The engine ships the tool that installs
+one — use it rather than copying directories by hand, so the package is
+validated (renderable skin, no path escapes) and your icons and custom skin land
+where the runtime looks for them:
 
 ```sh
+cd /opt/featherspress
+sudo -u featherspress env $(grep -E '^(CONTENT_DIR|MEDIA_DIR|AUTH_CONFIG|FAVICON_DIR)=' \
+  /etc/featherspress/featherspress.env | xargs) \
+  /opt/node/bin/node tools/site-package.js import /path/to/package --force
 sudo chown -R featherspress:featherspress /var/lib/featherspress
 ```
+
+`import` takes either a directory (raw converter output) or a `.tar.gz`. Coming
+from WordPress? Build a package first; see
+[MIGRATING-FROM-WORDPRESS.md](MIGRATING-FROM-WORDPRESS.md). The alternative is
+to point `SITE_PACKAGE=/path/to/package` at a package and skip the data dir
+entirely. Full details in [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
+
+If your package carries a `favicon/`, keep `FAVICON_DIR` set (step 4): `import`
+writes the icons into the data dir, but the engine only *serves* them when
+pointed there — otherwise you silently get the bundled placeholder icons.
 
 `site.json` carries the site identity (title, tagline, nav, which skin, home
 mode, `postsPath`). Set it once here; it is not edited from the admin UI.
@@ -125,12 +160,29 @@ mode, `postsPath`). Set it once here; it is not edited from the admin UI.
 
 ```sh
 cd /opt/featherspress
+sudo -i                                            # the env file is root-readable only
 set -a; . /etc/featherspress/featherspress.env; set +a
 sudo -u featherspress --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js
 ```
 
 Scan the QR with an authenticator app and **save the recovery codes** (shown
 once). Enroll a second device too if you can.
+
+`setup.js` reads the password from stdin, so an unattended build can pipe it —
+but everything you must keep (TOTP secret, recovery codes) is only ever printed
+to the terminal, so capture that output:
+
+```sh
+printf '%s\n' "$ADMIN_PASSWORD" | sudo -u featherspress \
+  --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js | tee /root/setup-output.txt
+```
+
+`auth-config.json` holds your password hash and your **TOTP secret in
+cleartext**. Check it is not group/world-readable, and tighten it if it is:
+
+```sh
+sudo chmod 600 /var/lib/featherspress/auth-config.json
+```
 
 ## 7. Start the service (still private, on 127.0.0.1)
 
@@ -146,19 +198,25 @@ It binds to `127.0.0.1:8787` only, so it is not yet reachable from the internet.
 ## 8. Verify before exposing it (via localhost)
 
 ```sh
-for p in / /posts/ /favicon.ico; do
+for p in /healthz / /posts/ /favicon.ico; do
   curl -s -o /dev/null -w "%{http_code}  $p\n" http://127.0.0.1:8787$p
 done
 curl -s "http://127.0.0.1:8787/search?q=hello" | head -c 120; echo
 ```
 
-All should be `200` (search returns JSON). Fix anything here first.
+All should be `200` (search returns JSON — `[]` is a fine answer if nothing
+matches). Also fetch one real post and one real tag page from your own content,
+not just the index pages: a missing custom skin or a bad `site.json` shows up
+there first. Fix anything here before exposing the box.
 
 ## 9. Put a reverse proxy in front (Apache example)
 
 The `deploy/apache/` vhosts are templates: replace `example.com`, point the
 cert paths at your certificate, and merge any custom directives your existing
 vhost has (logging, headers, IP rules).
+
+**Terminating TLS on this box** (the usual case) — the `:80` vhost redirects to
+`:443`, and the `-le-ssl` vhost does the proxying:
 
 ```sh
 sudo a2enmod proxy proxy_http headers rewrite
@@ -169,8 +227,22 @@ sudo apache2ctl configtest        # "Syntax OK"
 sudo systemctl reload apache2
 ```
 
-Then verify live over HTTPS: the home page, a post, `/posts/`, `/admin` (sign
-in, create a test draft, preview, publish, delete it).
+**TLS terminated in front of you** (Cloudflare, a load balancer, a tunnel), or a
+box that has no certificate yet — use the plain-HTTP vhost instead, which
+carries the same proxy and `/media` config on `:80`:
+
+```sh
+sudo a2enmod proxy proxy_http headers rewrite
+sudo cp /opt/featherspress/deploy/apache/featherspress-http.conf /etc/apache2/sites-available/
+sudo a2dissite 000-default
+sudo a2ensite featherspress-http
+sudo apache2ctl configtest && sudo systemctl reload apache2
+```
+
+Then verify live: the home page, a real post, a tag page, `/posts/`, an image
+under `/media/`, and `/admin` (sign in, create a test draft, preview, publish,
+delete it). A `Cache-Control: public, max-age=…` header on a `/media` file
+confirms Apache served it off disk instead of proxying it to Node.
 
 ## Day-to-day
 
