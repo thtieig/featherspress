@@ -104,4 +104,17 @@ config.UPDATE_STATUS_FILE = env(
   path.join(config.CONTENT_DIR, "..", "update-status.json")
 );
 
+// Backup control files, both beside content/ in the writable data dir:
+//  - REQUEST: the app WRITES a desired-config here; the root agent reads it.
+//  - STATUS:  the root agent WRITES here; the app reads it (read-only) for the
+//             Backups panel. Same split as UPDATE_STATUS_FILE.
+config.BACKUP_REQUEST_FILE = env(
+  "BACKUP_REQUEST_FILE",
+  path.join(config.CONTENT_DIR, "..", "backup-request.json")
+);
+config.BACKUP_STATUS_FILE = env(
+  "BACKUP_STATUS_FILE",
+  path.join(config.CONTENT_DIR, "..", "backup-status.json")
+);
+
 module.exports = config;

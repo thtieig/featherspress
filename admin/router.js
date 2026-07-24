@@ -149,6 +149,74 @@ router.get("/api/update-status", (req, res) => {
   }
 });
 
+// ---- backups (status read + request write; the ROOT agent applies) --------
+// The app can only WRITE a desired-config request into the data dir. A root
+// systemd unit (tools/backup-control.js) validates and applies it, then writes
+// backup-status.json, which we read here. The app never touches systemd or /etc.
+
+router.get("/api/backup-status", (req, res) => {
+  try {
+    res.json(JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8")));
+  } catch (e) {
+    if (e.code === "ENOENT") return res.json({ configured: false });
+    res.status(500).json({ error: "backup status unreadable" });
+  }
+});
+
+// Monotonic-ish request id: one past the last applied id, nudged by a random
+// offset so two quick saves can't collide on the same number before the agent
+// records progress. The agent only honours ids strictly greater than applied.
+function nextBackupRequestId() {
+  try {
+    const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+    return (s.appliedRequestId || 0) + 1 + Math.floor(Math.random() * 1000);
+  } catch {
+    return Date.now();
+  }
+}
+
+function writeBackupRequest(obj) {
+  const tmp = config.BACKUP_REQUEST_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
+  fs.renameSync(tmp, config.BACKUP_REQUEST_FILE);
+}
+
+router.post("/api/backup-config", (req, res) => {
+  const b = req.body || {};
+  const requestId = nextBackupRequestId();
+  writeBackupRequest({
+    requestId,
+    action: "apply",
+    destination: b.destination,
+    keepLast: b.keepLast,
+    schedule: b.schedule,
+  });
+  res.json({ requestId });
+});
+
+router.post("/api/backup-run", (req, res) => {
+  const requestId = nextBackupRequestId();
+  // "Back up now" keeps the current config; read it back from status so the
+  // agent re-validates the same destination rather than a blank one.
+  let cur = {};
+  try {
+    cur = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8")).config || {};
+  } catch {}
+  const destination =
+    cur.destType === "rclone"
+      ? { type: "rclone", remote: cur.remote, remotePath: cur.remotePath }
+      : { type: "local", localDir: cur.localDir || "/var/backups/featherspress" };
+  writeBackupRequest({
+    requestId,
+    action: "run-now",
+    destination,
+    keepLast: cur.keepLast || 14,
+    schedule:
+      cur.schedule && cur.schedule.preset ? cur.schedule : { preset: "daily", timeOfDay: "00:24" },
+  });
+  res.json({ requestId });
+});
+
 // ---- content helpers -----------------------------------------------------
 
 // The body is Markdown, authored by the single, authenticated site owner, and
