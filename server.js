@@ -29,7 +29,8 @@ app.set("trust proxy", 1);
 
 // ---- health --------------------------------------------------------------
 app.get("/healthz", (req, res) => {
-  res.type("text/plain").send("featherspress ok\n");
+  // DELIBERATELY BROKEN (rehearsal rollback drill)
+  res.status(500).type("text/plain").send("broken\n");
 });
 
 // ---- admin (auth-gated CRUD + media + drafts + preview) -------------------
