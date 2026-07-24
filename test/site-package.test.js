@@ -147,7 +147,7 @@ test("import refuses to overwrite existing content without force", () => {
   fs.mkdirSync(path.join(t.contentDir, "posts"), { recursive: true });
   fs.writeFileSync(path.join(t.contentDir, "posts", "existing.md"), "keep me");
   try {
-    assert.throws(() => sp.importPackage({ src, ...t, force: false }), /without force/i);
+    assert.throws(() => sp.importPackage({ src, ...t, force: false }), /refusing to overwrite existing content/i);
     assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "existing.md")), "existing content untouched");
   } finally {
     fs.rmSync(src, { recursive: true, force: true });
@@ -304,5 +304,37 @@ test("import refuses a package containing a symlink that escapes the package", (
     assert.ok(fs.existsSync(path.join(dst, "content", "posts", "a.md")), "internal link package imports");
   } finally {
     for (const d of [dir, pkg, dst]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// docs/DEPLOY.md step 1 creates an empty /var/lib/featherspress/content, so the
+// very first import on a new box must not be treated as an overwrite.
+test("import into an existing but EMPTY content dir does not need --force", () => {
+  const srcDir = makeDataDir();
+  const dst = fs.mkdtempSync(path.join(os.tmpdir(), "fp-empty-"));
+  try {
+    fs.mkdirSync(path.join(dst, "content"), { recursive: true }); // as DEPLOY.md leaves it
+    sp.importPackage({
+      src: srcDir,
+      ...paths(dst),
+      skinsDir: path.join(dst, "skins"),
+      bundledSkinsDir: path.join(__dirname, "..", "skins"),
+      // deliberately NO force
+    });
+    assert.ok(fs.existsSync(path.join(dst, "content", "posts", "hello.md")), "first import succeeded");
+
+    // With real content present it must still refuse, and name the path.
+    assert.throws(
+      () =>
+        sp.importPackage({
+          src: srcDir,
+          ...paths(dst),
+          skinsDir: path.join(dst, "skins"),
+          bundledSkinsDir: path.join(__dirname, "..", "skins"),
+        }),
+      /refusing to overwrite existing content/
+    );
+  } finally {
+    for (const d of [srcDir, dst]) fs.rmSync(d, { recursive: true, force: true });
   }
 });

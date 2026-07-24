@@ -173,8 +173,15 @@ function importPackage(opts) {
       }
     }
 
-    if (!force && fs.existsSync(contentDir)) {
-      throw new Error("target data dir already has content; refusing to overwrite without force");
+    // Guard against overwriting REAL content, not merely against the directory
+    // existing: docs/DEPLOY.md step 1 creates an empty content dir, so testing
+    // existence made every first-ever import fail with "already has content" —
+    // which was both obstructive and untrue.
+    if (!force && fs.existsSync(contentDir) && fs.readdirSync(contentDir).length > 0) {
+      throw new Error(
+        `refusing to overwrite existing content at ${contentDir} without --force ` +
+          `(${fs.readdirSync(contentDir).length} entries)`
+      );
     }
 
     // site.json + content + media are required sections → always replaced.

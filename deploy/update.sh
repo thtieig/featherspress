@@ -52,19 +52,27 @@ git_as fetch --quiet origin "$REPO_REF"
 CURRENT="$(git_as rev-parse HEAD)"
 AVAILABLE="$(git_as rev-parse "origin/$REPO_REF")"
 BEHIND="$(git_as rev-list --count "HEAD..origin/$REPO_REF")"
-VERSION="$("$NODE_BIN" -p "require('$ENGINE_DIR/package.json').version" 2>/dev/null || echo unknown)"
+# Re-read on every write_status: after an apply, package.json is a NEW file, and
+# reporting the pre-update version next to the post-update commit would have the
+# admin banner quietly lying about what is deployed.
+read_version() {
+  "$NODE_BIN" -p "require('$ENGINE_DIR/package.json').version" 2>/dev/null || echo unknown
+}
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 AVAILABLE_BOOL=false
 [ "$BEHIND" -gt 0 ] && AVAILABLE_BOOL=true
 
 write_status() {
   local tmp
-  tmp="$(mktemp)"
-  printf '{"available":%s,"behind":%s,"currentCommit":"%s","currentVersion":"%s","availableCommit":"%s","checkedAt":"%s"}\n' \
-    "$AVAILABLE_BOOL" "$BEHIND" "$CURRENT" "$VERSION" "$AVAILABLE" "$NOW" > "$tmp"
+  # In the status file's own directory, so the rename is atomic — a mktemp in
+  # /tmp can land on another filesystem, making `mv` a copy the admin UI could
+  # read half-written.
   mkdir -p "$(dirname "$STATUS_FILE")"
-  mv "$tmp" "$STATUS_FILE"
-  chmod 644 "$STATUS_FILE"
+  tmp="$(mktemp "$(dirname "$STATUS_FILE")/.update-status.XXXXXX")"
+  printf '{"available":%s,"behind":%s,"currentCommit":"%s","currentVersion":"%s","availableCommit":"%s","checkedAt":"%s"}\n' \
+    "$AVAILABLE_BOOL" "$BEHIND" "$CURRENT" "$(read_version)" "$AVAILABLE" "$NOW" > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$STATUS_FILE"
 }
 write_status
 echo "[update] behind=$BEHIND current=${CURRENT:0:7} available=${AVAILABLE:0:7} auto_apply=$AUTO_APPLY"
