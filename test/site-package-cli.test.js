@@ -107,6 +107,88 @@ test("CLI import into a fresh package restores the tree; a second import writes 
   }
 });
 
+// Running `npm run import` from the engine dir with no deployment env resolves
+// every path to the bundled example-site/. Because the app user owns the code
+// dir, that import SUCCEEDS: it clobbers git-tracked files and leaves the real
+// site empty while printing "imported package". It must refuse instead.
+test("CLI import refuses to write into the engine's own directory", () => {
+  const srcPkg = makePkg();
+  const out = path.join(srcPkg, "pkg.tar.gz");
+  run(["export", "--profile", "full", "--out", out], envFor(srcPkg));
+  try {
+    const res = spawnSync("node", [CLI, "import", out, "--force", "--restore-auth"], {
+      encoding: "utf8",
+      // No deployment config at all -- the 2am mistake.
+      env: {
+        ...process.env,
+        SITE_PACKAGE: "",
+        CONTENT_DIR: "",
+        MEDIA_DIR: "",
+        AUTH_CONFIG: "",
+        FAVICON_DIR: "",
+        SITE_MANIFEST: "",
+        SITE_SKINS_DIR: "",
+      },
+    });
+    assert.notStrictEqual(res.status, 0, "must exit non-zero, not report success");
+    assert.match(res.stderr, /refusing to import into the engine's own directory/);
+    assert.match(res.stderr, /--env-file/, "error names the fix");
+    // The engine's own example-site must be untouched.
+    const example = path.join(__dirname, "..", "example-site", "content", "posts", "hello-world.md");
+    assert.ok(fs.existsSync(example), "bundled example-site post still present");
+  } finally {
+    fs.rmSync(srcPkg, { recursive: true, force: true });
+  }
+});
+
+// --env-file makes the CLI resolve the same paths the systemd service uses, so a
+// restore run by hand lands where the running site actually reads from.
+test("CLI import --env-file resolves the deployment's paths", () => {
+  const srcPkg = makePkg();
+  const out = path.join(srcPkg, "pkg.tar.gz");
+  run(["export", "--profile", "full", "--out", out], envFor(srcPkg));
+
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "fp-envfile-"));
+  const envFile = path.join(data, "featherspress.env");
+  // Deliberately quoted + a value with a space, as the shipped example now is.
+  fs.writeFileSync(
+    envFile,
+    [
+      `CONTENT_DIR=${path.join(data, "content")}`,
+      `MEDIA_DIR=${path.join(data, "media")}`,
+      `AUTH_CONFIG=${path.join(data, "auth-config.json")}`,
+      `FAVICON_DIR=${path.join(data, "favicon")}`,
+      `SITE_TITLE="My Blog"`,
+      `# a comment`,
+      ``,
+    ].join("\n")
+  );
+  try {
+    const res = spawnSync("node", [CLI, "import", out, "--force", "--restore-auth", "--env-file", envFile], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        SITE_PACKAGE: "",
+        CONTENT_DIR: "",
+        MEDIA_DIR: "",
+        AUTH_CONFIG: "",
+        FAVICON_DIR: "",
+        SITE_MANIFEST: "",
+        SITE_SKINS_DIR: "",
+      },
+    });
+    assert.strictEqual(res.status, 0, res.stderr);
+    assert.ok(fs.existsSync(path.join(data, "content", "posts", "hello.md")), "content went to the env file's dir");
+    assert.ok(fs.existsSync(path.join(data, "auth-config.json")), "auth went to the env file's dir");
+    // It must also announce where it wrote, so a wrong target is visible.
+    assert.match(res.stderr, /restoring into:/);
+    assert.match(res.stderr, new RegExp(path.join(data, "content").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    fs.rmSync(srcPkg, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
 // A stock install never sets FAVICON_DIR, so it resolves to the engine's bundled
 // placeholder dir. A package that carries favicon/ must still import — and must
 // not land its icons inside the engine's (read-only, git-tracked) code dir.

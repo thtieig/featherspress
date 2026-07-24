@@ -215,17 +215,63 @@ function parseFlags(argv) {
     else if (a === "--out" || a === "-o") flags.out = argv[++i];
     else if (a === "--force" || a === "-f") flags.force = true;
     else if (a === "--restore-auth") flags.restoreAuth = true;
+    else if (a === "--env-file") flags.envFile = argv[++i];
+    else if (a === "--allow-engine-dir") flags.allowEngineDir = true;
     else positional.push(a);
   }
   return { flags, positional };
 }
 
+// Load a deployment env file (the systemd EnvironmentFile) into process.env so
+// the CLI resolves the SAME paths the service uses. Without this, running the
+// tool from the engine dir with no env silently resolves to the bundled
+// example-site — see the --env-file note in docs/BACKUP-IMPORT-EXPORT.md.
+// Already-set vars win, so an explicit `env FOO=…` still overrides the file.
+function loadEnvFile(file) {
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    let v = m[2];
+    if (v.length > 1 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) {
+      v = v.slice(1, -1);
+    }
+    // Empty counts as unset, matching config.js's env() semantics.
+    const cur = process.env[m[1]];
+    if (cur === undefined || cur === "") process.env[m[1]] = v;
+  }
+}
+
+// Refuse to write into the engine's own checkout. `import` with no env resolves
+// CONTENT_DIR to the bundled example-site/, and because the app user owns the
+// code dir the restore SUCCEEDS: it clobbers git-tracked files, writes
+// auth-config.json into the code dir, and leaves the real site empty while
+// printing "imported package". That is the worst possible failure mode for a
+// disaster restore, so make it loud instead.
+function assertNotEngineDir(contentDir, engineRoot, allow) {
+  if (allow) return;
+  const rel = path.relative(engineRoot, path.resolve(contentDir));
+  if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+    throw new Error(
+      `refusing to import into the engine's own directory:\n` +
+        `  target content dir: ${path.resolve(contentDir)}\n` +
+        `  engine dir:         ${engineRoot}\n` +
+        `This means no deployment config was loaded, so the paths fell back to the\n` +
+        `bundled example-site. Point the tool at your deployment's env file:\n` +
+        `  --env-file /etc/featherspress/featherspress.env\n` +
+        `(or pass CONTENT_DIR/MEDIA_DIR/AUTH_CONFIG/FAVICON_DIR in the environment).\n` +
+        `If you really do mean the engine dir, pass --allow-engine-dir.`
+    );
+  }
+}
+
 function main(argv = process.argv.slice(2)) {
+  const cmd = argv[0];
+  const { flags, positional } = parseFlags(argv.slice(1));
+  // Must happen BEFORE config.js is required: it reads process.env at load time.
+  if (flags.envFile) loadEnvFile(flags.envFile);
   const config = require("../config");
   const manifest = require("../src/manifest").load();
   const paths = resolvePackagePaths(config, manifest);
-  const cmd = argv[0];
-  const { flags, positional } = parseFlags(argv.slice(1));
 
   if (cmd === "export") {
     const profile = flags.profile || "site";
@@ -239,6 +285,14 @@ function main(argv = process.argv.slice(2)) {
   if (cmd === "import") {
     const src = positional[0];
     if (!src) throw new Error("usage: import <dir|tar.gz> [--force] [--restore-auth]");
+    assertNotEngineDir(paths.contentDir, path.dirname(require.resolve("../config")), flags.allowEngineDir);
+    // Say where the data is going BEFORE touching it: a restore that silently
+    // targets the wrong tree is indistinguishable from one that worked.
+    process.stderr.write(
+      `restoring into:\n  content: ${paths.contentDir}\n  media:   ${paths.mediaDir}\n` +
+        `  manifest: ${paths.manifestPath}\n  skins:   ${paths.skinsDir}\n` +
+        `  favicon: ${paths.faviconDir}\n  auth:    ${paths.authConfigPath}${flags.restoreAuth ? "" : " (not restored; pass --restore-auth)"}\n`
+    );
     // Pre-restore safety backup of the CURRENT data (full, so nothing is lost),
     // written outside the data dir so a failed restore can't evict it.
     if (fs.existsSync(paths.contentDir) && fs.readdirSync(paths.contentDir).length) {

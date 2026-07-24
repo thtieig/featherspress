@@ -35,14 +35,36 @@ There are deliberately no finer "sections" — the only meaningful split on a
 single-author blog is *with or without credentials*. The engine code is **not**
 part of the package (recover it from git), and `featherspress.env` is disposable.
 
+## Running the tool on a server
+
+Two things bite every hand-run of `export`/`import` on a box built per
+[DEPLOY.md](DEPLOY.md), so they are folded into every command below:
+
+1. **`npm` is not on `sudo`'s PATH** (Node lives under `/opt/node`), so
+   `sudo -u featherspress npm run …` fails with `sudo: npm: command not found`.
+   Call the script with the absolute node path instead.
+2. **The tool needs your deployment's config.** With no env it falls back to the
+   bundled `example-site/` inside the code dir — and since the app user owns that
+   dir, an import *succeeds* there, clobbering git-tracked files and leaving your
+   real site untouched. Pass `--env-file` so it resolves the same paths the
+   service uses. (`import` now refuses outright if it notices it is about to
+   write into the engine dir, but pass the flag and don't rely on the guard.)
+
+```sh
+FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
+ENVF="--env-file /etc/featherspress/featherspress.env"
+```
+
+`import` prints the resolved content/media/skin/favicon/auth paths before it
+touches anything — **read them** and confirm they are your data dir.
+
 ## Export
 
 ```sh
-cd /opt/featherspress
 # Always pass --out a writable path: the app user can't write the (read-only)
 # code dir, which is the default location.
-sudo -u featherspress npm run export -- --out /tmp/site.tar.gz
-sudo -u featherspress npm run export -- --profile full --out /tmp/site-full.tar.gz
+$FP export $ENVF --out /tmp/site.tar.gz
+$FP export $ENVF --profile full --out /tmp/site-full.tar.gz
 ```
 
 ## Import (also: restore, and migrate a whole site)
@@ -53,9 +75,9 @@ the data dir, takes a **pre-restore safety backup** of your current data first,
 then replaces.
 
 ```sh
-sudo -u featherspress npm run import -- /path/to/package            # refuses if data exists…
-sudo -u featherspress npm run import -- /path/to/package --force    # …unless you mean it
-sudo -u featherspress npm run import -- /path/to/backup.tar.gz --force --restore-auth
+$FP import $ENVF /path/to/package            # refuses if data exists…
+$FP import $ENVF /path/to/package --force    # …unless you mean it
+$FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
 ```
 
 - **Replace semantics:** the site is made to look like the package (stale posts
@@ -96,11 +118,40 @@ age-keygen -o key.txt          # prints the public key; KEEP key.txt OFF the box
 # put the public key in backup.env as AGE_RECIPIENT=age1...
 ```
 
-Restore an encrypted artifact:
+### Restoring an encrypted artifact — the full drill
+
+The private key is deliberately **not on the box**, so decrypt where the key is
+(your laptop), then move the plaintext tarball over. `age` is a single static
+binary; if the recovery machine doesn't have it, grab it from
+<https://github.com/FiloSottile/age/releases> — an artifact written by age 1.1
+decrypts fine with 1.2.
 
 ```sh
+# 1. on the machine that holds key.txt:
 age -d -i key.txt featherspress-full-<ts>.tar.gz.age > restore.tar.gz
-sudo -u featherspress npm run import -- restore.tar.gz --force --restore-auth
+scp restore.tar.gz root@yourbox:/tmp/
+
+# 2. on the box:
+sudo chown featherspress:featherspress /tmp/restore.tar.gz
+FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
+$FP import --env-file /etc/featherspress/featherspress.env \
+   /tmp/restore.tar.gz --force --restore-auth
+#    ^ check the "restoring into:" paths it prints before it proceeds
+
+# 3. the service caches the manifest, skin and post index at boot:
+sudo systemctl restart featherspress
+sudo rm -f /tmp/restore.tar.gz          # it contains your credentials
+```
+
+**Verify the restore, don't assume it.** A wiped site still answers `/healthz`
+with `featherspress ok` and still returns `200` on `/` (an empty blog with the
+default skin), so neither of those proves anything. Check real content:
+
+```sh
+curl -s localhost:8787/ | grep -o '<title>[^<]*</title>'   # your title, not the fallback
+curl -so /dev/null -w '%{http_code}\n' localhost:8787/<a-known-post-slug>/
+sudo ls /var/lib/featherspress/content/posts | wc -l       # the count you expect
+sudo stat -c '%a %U:%G' /var/lib/featherspress/auth-config.json   # 600 featherspress
 ```
 
 ### Retention

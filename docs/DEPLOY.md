@@ -258,16 +258,26 @@ speak. See **[BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md)** for the full
 guide; the short version:
 
 ```sh
+# On a server, call the tool by absolute path (npm is not on sudo's PATH) and
+# always pass --env-file, so it resolves YOUR data dir and not the bundled
+# example-site inside the code dir:
+FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
+ENVF="--env-file /etc/featherspress/featherspress.env"
+
 # one-off portable export (no credentials) — a shareable/movable Site Package:
-cd /opt/featherspress && sudo -u featherspress npm run export -- --out /tmp/site.tar.gz
+$FP export $ENVF --out /tmp/site.tar.gz
 
 # scheduled off-box backups (full, incl. credentials, age-encrypted to cloud):
+sudo apt install -y age
 sudo cp deploy/backup.env.example /etc/featherspress/backup.env   # then edit
 sudo cp deploy/featherspress-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now featherspress-backup.timer
+sudo systemctl start featherspress-backup.service     # run one now and check it
 
 # restore (or migrate a whole site) from any artifact:
-sudo -u featherspress npm run import -- /path/to/backup.tar.gz --force --restore-auth
+$FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
+sudo systemctl restart featherspress
 ```
 
 The engine code itself is *not* backed up — it's recoverable from git.
