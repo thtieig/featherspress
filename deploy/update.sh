@@ -25,12 +25,33 @@ REPO_REF="${REPO_REF:-main}"
 PORT="${PORT:-8787}"
 STATUS_FILE="${UPDATE_STATUS_FILE:-${CONTENT_DIR:-/var/lib/featherspress/content}/../update-status.json}"
 
+# systemd gives this unit a bare PATH, but npm's shebang is `#!/usr/bin/env node`
+# — without node's dir on PATH, `npm ci` dies with "env: 'node': No such file or
+# directory" *after* the code has already been moved forward.
+PATH="$(dirname "$NODE_BIN"):$PATH"
+export PATH
+
 cd "$ENGINE_DIR"
 
-git fetch --quiet origin "$REPO_REF"
-CURRENT="$(git rev-parse HEAD)"
-AVAILABLE="$(git rev-parse "origin/$REPO_REF")"
-BEHIND="$(git rev-list --count "HEAD..origin/$REPO_REF")"
+# The code dir is owned by the unprivileged app user, and git refuses to operate
+# on a repo owned by someone else ("detected dubious ownership"), which makes
+# every git call below fail when this runs as root from the timer. Run git AS the
+# owner instead of teaching root to trust the path: it also keeps newly written
+# objects owned correctly, so no chown -R is needed to repair them afterwards.
+REPO_OWNER="$(stat -c %U "$ENGINE_DIR")"
+run_as_owner() {
+  if [ "$(id -u)" = "0" ] && [ "$REPO_OWNER" != "root" ]; then
+    sudo -u "$REPO_OWNER" --preserve-env=PATH "$@"
+  else
+    "$@"
+  fi
+}
+git_as() { run_as_owner git -C "$ENGINE_DIR" "$@"; }
+
+git_as fetch --quiet origin "$REPO_REF"
+CURRENT="$(git_as rev-parse HEAD)"
+AVAILABLE="$(git_as rev-parse "origin/$REPO_REF")"
+BEHIND="$(git_as rev-list --count "HEAD..origin/$REPO_REF")"
 VERSION="$("$NODE_BIN" -p "require('$ENGINE_DIR/package.json').version" 2>/dev/null || echo unknown)"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 AVAILABLE_BOOL=false
@@ -52,32 +73,58 @@ echo "[update] behind=$BEHIND current=${CURRENT:0:7} available=${AVAILABLE:0:7} 
 [ "$AUTO_APPLY" != "1" ] && { echo "[update] update available — AUTO_APPLY off, leaving for the operator."; exit 0; }
 
 echo "[update] applying (rollback point: ${CURRENT:0:7})…"
-git merge --ff-only "origin/$REPO_REF"
-"$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"
+
+# Restore the code to the rollback point and get the service running on it again.
+# Used both when the new code fails its health check and when the new code never
+# got as far as installing — a half-applied update (new code, old deps) must
+# never be left behind.
+rollback() {
+  echo "[update] rolling back to ${CURRENT:0:7}" >&2
+  git_as reset --hard "$CURRENT"
+  run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || true
+  chown -R "$FP_USER:$FP_USER" "$ENGINE_DIR"
+  systemctl restart "$SERVICE"
+  AVAILABLE_BOOL=true
+  write_status
+  if healthy; then
+    echo "[update] rolled back and healthy at ${CURRENT:0:7}." >&2
+  else
+    echo "[update] ROLLBACK DID NOT RECOVER THE SERVICE — manual intervention needed." >&2
+  fi
+}
+
+# A restarted engine is healthy only if it both answers /healthz AND renders the
+# home page. /healthz alone is too weak: it returns 200 even with no content and
+# no skin at all, so it cannot tell a working deploy from a broken render.
+healthy() {
+  local i
+  for i in $(seq 1 10); do
+    if curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/healthz" 2>/dev/null &&
+       curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+git_as merge --ff-only "origin/$REPO_REF"
+if ! run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"; then
+  echo "[update] dependency install FAILED on the new commit" >&2
+  rollback
+  exit 1
+fi
 chown -R "$FP_USER:$FP_USER" "$ENGINE_DIR"
 systemctl restart "$SERVICE"
 
-# Health-check the restarted service; roll back on failure.
-ok=0
-for i in $(seq 1 10); do
-  if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then ok=1; break; fi
-  sleep 2
-done
-
-if [ "$ok" -ne 1 ]; then
-  echo "[update] health-check FAILED — rolling back to ${CURRENT:0:7}" >&2
-  git reset --hard "$CURRENT"
-  "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || true
-  chown -R "$FP_USER:$FP_USER" "$ENGINE_DIR"
-  systemctl restart "$SERVICE"
-  # Refresh status to reflect that we're back on the previous commit.
-  AVAILABLE_BOOL=true
-  write_status
+if ! healthy; then
+  echo "[update] health-check FAILED after restart" >&2
+  rollback
   exit 1
 fi
 
 # Success: we're now at the pulled commit; refresh status (behind=0).
-CURRENT="$(git rev-parse HEAD)"
+CURRENT="$(git_as rev-parse HEAD)"
 BEHIND=0
 AVAILABLE_BOOL=false
 write_status
