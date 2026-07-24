@@ -109,6 +109,30 @@ sudo systemctl start featherspress-backup.service    # run one now to test
   **SFTP over ssh**. Configure once with `rclone config`. Encryption is
   **mandatory** here.
 
+  Install rclone from the official script, not the distro package — Debian 12
+  ships 1.60, too old for some remotes and for `rclone serve s3` if you want to
+  test against a local endpoint. The installer needs an unzip tool, which a
+  minimal cloud image does not have:
+
+  ```sh
+  sudo apt install -y unzip
+  curl https://rclone.org/install.sh | sudo bash
+  rclone version          # want >= 1.65
+  ```
+
+  Remember that rclone's config belongs to the user that runs the backup — the
+  timer runs as **root**, so configure the remote as root (`sudo rclone config`)
+  or the timer will not find it.
+
+  For an **SFTP** remote, set `known_hosts_file` as well. Without it rclone
+  prints `No host key validation is being performed` and ships your backups to
+  whatever answers on that address:
+
+  ```sh
+  ssh-keyscan -H backuphost >> /root/.ssh/known_hosts
+  sudo rclone config update myremote known_hosts_file /root/.ssh/known_hosts
+  ```
+
 ### Encryption (age)
 Backups carry `auth-config.json` (your TOTP secret in cleartext + password
 hash), so any off-box copy **must** be encrypted. We use [age](https://age-encryption.org):
