@@ -316,3 +316,41 @@ test("PUT with a null title does not crash (keeps existing title)", async () => 
   const got = await (await api("GET", "/admin/api/post/post/hello-admin-world")).json();
   assert.strictEqual(got.title, "Hello Admin World");
 });
+
+// ---- backup admin API ----------------------------------------------------
+// These run after the login test above, so `cookie` is an authed session.
+
+test("backup-status: unconfigured returns configured:false", async () => {
+  const res = await api("GET", "/admin/api/backup-status");
+  assert.strictEqual(res.status, 200);
+  const j = await res.json();
+  assert.strictEqual(j.configured, false);
+});
+
+test("backup-config writes an apply request with the posted fields", async () => {
+  const res = await api("POST", "/admin/api/backup-config", {
+    destination: { type: "local", localDir: "/var/backups/featherspress" },
+    keepLast: 7,
+    schedule: { preset: "daily", timeOfDay: "01:00" },
+  });
+  const j = await res.json();
+  assert.strictEqual(res.status, 200, JSON.stringify(j));
+  assert.ok(Number.isInteger(j.requestId));
+  const reqFile = require("../config").BACKUP_REQUEST_FILE;
+  const written = JSON.parse(fs.readFileSync(reqFile, "utf8"));
+  assert.strictEqual(written.action, "apply");
+  assert.strictEqual(written.keepLast, 7);
+  assert.strictEqual(written.requestId, j.requestId);
+});
+
+test("backup-run writes a run-now request", async () => {
+  const res = await api("POST", "/admin/api/backup-run", {});
+  assert.strictEqual(res.status, 200);
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.strictEqual(written.action, "run-now");
+});
+
+test("backup endpoints require auth", async () => {
+  const res = await fetch(base + "/admin/api/backup-status");
+  assert.strictEqual(res.status, 401);
+});
