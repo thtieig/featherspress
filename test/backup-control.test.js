@@ -1,0 +1,197 @@
+"use strict";
+
+// The root backup-control agent's PURE logic: request validation and OnCalendar
+// building. The imperative IO (apply to backup.env, systemctl, O_NOFOLLOW read)
+// is exercised end-to-end on the test VPS; here we pin the security-critical
+// validation precisely.
+
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const bc = require("../tools/backup-control");
+
+const CTX = { availableRemotes: ["mys3", "bbz"], ageRecipientSet: true, appliedRequestId: 3 };
+const base = {
+  requestId: 4,
+  action: "apply",
+  destination: { type: "local", localDir: "/var/backups/featherspress" },
+  keepLast: 14,
+  schedule: { preset: "daily", timeOfDay: "00:24", weekday: null },
+};
+
+test("accepts a well-formed local request", () => {
+  const r = bc.validateRequest(base, CTX);
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.config.destType, "local");
+  assert.strictEqual(r.config.keepLast, 14);
+});
+
+test("rejects a stale requestId", () => {
+  assert.strictEqual(bc.validateRequest({ ...base, requestId: 3 }, CTX).ok, false);
+});
+
+test("rejects localDir outside /var/backups", () => {
+  const r = bc.validateRequest({ ...base, destination: { type: "local", localDir: "/etc/cron.d" } }, CTX);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /localDir/);
+});
+
+test("rejects localDir traversal", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, destination: { type: "local", localDir: "/var/backups/../etc" } }, CTX).ok,
+    false
+  );
+});
+
+test("rejects an unknown rclone remote", () => {
+  const r = bc.validateRequest({ ...base, destination: { type: "rclone", remote: "evil", remotePath: "b" } }, CTX);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /remote/);
+});
+
+test("accepts a known rclone remote", () => {
+  const r = bc.validateRequest({ ...base, destination: { type: "rclone", remote: "mys3", remotePath: "fp" } }, CTX);
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.config.remote, "mys3");
+  assert.strictEqual(r.config.remotePath, "fp");
+});
+
+test("rejects rclone when no age recipient set", () => {
+  const r = bc.validateRequest(
+    { ...base, destination: { type: "rclone", remote: "mys3", remotePath: "fp" } },
+    { ...CTX, ageRecipientSet: false }
+  );
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /encrypt/i);
+});
+
+test("rejects remotePath traversal", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, destination: { type: "rclone", remote: "mys3", remotePath: "../x" } }, CTX).ok,
+    false
+  );
+});
+
+test("rejects an absolute remotePath", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, destination: { type: "rclone", remote: "mys3", remotePath: "/x" } }, CTX).ok,
+    false
+  );
+});
+
+test("rejects keepLast out of range or non-integer", () => {
+  assert.strictEqual(bc.validateRequest({ ...base, keepLast: 0 }, CTX).ok, false);
+  assert.strictEqual(bc.validateRequest({ ...base, keepLast: 999 }, CTX).ok, false);
+  assert.strictEqual(bc.validateRequest({ ...base, keepLast: 2.5 }, CTX).ok, false);
+});
+
+test("rejects unknown schedule preset", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, schedule: { preset: "yearly", timeOfDay: "00:00" } }, CTX).ok,
+    false
+  );
+});
+
+test("rejects bad timeOfDay", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, schedule: { preset: "daily", timeOfDay: "24:99" } }, CTX).ok,
+    false
+  );
+});
+
+test("weekly requires a weekday", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, schedule: { preset: "weekly", timeOfDay: "03:00", weekday: null } }, CTX).ok,
+    false
+  );
+  assert.ok(
+    bc.validateRequest({ ...base, schedule: { preset: "weekly", timeOfDay: "03:00", weekday: "Sun" } }, CTX).ok
+  );
+});
+
+test("buildOnCalendar maps presets", () => {
+  assert.strictEqual(bc.buildOnCalendar({ preset: "daily", timeOfDay: "00:24" }), "*-*-* 00:24:00");
+  assert.strictEqual(bc.buildOnCalendar({ preset: "hourly" }), "*-*-* *:00:00");
+  assert.strictEqual(bc.buildOnCalendar({ preset: "twice-daily", timeOfDay: "06:30" }), "*-*-* 06,18:30:00");
+  assert.strictEqual(bc.buildOnCalendar({ preset: "weekly", timeOfDay: "03:00", weekday: "Sun" }), "Sun *-*-* 03:00:00");
+});
+
+test("action must be apply or run-now", () => {
+  assert.strictEqual(bc.validateRequest({ ...base, action: "rm" }, CTX).ok, false);
+});
+
+// ---- Task 2: status assembler --------------------------------------------
+
+test("buildStatus produces the documented shape with no secrets", () => {
+  const s = bc.buildStatus({
+    appliedRequestId: 7,
+    lastRequestOk: true,
+    lastRequestError: null,
+    config: {
+      destType: "local",
+      localDir: "/var/backups/featherspress",
+      remote: null,
+      remotePath: null,
+      keepLast: 14,
+      schedule: { preset: "daily", timeOfDay: "00:24", weekday: null },
+    },
+    encrypted: true,
+    availableRemotes: ["mys3"],
+    lastRun: { at: "t", ok: true, error: null, artifactBytes: 5 },
+    nextRun: "2026-07-25T00:24:00Z",
+    artifactCount: 3,
+    writtenAt: "now",
+  });
+  assert.strictEqual(s.schemaVersion, 1);
+  assert.strictEqual(s.appliedRequestId, 7);
+  assert.deepStrictEqual(s.availableRemotes, ["mys3"]);
+  assert.strictEqual(JSON.stringify(s).includes("AGE-SECRET"), false);
+  assert.strictEqual(s.config.keepLast, 14);
+});
+
+// ---- Task 3: IO helpers ---------------------------------------------------
+
+test("readRequestNoFollow refuses a symlink", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bc-"));
+  try {
+    fs.writeFileSync(path.join(dir, "real"), "{}");
+    fs.symlinkSync(path.join(dir, "real"), path.join(dir, "req"));
+    assert.throws(() => bc.readRequestNoFollow(path.join(dir, "req")), /symlink|ELOOP|NOFOLLOW/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRequestNoFollow reads a plain request file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bc-"));
+  try {
+    fs.writeFileSync(path.join(dir, "req"), JSON.stringify({ requestId: 1 }));
+    assert.strictEqual(bc.readRequestNoFollow(path.join(dir, "req")).requestId, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("renderBackupEnv writes the validated config and preserves NODE_BIN/AGE_RECIPIENT", () => {
+  const env = bc.renderBackupEnv(
+    { destType: "rclone", remote: "mys3", remotePath: "fp", keepLast: 9, localDir: null },
+    { NODE_BIN: "/usr/bin/node", AGE_RECIPIENT: "age1xxx", ENGINE_DIR: "/opt/featherspress" }
+  );
+  assert.match(env, /DEST_TYPE=rclone/);
+  assert.match(env, /RCLONE_REMOTE=mys3:fp/);
+  assert.match(env, /KEEP_LAST=9/);
+  assert.match(env, /NODE_BIN=\/usr\/bin\/node/);
+  assert.match(env, /AGE_RECIPIENT=age1xxx/);
+});
+
+test("renderBackupEnv local destination omits RCLONE_REMOTE", () => {
+  const env = bc.renderBackupEnv(
+    { destType: "local", localDir: "/var/backups/featherspress", keepLast: 5 },
+    {}
+  );
+  assert.match(env, /DEST_TYPE=local/);
+  assert.match(env, /LOCAL_DIR=\/var\/backups\/featherspress/);
+  assert.doesNotMatch(env, /RCLONE_REMOTE/);
+});
