@@ -106,3 +106,40 @@ test("CLI import into a fresh package restores the tree; a second import writes 
     fs.rmSync(dst, { recursive: true, force: true });
   }
 });
+
+// A stock install never sets FAVICON_DIR, so it resolves to the engine's bundled
+// placeholder dir. A package that carries favicon/ must still import — and must
+// not land its icons inside the engine's (read-only, git-tracked) code dir.
+test("CLI import restores a package favicon when FAVICON_DIR is left at the engine default", () => {
+  const srcPkg = makePkg();
+  const out = path.join(srcPkg, "pkg.tar.gz");
+  run(["export", "--profile", "full", "--out", out], envFor(srcPkg));
+
+  const dst = fs.mkdtempSync(path.join(os.tmpdir(), "fp-cli-nofav-"));
+  try {
+    // Stock wiring: explicit data dirs, no FAVICON_DIR override.
+    const stockEnv = {
+      SITE_PACKAGE: "",
+      CONTENT_DIR: path.join(dst, "content"),
+      MEDIA_DIR: path.join(dst, "media"),
+      AUTH_CONFIG: path.join(dst, "auth-config.json"),
+      FAVICON_DIR: "",
+      SITE_MANIFEST: "",
+    };
+    const res = spawnSync("node", [CLI, "import", out, "--force", "--restore-auth"], {
+      encoding: "utf8",
+      env: { ...process.env, ...stockEnv },
+    });
+    assert.strictEqual(res.status, 0, `import must not crash on a package favicon: ${res.stderr}`);
+    assert.ok(fs.existsSync(path.join(dst, "content", "posts", "hello.md")), "content restored");
+    assert.ok(fs.existsSync(path.join(dst, "favicon", "favicon.ico")), "favicon restored beside content/");
+    // The crash aborted before auth on the live box; prove the tail of the import runs.
+    assert.ok(fs.existsSync(path.join(dst, "auth-config.json")), "auth restored after the favicon step");
+    // The engine's bundled placeholder dir must be untouched.
+    const bundled = path.join(__dirname, "..", "public", "favicon", "favicon.ico");
+    assert.notStrictEqual(fs.readFileSync(bundled, "utf8"), "ICO", "engine's bundled favicon not overwritten");
+  } finally {
+    fs.rmSync(srcPkg, { recursive: true, force: true });
+    fs.rmSync(dst, { recursive: true, force: true });
+  }
+});

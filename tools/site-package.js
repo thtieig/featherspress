@@ -176,11 +176,16 @@ function resolvePackagePaths(config, manifest) {
     skin = { name: skinName, dir: path.join(skinsDir, skinName) };
   }
 
-  // Favicon is packed only when it is a per-site dir (not the engine default).
+  // The PER-SITE favicon dir. config.FAVICON_DIR points at the engine's bundled
+  // placeholders unless the operator overrode it, and those are engine code:
+  // never an import target, never worth packing. So when it is the default,
+  // resolve the per-site location beside content/, as skins and site.json do.
+  // Export still packs this only if it exists on disk, so a site that never set
+  // its own icons exports nothing here.
   const faviconDir =
     config.FAVICON_DIR && path.resolve(config.FAVICON_DIR) !== path.resolve(defaultFavicon)
       ? config.FAVICON_DIR
-      : null;
+      : path.join(config.CONTENT_DIR, "..", "favicon");
 
   return {
     contentDir: config.CONTENT_DIR,
