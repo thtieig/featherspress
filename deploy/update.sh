@@ -72,6 +72,18 @@ echo "[update] behind=$BEHIND current=${CURRENT:0:7} available=${AVAILABLE:0:7} 
 [ "$BEHIND" -eq 0 ] && { echo "[update] up to date."; exit 0; }
 [ "$AUTO_APPLY" != "1" ] && { echo "[update] update available — AUTO_APPLY off, leaving for the operator."; exit 0; }
 
+# A modified code dir makes `git merge --ff-only` abort with git's own wording,
+# which reads like a developer problem rather than "this box stopped updating".
+# Worse, an edit to a file the incoming commit does not touch merges cleanly and
+# survives silently. Say plainly what is wrong before attempting the merge.
+DIRTY="$(git_as status --porcelain)"
+if [ -n "$DIRTY" ]; then
+  echo "[update] refusing to apply: $ENGINE_DIR has uncommitted local changes" >&2
+  echo "$DIRTY" >&2
+  echo "[update] commit, stash, or 'git checkout --' them, then re-run." >&2
+  exit 1
+fi
+
 echo "[update] applying (rollback point: ${CURRENT:0:7})…"
 
 # Restore the code to the rollback point and get the service running on it again.
