@@ -1,0 +1,12 @@
+[Unit]
+Description=Safety net for the Featherspress backup control agent
+
+[Timer]
+# Backstop for any inotify event the .path unit misses: re-run the (idempotent)
+# agent every 2 minutes. Cheap — it no-ops unless requestId advanced.
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=featherspress-backup-control.service
+
+[Install]
+WantedBy=timers.target
