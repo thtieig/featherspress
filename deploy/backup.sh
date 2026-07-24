@@ -19,6 +19,26 @@ NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
 [ -f "$FP_ENV" ] || { echo "missing $FP_ENV (needed so the exporter finds the data dir)" >&2; exit 1; }
 [ -f "$BACKUP_ENV" ] || { echo "missing $BACKUP_ENV (copy deploy/backup.env.example there)" >&2; exit 1; }
 
+# Serialize with any other backup run — the /admin "back up now" button and the
+# scheduled timer can otherwise overlap and race the prune step. Second run bows
+# out cleanly rather than corrupting the destination.
+exec 9>"/run/featherspress-backup.lock" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
+  echo "[backup] another backup is already running; skipping this run" >&2
+  exit 0
+fi
+
+# Record the outcome for the /admin Backups panel (via backup-control.js status).
+LAST_RUN_FILE="${LAST_RUN_FILE:-/var/lib/featherspress/backup-last-run.json}"
+record_run() {
+  local ok="$1" err="$2" bytes="${3:-0}"
+  printf '{"at":"%s","ok":%s,"error":%s,"artifactBytes":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$err" "$bytes" > "$LAST_RUN_FILE" 2>/dev/null || true
+  "${NODE_BIN:-/opt/node/bin/node}" "${ENGINE_DIR:-/opt/featherspress}/tools/backup-control.js" status 2>/dev/null || true
+}
+# On ANY failure below, record it (with a fixed message — never the raw error).
+trap 'record_run false "\"backup run failed\"" 0' ERR
+
 # Export the app's data-dir vars so `node tools/site-package.js` resolves them.
 set -a
 # shellcheck disable=SC1090
@@ -97,6 +117,7 @@ case "$DEST_TYPE" in
     cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
     chmod 0600 "$LOCAL_DIR/.$BASENAME.partial"
     mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
+    STORED_BYTES="$(stat -c%s "$LOCAL_DIR/$BASENAME" 2>/dev/null || echo 0)"
     echo "[backup] stored $LOCAL_DIR/$BASENAME"
     # Prune: keep newest N (names sort chronologically by timestamp).
     mapfile -t OLD < <(ls -1 "$LOCAL_DIR"/featherspress-full-*.tar.gz* 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
@@ -105,6 +126,7 @@ case "$DEST_TYPE" in
   rclone)
     : "${RCLONE_REMOTE:?set RCLONE_REMOTE for DEST_TYPE=rclone, e.g. s3:bucket/path or dropbox:featherspress}"
     rclone copyto "$ARTIFACT" "$RCLONE_REMOTE/$BASENAME"
+    STORED_BYTES="$(stat -c%s "$ARTIFACT" 2>/dev/null || echo 0)"
     echo "[backup] uploaded $RCLONE_REMOTE/$BASENAME"
     # Prune: keep newest N at the remote.
     mapfile -t OLD < <(rclone lsf "$RCLONE_REMOTE" --include 'featherspress-full-*' 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
@@ -116,4 +138,5 @@ case "$DEST_TYPE" in
     ;;
 esac
 
+record_run true null "${STORED_BYTES:-0}"
 echo "[backup] done."

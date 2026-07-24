@@ -1,0 +1,15 @@
+[Unit]
+Description=Featherspress backup control agent (applies /admin backup requests as root)
+# Runs the root-side validator that turns an /admin request into backup.env +
+# a timer drop-in. The unprivileged app can only WRITE the request file; this,
+# as root, decides whether to honour it. See tools/backup-control.js.
+
+[Service]
+Type=oneshot
+# NODE_BIN differs per box (/opt/node on gvm, /usr/bin on blog): the unit is
+# copied and the ExecStart node path adjusted at deploy time if needed.
+ExecStart=/opt/node/bin/node /opt/featherspress/tools/backup-control.js apply
+Environment=BACKUP_ENV=/etc/featherspress/backup.env
+Environment=BACKUP_REQUEST=/var/lib/featherspress/backup-request.json
+Environment=BACKUP_STATUS=/var/lib/featherspress/backup-status.json
+Environment=LAST_RUN_FILE=/var/lib/featherspress/backup-last-run.json
