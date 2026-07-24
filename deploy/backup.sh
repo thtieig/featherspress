@@ -29,6 +29,12 @@ set +a
 
 DEST_TYPE="${DEST_TYPE:-local}"
 KEEP_LAST="${KEEP_LAST:-14}"
+# KEEP_LAST=0 prunes the artifact this run just made, so the job "succeeds" and
+# leaves you with NO backups at all. Refuse rather than quietly delete the lot.
+case "$KEEP_LAST" in
+  ''|*[!0-9]*) echo "[backup] refusing: KEEP_LAST must be a positive integer (got '$KEEP_LAST')" >&2; exit 1 ;;
+esac
+[ "$KEEP_LAST" -ge 1 ] || { echo "[backup] refusing: KEEP_LAST must be >= 1 (got $KEEP_LAST) — 0 would delete every backup, including the one just taken" >&2; exit 1; }
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BASENAME="featherspress-full-${STAMP}.tar.gz"
 
