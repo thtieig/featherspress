@@ -83,6 +83,15 @@ $FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
 - **Replace semantics:** the site is made to look like the package (stale posts
   not in the package are removed). Optional sections (skin, favicon, auth) are
   only touched when the package carries them.
+- **A pre-restore snapshot is written to `/tmp`** (`featherspress-prerestore-*.tar.gz`)
+  before anything is replaced. It is a `full` export — your credentials — created
+  `0600`, but it is **not cleaned up automatically** and `/tmp` usually survives
+  until reboot. After a successful restore, delete it (or move it somewhere you
+  actually keep backups):
+  ```sh
+  sudo ls -l /tmp/featherspress-prerestore-*.tar.gz
+  sudo rm -f /tmp/featherspress-prerestore-*.tar.gz
+  ```
 - **`--restore-auth`** is required to overwrite `auth-config.json` — a routine
   content import can never clobber your working 2FA.
 - After a content change the running site hot-reloads; after an import, restart
@@ -103,8 +112,12 @@ sudo systemctl start featherspress-backup.service    # run one now to test
 ```
 
 ### Destinations
-- `local` — a local/mounted path. Same trust boundary as the box, so encryption
-  is optional.
+- `local` — a local/mounted path. Encryption is optional *only* because the
+  artifact never leaves the machine — **not** because it is harmless. Every
+  backup is a `full` export, so an unencrypted one is your password hash and
+  your TOTP secret sitting in a file. `backup.sh` keeps `LOCAL_DIR` at `0700`
+  and each artifact at `0600` for exactly that reason; if you point `LOCAL_DIR`
+  at a mount shared with anything else, set `AGE_RECIPIENT` and encrypt it too.
 - `rclone` — any [rclone](https://rclone.org) remote: **S3**, **Dropbox**, or
   **SFTP over ssh**. Configure once with `rclone config`. Encryption is
   **mandatory** here.

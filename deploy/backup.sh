@@ -70,11 +70,18 @@ case "$DEST_TYPE" in
   local)
     : "${LOCAL_DIR:?set LOCAL_DIR for DEST_TYPE=local}"
     mkdir -p "$LOCAL_DIR"
+    # Every artifact here is a "full" export: password hash + TOTP secret. When
+    # no AGE_RECIPIENT is set it is PLAINTEXT, and the default 0755/0644 let any
+    # local account read the credentials straight out of it. Owner-only.
+    chmod 0700 "$LOCAL_DIR"
+    # Sweep any truncated leftovers from a run that died mid-copy (see below).
+    rm -f "$LOCAL_DIR"/.featherspress-full-*.partial
     # Copy to a temp name in the SAME dir, then rename. A plain `cp` to the final
     # name leaves a truncated file behind if the run is killed mid-copy (a full
     # disk, a reboot, systemd timing it out) — and that stub then looks like a
     # backup, counts against KEEP_LAST, and can push a real backup out.
     cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
+    chmod 0600 "$LOCAL_DIR/.$BASENAME.partial"
     mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
     echo "[backup] stored $LOCAL_DIR/$BASENAME"
     # Prune: keep newest N (names sort chronologically by timestamp).

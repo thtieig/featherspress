@@ -52,6 +52,11 @@ function exportPackage(opts) {
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     execFileSync("tar", ["-czf", outFile, "-C", stage, "."]);
+    // A "full" artifact carries the password hash and the TOTP secret in
+    // cleartext. tar creates the file with the ambient umask (0644 on a stock
+    // box), which in a shared dir like /tmp means any local user can read your
+    // credentials out of it. Lock it down to the owner.
+    if (profile === "full") fs.chmodSync(outFile, 0o600);
     return outFile;
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
@@ -72,14 +77,60 @@ function assertSafeTar(tarball) {
   }
 }
 
+// assertSafeTar only sees member NAMES. A member can be a symlink whose name is
+// perfectly tame ("content/x") but whose TARGET points anywhere ("/etc"), and a
+// later member written "through" it would land outside the tree. GNU tar happens
+// to refuse that write, but we should not depend on the extractor's goodwill —
+// and the symlink itself still gets copied into the data dir, where anything that
+// later walks the tree (chown, an uploader, a backup) may follow it.
+//
+// So after extracting, reject any link that does not resolve inside the package.
+function assertNoEscapingLinks(root) {
+  const rootResolved = path.resolve(root);
+  const contains = (p) => {
+    const rel = path.relative(rootResolved, p);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  };
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = fs.readlinkSync(full);
+        // Resolve the link textually, relative to the link's own directory — no
+        // realpath, so a link to a not-yet-existing path is still checked.
+        const resolved = path.resolve(path.dirname(full), target);
+        if (!contains(resolved)) {
+          throw new Error(
+            `unsafe symlink in archive, refusing to import: ` +
+              `${path.relative(rootResolved, full)} -> ${target}`
+          );
+        }
+      } else if (entry.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(rootResolved);
+}
+
 // Resolve a package source (a directory OR a .tar.gz) to a directory on disk.
 function resolveSource(src) {
   const stat = fs.statSync(src);
-  if (stat.isDirectory()) return { dir: src, cleanup: () => {} };
+  if (stat.isDirectory()) {
+    assertNoEscapingLinks(src);
+    return { dir: src, cleanup: () => {} };
+  }
   assertSafeTar(src);
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "fp-import-"));
-  execFileSync("tar", ["-xzf", src, "-C", stage]);
-  return { dir: stage, cleanup: () => fs.rmSync(stage, { recursive: true, force: true }) };
+  const cleanup = () => fs.rmSync(stage, { recursive: true, force: true });
+  try {
+    execFileSync("tar", ["-xzf", src, "-C", stage]);
+    assertNoEscapingLinks(stage);
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+  return { dir: stage, cleanup };
 }
 
 function replaceDir(target, source) {
@@ -226,14 +277,19 @@ function reownAfterRootRestore(paths) {
     paths.skin && paths.skin.name ? path.join(paths.skinsDir, paths.skin.name) : null,
   ].filter((p) => p && fs.existsSync(p));
 
+  // lchown, not chown, and never recurse through a link: chown() FOLLOWS symlinks,
+  // so a package carrying `content/x -> /etc/shadow` would hand that file to the
+  // app user on a root-run restore. (assertNoEscapingLinks should have rejected
+  // such a package already; this is the second lock on the same door.)
   const chownTree = (p) => {
-    fs.chownSync(p, owner.uid, owner.gid);
     let st;
     try {
-      st = fs.statSync(p);
+      st = fs.lstatSync(p);
     } catch {
       return;
     }
+    fs.lchownSync(p, owner.uid, owner.gid);
+    if (st.isSymbolicLink()) return;
     if (st.isDirectory()) for (const e of fs.readdirSync(p)) chownTree(path.join(p, e));
   };
   for (const t of targets) chownTree(t);

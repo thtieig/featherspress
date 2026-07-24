@@ -249,3 +249,60 @@ test("export --profile full includes auth-config.json, the custom skin, and favi
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A "full" artifact is the password hash + the TOTP secret in cleartext. tar
+// creates it with the ambient umask (0644), and these land in shared dirs like
+// /tmp (the pre-restore snapshot) and /var/backups. Owner-only, always.
+test("export --profile full writes the artifact 0600", () => {
+  const dir = makeDataDir();
+  const full = path.join(dir, "full.tar.gz");
+  const site = path.join(dir, "site.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "full", outFile: full });
+    assert.strictEqual(fs.statSync(full).mode & 0o777, 0o600, "full artifact is 0600");
+    // The site profile carries no credentials, so it stays shareable.
+    sp.exportPackage({ ...paths(dir), profile: "site", outFile: site });
+    assert.notStrictEqual(fs.statSync(site).mode & 0o777, 0o600, "site artifact not forced to 0600");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A symlink member can have a tame NAME ("content/x") and an arbitrary TARGET
+// ("/etc"). assertSafeTar only inspects names, so the link survives into the data
+// dir, where anything walking the tree may follow it — including the root-restore
+// chown, which would hand an arbitrary file to the app user.
+test("import refuses a package containing a symlink that escapes the package", () => {
+  const dir = makeDataDir();
+  const pkg = fs.mkdtempSync(path.join(os.tmpdir(), "fp-evil-"));
+  const dst = fs.mkdtempSync(path.join(os.tmpdir(), "fp-evil-dst-"));
+  try {
+    fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, "content", "posts", "a.md"), "hi");
+    fs.writeFileSync(
+      path.join(pkg, "site.json"),
+      JSON.stringify({ title: "T", skin: "notepad", homeMode: "feed", nav: [] })
+    );
+    fs.symlinkSync("/etc", path.join(pkg, "content", "escape"));
+
+    assert.throws(
+      () => sp.importPackage({ src: pkg, ...paths(dst), force: true }),
+      /unsafe symlink in archive/,
+      "an escaping symlink must be refused"
+    );
+
+    // A link that stays INSIDE the package is legitimate and must still work.
+    fs.rmSync(path.join(pkg, "content", "escape"));
+    fs.symlinkSync("posts", path.join(pkg, "content", "alias"));
+    sp.importPackage({
+      src: pkg,
+      ...paths(dst),
+      skinsDir: path.join(dst, "skins"),
+      bundledSkinsDir: path.join(__dirname, "..", "skins"),
+      force: true,
+    });
+    assert.ok(fs.existsSync(path.join(dst, "content", "posts", "a.md")), "internal link package imports");
+  } finally {
+    for (const d of [dir, pkg, dst]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
