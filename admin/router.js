@@ -49,7 +49,9 @@ const loginLimiter = rateLimit({
 
 function writeAuthConfigAtomic(data) {
   const tmpPath = AUTH_CONFIG_PATH + ".tmp";
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+  // 0600 on the temp file, so the rename can never publish a world-readable
+  // copy of the TOTP secret even for an instant.
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmpPath, AUTH_CONFIG_PATH);
 }
 

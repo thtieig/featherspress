@@ -143,6 +143,9 @@ function importPackage(opts) {
     // Credentials: only from a package that carries them, and only on request.
     if (restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
       fs.copyFileSync(path.join(dir, "auth-config.json"), authConfigPath);
+      // Restore must not widen permissions on the password hash + TOTP secret,
+      // whatever mode the file had inside the archive.
+      fs.chmodSync(authConfigPath, 0o600);
     }
   } finally {
     cleanup();

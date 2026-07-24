@@ -134,7 +134,10 @@ test("CLI import restores a package favicon when FAVICON_DIR is left at the engi
     assert.ok(fs.existsSync(path.join(dst, "content", "posts", "hello.md")), "content restored");
     assert.ok(fs.existsSync(path.join(dst, "favicon", "favicon.ico")), "favicon restored beside content/");
     // The crash aborted before auth on the live box; prove the tail of the import runs.
-    assert.ok(fs.existsSync(path.join(dst, "auth-config.json")), "auth restored after the favicon step");
+    const authPath = path.join(dst, "auth-config.json");
+    assert.ok(fs.existsSync(authPath), "auth restored after the favicon step");
+    // It carries the TOTP secret in cleartext: a restore must not widen its mode.
+    assert.strictEqual(fs.statSync(authPath).mode & 0o777, 0o600, "restored auth-config.json is 0600");
     // The engine's bundled placeholder dir must be untouched.
     const bundled = path.join(__dirname, "..", "public", "favicon", "favicon.ico");
     assert.notStrictEqual(fs.readFileSync(bundled, "utf8"), "ICO", "engine's bundled favicon not overwritten");

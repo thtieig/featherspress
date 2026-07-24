@@ -64,7 +64,13 @@ async function main() {
   const recoveryCodes = Array.from({ length: RECOVERY_CODE_COUNT }, generateRecoveryCode);
   const recoveryCodeHashes = recoveryCodes.map(hashRecoveryCode);
 
-  fs.writeFileSync(AUTH_CONFIG_PATH, JSON.stringify({ passwordHash, totpSecret, recoveryCodeHashes }, null, 2));
+  // 0600: this file holds the password hash and the TOTP secret in cleartext.
+  // writeFileSync's mode applies only when creating, so chmod explicitly too --
+  // a re-run to rotate credentials must also tighten an old world-readable file.
+  fs.writeFileSync(AUTH_CONFIG_PATH, JSON.stringify({ passwordHash, totpSecret, recoveryCodeHashes }, null, 2), {
+    mode: 0o600,
+  });
+  fs.chmodSync(AUTH_CONFIG_PATH, 0o600);
 
   console.log("\nScan this with your authenticator app (Google Authenticator, Authy, 1Password, ...):\n");
   qrcodeTerminal.generate(otpauthUrl, { small: true });
