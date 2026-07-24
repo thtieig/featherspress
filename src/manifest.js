@@ -55,6 +55,16 @@ function candidatePaths() {
   return out;
 }
 
+/**
+ * The manifest FILE the engine would read, or null when there is none (the
+ * synthesized-from-env case). Same resolution order as load(); callers that
+ * need the raw bytes rather than the parsed object (e.g. the admin's media
+ * usage index) use this instead of re-deriving the search path.
+ */
+function manifestPath() {
+  return candidatePaths().find((p) => fs.existsSync(p)) || null;
+}
+
 /** Load the manifest, filling any missing field from the synthesized defaults. */
 function load() {
   const defaults = synthesize();
@@ -78,4 +88,4 @@ function load() {
   return { ...defaults, source: "(synthesized from env)" };
 }
 
-module.exports = { load, synthesize };
+module.exports = { load, synthesize, manifestPath };

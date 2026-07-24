@@ -26,6 +26,8 @@ const config = require("../config");
 const posts = require("../src/posts");
 const render = require("../src/render");
 const contract = require("../src/contract");
+const manifest = require("../src/manifest");
+const skin = require("../src/skin");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
@@ -280,19 +282,75 @@ function decodePath(p) {
   }
 }
 
-function buildUsageIndex() {
-  const usage = new Map();
-  for (const item of readAllContent()) {
-    const file = matter.read(path.join(DIR_FOR[item.type], item.filename));
-    const seen = new Set();
-    for (const raw of file.content.match(UPLOAD_REF_RE) || []) {
-      const key = decodePath(raw);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (!usage.has(key)) usage.set(key, []);
-      usage.get(key).push({ type: item.type, slug: item.slug, title: item.title });
+// Text file extensions worth scanning inside a skin. Fonts and images can't
+// carry a /media/ reference, and reading them as utf8 would be pure waste.
+const SKIN_TEXT_EXTS = new Set(["njk", "html", "css", "js", "json", "svg", "txt", "md"]);
+
+// Record every /media/... reference in `text` against one source. Deduped per
+// source, so a post embedding the same image twice is still "used in 1 place".
+function addRefs(usage, text, ref) {
+  const seen = new Set();
+  for (const raw of String(text).match(UPLOAD_REF_RE) || []) {
+    const key = decodePath(raw);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!usage.has(key)) usage.set(key, []);
+    usage.get(key).push(ref);
+  }
+}
+
+// The site manifest, as raw text: site.json can point at media from
+// options.heroImage, a nav href, or any field a skin invents. Scanning the
+// bytes rather than the parsed object means unknown fields count too.
+function manifestText() {
+  const p = manifest.manifestPath();
+  return p ? fs.readFileSync(p, "utf8") : "";
+}
+
+// Every text file of the ACTIVE skin, concatenated: a per-site skin may
+// hardcode a /media/ path in a template or stylesheet.
+function skinText(dir) {
+  let out = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) out += skinText(abs);
+    else if (entry.isFile() && SKIN_TEXT_EXTS.has(entry.name.split(".").pop().toLowerCase())) {
+      out += fs.readFileSync(abs, "utf8") + "\n";
     }
   }
+  return out;
+}
+
+// A site references media from FOUR places, and a reference this index cannot
+// see shows up in the Media library as "Unused" and gets offered for deletion.
+// That is how gvm.tian.it lost its hero image: it lived in site.json's
+// options.heroImage, and only post/page BODIES were ever scanned.
+function buildUsageIndex() {
+  const usage = new Map();
+
+  // 1 + 2. Every post and page: frontmatter (a cover/hero field) and body.
+  for (const item of readAllContent()) {
+    const file = matter.read(path.join(DIR_FOR[item.type], item.filename));
+    const ref = { type: item.type, slug: item.slug, title: item.title };
+    addRefs(usage, JSON.stringify(file.data) + "\n" + file.content, ref);
+  }
+
+  // 3. The site manifest. Missing file = nothing to scan; anything else
+  // (unreadable, permissions) must throw rather than silently under-report.
+  addRefs(usage, manifestText(), { type: "site", title: "Site settings (site.json)" });
+
+  // 4. The active skin. skin.current() throws only when no skin was loaded,
+  // which cannot happen through the server but keeps this safe in isolation.
+  let active = null;
+  try {
+    active = skin.current();
+  } catch {
+    /* no skin loaded */
+  }
+  if (active && fs.existsSync(active.dir)) {
+    addRefs(usage, skinText(active.dir), { type: "skin", title: `Skin: ${active.name}` });
+  }
+
   return usage;
 }
 

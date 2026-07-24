@@ -146,6 +146,9 @@
   .media-usage.orphan { color: var(--accent); }
   .media-usage .usage-link { color: var(--ink-soft); text-decoration: underline; }
   .media-usage .usage-link:hover { color: var(--accent); }
+  /* A reference with no public URL (site settings, the skin): same weight, no
+     link affordance. */
+  .media-usage .usage-ref { color: var(--ink-soft); }
   .media-actions { display: flex; gap: 6px; padding: 0 10px 10px; }
   .media-actions button { margin: 0; padding: 5px 8px; font-size: 0.72rem; }
   .media-actions .insert-btn { flex: 1; }
@@ -806,7 +809,7 @@
     backdrop.className = 'modal-backdrop';
     backdrop.innerHTML =
       '<div class="modal"><h3>Delete all unused files?</h3>' +
-      '<p>' + unused.length + ' file' + (unused.length > 1 ? 's' : '') + ' not referenced by any post or page will be permanently removed.</p>' +
+      '<p>' + unused.length + ' file' + (unused.length > 1 ? 's' : '') + ' not referenced anywhere on the site will be permanently removed.</p>' +
       '<div class="modal-actions">' +
         '<button type="button" class="secondary" id="du-cancel">Cancel</button>' +
         '<button type="button" class="danger" id="du-confirm">Delete ' + unused.length + '</button>' +
@@ -848,10 +851,14 @@
         : '<div class="media-thumb" data-i="' + i + '"><span class="file-icon">📄</span></div>';
       var usage;
       if (f.usage.length) {
+        // A reference can be a post/page (linkable by slug) or the site
+        // settings / active skin, which have no public URL -- those render as
+        // plain labels.
         var links = f.usage.map(function (u) {
+          if (!u.slug) return '<span class="usage-ref">' + esc(u.title) + '</span>';
           return '<a class="usage-link" href="/' + encodeURIComponent(u.slug) + '/" target="_blank" rel="noopener" title="' + esc(u.title) + '">' + esc(u.title) + '</a>';
         }).join(', ');
-        usage = '<div class="media-usage">Used in ' + f.usage.length + ' ' + (f.usage.length > 1 ? 'posts' : 'post') + ': ' + links + '</div>';
+        usage = '<div class="media-usage">Used in ' + f.usage.length + ' ' + (f.usage.length > 1 ? 'places' : 'place') + ': ' + links + '</div>';
       } else {
         usage = '<div class="media-usage orphan">Unused</div>';
       }
@@ -883,9 +890,10 @@
     var backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     var warn = used
-      ? '<p class="warn-text">This file is used in ' + used + ' ' + (used > 1 ? 'posts/pages' : 'post/page') +
-        '. Deleting it will leave broken links until those are edited.</p>'
-      : '<p>This file is not referenced by any post or page.</p>';
+      ? '<p class="warn-text">This file is used in ' + used + ' ' + (used > 1 ? 'places' : 'place') +
+        ' (' + f.usage.map(function (u) { return esc(u.title); }).join(', ') +
+        '). Deleting it will leave broken links until those are edited.</p>'
+      : '<p>This file is not referenced anywhere on the site.</p>';
     backdrop.innerHTML =
       '<div class="modal"><h3>Delete this file?</h3>' +
       '<p>&ldquo;' + esc(fileName(f.path)) + '&rdquo;</p>' + warn +
