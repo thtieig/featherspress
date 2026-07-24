@@ -49,7 +49,7 @@ function isoDate(date) {
 // (SKINS_DIR) remain the fallback. "Custom takes priority, default stays."
 function skinRoots() {
   const roots = [];
-  if (config.SITE_PACKAGE) roots.push(path.join(config.SITE_PACKAGE, "skins"));
+  if (config.SITE_SKINS_DIR) roots.push(config.SITE_SKINS_DIR);
   roots.push(config.SKINS_DIR);
   return roots;
 }

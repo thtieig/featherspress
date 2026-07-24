@@ -164,9 +164,9 @@ function resolvePackagePaths(config, manifest) {
     manifestPath = path.join(config.CONTENT_DIR, "..", "site.json");
   }
 
-  const skinsDir = config.SITE_PACKAGE
-    ? path.join(config.SITE_PACKAGE, "skins")
-    : path.join(config.CONTENT_DIR, "..", "skins");
+  // Same per-site skins dir the runtime loads from (config.SITE_SKINS_DIR), so
+  // what import writes is what skin.js finds.
+  const skinsDir = config.SITE_SKINS_DIR;
 
   // The active skin is packed only when it is CUSTOM (lives in the per-site
   // skins dir). Bundled skins ship with the engine, so they need not travel.

@@ -67,6 +67,16 @@ const config = {
   SITE_URL: env("SITE_URL", "http://localhost:3000"),
 };
 
+// The PER-SITE skins dir: where a site's own skins/<name>/ lives, overriding a
+// bundled skin of the same name. With SITE_PACKAGE it is the package's skins/;
+// with the explicit-dirs wiring docs/DEPLOY.md prescribes it sits beside
+// content/ in the data dir — which is where `import` unpacks a package's custom
+// skin, so the runtime and the importer must agree on this one path.
+config.SITE_SKINS_DIR = env(
+  "SITE_SKINS_DIR",
+  PKG ? path.join(PKG, "skins") : path.join(config.CONTENT_DIR, "..", "skins")
+);
+
 // Update status file: written by the root update timer (deploy/update.sh) into
 // the data root, and READ (only) by the admin UI to show an "update available"
 // banner. Defaults beside content/ so it lives in the writable data dir.
