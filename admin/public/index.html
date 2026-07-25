@@ -304,7 +304,7 @@
       <div id="bk-scope-warn" hidden class="hint" style="margin-bottom:14px;"></div>
 
       <label>Schedule</label>
-      <div style="margin:4px 0 18px;">
+      <div style="margin:4px 0 4px;">
         <select id="bk-preset">
           <option value="hourly">Hourly</option>
           <option value="daily" selected>Daily</option>
@@ -319,6 +319,7 @@
           </select>
         </span>
       </div>
+      <div id="bk-schedule-hint" hidden class="hint" style="margin-bottom:14px;"></div>
 
       <div class="actions">
         <button id="bk-save">Save changes</button>
@@ -1033,6 +1034,8 @@
     if (sch.preset) {
       parts.push('schedule: ' + sch.preset + (sch.preset === 'hourly' ? '' :
         ' ' + (sch.weekday ? sch.weekday + ' ' : '') + (sch.timeOfDay || '')));
+    } else if (sch.effective) {
+      parts.push('schedule: ' + sch.effective + ' (set on the server)');
     }
     if (s.lastRequestOk === false && s.lastRequestError) parts.push('· last change rejected: ' + s.lastRequestError);
     el('bk-status').textContent = parts.join(' · ');
@@ -1053,6 +1056,18 @@
       el('bk-preset').value = sch.preset;
       if (sch.timeOfDay) el('bk-time').value = sch.timeOfDay;
       if (sch.weekday) el('bk-weekday').value = sch.weekday;
+      el('bk-schedule-hint').hidden = true;
+    } else {
+      // Don't pretend: the form's HTML default (Daily 00:24) is NOT
+      // necessarily what systemd is actually running. Say so plainly rather
+      // than silently displaying a schedule that isn't real — and rather
+      // than letting an unrelated Save (e.g. changing retention) quietly
+      // shift the real schedule to the form's default.
+      var hint = el('bk-schedule-hint');
+      hint.hidden = false;
+      hint.textContent = sch.effective
+        ? "This box's backup schedule was set on the server (" + sch.effective + "). Pick a preset and Save to manage it from here."
+        : 'No backup schedule is configured yet.';
     }
 
     // Off-box availability + encryption progressive disclosure.

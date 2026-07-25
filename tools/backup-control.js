@@ -282,6 +282,48 @@ function nextRunUTC(timer) {
   }
 }
 
+// Pure parse of `systemctl show <timer> -p TimersCalendar --value` output.
+// systemd 252 formats it as
+//   { OnCalendar=*-*-* 00:20:00 ; next_elapse=Sun 2026-07-26 00:20:00 UTC }
+// — pull out just the OnCalendar expression. Also tolerate a bare
+// "*-*-* 00:20:00" (no braces/prefix) in case another systemd version formats
+// it differently. Anything that isn't recognizably a calendar expression
+// (empty, garbage) yields null rather than a false positive.
+function parseTimersCalendar(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const m = s.match(/OnCalendar=([^;{}]+)/);
+  if (m) {
+    const cal = m[1].trim();
+    return cal || null;
+  }
+  // No "OnCalendar=" marker: only accept it if it already looks like a bare
+  // calendar expression — systemd calendar syntax always carries an HH:MM:SS
+  // time field — otherwise this is malformed/unrecognized.
+  return /\d{1,2}:\d{2}:\d{2}/.test(s) ? s : null;
+}
+
+// systemd's EFFECTIVE calendar for the timer, straight from the unit — not
+// from our own drop-in bookkeeping. On a box upgraded from older code,
+// BACKUP_SCHEDULE_PRESET may be absent from backup.env even though the
+// shipped .timer unit (or an old drop-in) has systemd running a real
+// schedule; this is how the UI can be honest about that instead of silently
+// showing its HTML default. Best-effort, same pattern as nextRunUTC: null on
+// any trouble rather than throwing.
+function readEffectiveSchedule(timer) {
+  try {
+    const out = execFileSync(
+      "systemctl",
+      ["show", timer, "-p", "TimersCalendar", "--value"],
+      { encoding: "utf8" }
+    );
+    return parseTimersCalendar(out);
+  } catch {
+    return null;
+  }
+}
+
 function readAppliedId(statusPath) {
   try {
     return JSON.parse(fs.readFileSync(statusPath, "utf8")).appliedRequestId || 0;
@@ -329,6 +371,7 @@ function refreshStatus(env) {
       timeOfDay: conf.BACKUP_SCHEDULE_TIME || "00:24",
       weekday: conf.BACKUP_SCHEDULE_WEEKDAY || null,
       raw: readScheduleDropIn(env.SCHEDULE_DROPIN),
+      effective: readEffectiveSchedule("featherspress-backup.timer"),
     },
   };
   const status = buildStatus({
@@ -452,4 +495,5 @@ module.exports = {
   renderBackupEnv,
   parseEnvFile,
   applyRequest,
+  parseTimersCalendar,
 };
