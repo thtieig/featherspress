@@ -125,6 +125,39 @@ test("export with no sections option still packs everything (back-compat)", () =
   }
 });
 
+test("export writes settings.json when the section is requested", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "with-settings.tar.gz");
+  const unpack = fs.mkdtempSync(path.join(os.tmpdir(), "fp-unpack-"));
+  try {
+    sp.exportPackage({
+      ...paths(dir),
+      profile: "full",
+      sections: ["content", "settings"],
+      outFile: out,
+      settings: { schemaVersion: 1, backup: { keepLast: 9 }, update: { autoApply: false } },
+    });
+    execFileSync("tar", ["-xzf", out, "-C", unpack]);
+    const parsed = JSON.parse(fs.readFileSync(path.join(unpack, "settings.json"), "utf8"));
+    assert.strictEqual(parsed.backup.keepLast, 9);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(unpack, { recursive: true, force: true });
+  }
+});
+
+test("export omits settings.json when the section is requested but no settings are given", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "no-settings.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "full", sections: ["content", "settings"], outFile: out });
+    const listing = execFileSync("tar", ["-tzf", out], { encoding: "utf8" });
+    assert.doesNotMatch(listing, /settings\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("export --profile site omits auth-config.json but keeps site.json, content, media", () => {
   const dir = makeDataDir();
   const out = path.join(dir, "out.tar.gz");

@@ -151,6 +151,25 @@ test("buildStatus produces the documented shape with no secrets", () => {
   assert.strictEqual(s.config.keepLast, 14);
 });
 
+// ---- Task 7: settings travel via backup-status.json -----------------------
+
+test("buildStatus carries the update config and the age recipient", () => {
+  const s = bc.buildStatus({
+    writtenAt: "2026-07-25T00:00:00Z",
+    config: { destType: "local", keepLast: 14 },
+    ageRecipient: "age1abc",
+    update: { autoApply: false, repoRef: "main" },
+  });
+  assert.strictEqual(s.ageRecipient, "age1abc");
+  assert.deepStrictEqual(s.update, { autoApply: false, repoRef: "main" });
+});
+
+test("buildStatus defaults ageRecipient/update to null when not supplied", () => {
+  const s = bc.buildStatus({ writtenAt: "now", config: { destType: "local", keepLast: 14 } });
+  assert.strictEqual(s.ageRecipient, null);
+  assert.strictEqual(s.update, null);
+});
+
 // ---- Task 3: IO helpers ---------------------------------------------------
 
 test("readRequestNoFollow refuses a symlink", () => {
@@ -334,4 +353,8 @@ test("apply refreshes status even when there is no pending request", () => {
   bc.applyRequest(env);
   const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
   assert.strictEqual(status.config.keepLast, 7);
+  // env has no UPDATE_CONF and no update.conf file exists on disk for this test
+  // dir — refreshStatus must still produce a well-formed update block, not null.
+  assert.deepStrictEqual(status.update, { autoApply: false, repoRef: "main" });
+  assert.strictEqual(status.ageRecipient, null);
 });

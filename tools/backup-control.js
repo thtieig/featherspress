@@ -130,6 +130,8 @@ function buildStatus(i) {
     lastRun: i.lastRun ?? null,
     nextRun: i.nextRun ?? null,
     artifactCount: i.artifactCount ?? 0,
+    ageRecipient: i.ageRecipient ?? null,
+    update: i.update ?? null,
   };
 }
 
@@ -272,6 +274,12 @@ function readScheduleDropIn(p) {
 
 function refreshStatus(env) {
   const conf = parseEnvFile(env.BACKUP_ENV);
+  // update.conf is optional (root:root 0600) and read-only here: only
+  // AUTO_APPLY and REPO_REF are ever lifted out of it into the 0644 status
+  // file the unprivileged app reads. Any other field it may contain
+  // (ENGINE_DIR, NODE_BIN, NPM_BIN, SERVICE, FP_USER — box-specific paths and
+  // usernames) is parsed but never referenced below, so it never leaks.
+  const upd = parseEnvFile(env.UPDATE_CONF);
   let lastRun = null;
   try {
     lastRun = JSON.parse(fs.readFileSync(env.LAST_RUN_FILE, "utf8"));
@@ -306,6 +314,8 @@ function refreshStatus(env) {
     nextRun: nextRunUTC("featherspress-backup.timer"),
     artifactCount,
     writtenAt: new Date().toISOString(),
+    ageRecipient: conf.AGE_RECIPIENT || null,
+    update: { autoApply: upd.AUTO_APPLY === "1", repoRef: upd.REPO_REF || "main" },
   });
   writeStatusFile(env.BACKUP_STATUS, status);
 }
@@ -370,6 +380,7 @@ function envFromProcess() {
     LAST_RUN_FILE: process.env.LAST_RUN_FILE || "/var/lib/featherspress/backup-last-run.json",
     SCHEDULE_DROPIN:
       process.env.SCHEDULE_DROPIN || "/etc/systemd/system/featherspress-backup.timer.d/schedule.conf",
+    UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
   };
 }
 

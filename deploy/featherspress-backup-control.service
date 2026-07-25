@@ -13,3 +13,4 @@ Environment=BACKUP_ENV=/etc/featherspress/backup.env
 Environment=BACKUP_REQUEST=/var/lib/featherspress/backup-request.json
 Environment=BACKUP_STATUS=/var/lib/featherspress/backup-status.json
 Environment=LAST_RUN_FILE=/var/lib/featherspress/backup-last-run.json
+Environment=UPDATE_CONF=/etc/featherspress/update.conf
