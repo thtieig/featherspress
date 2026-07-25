@@ -92,6 +92,39 @@ function makeTarget() {
   };
 }
 
+test("sectionsForProfile maps the two profile names", () => {
+  assert.deepStrictEqual(sp.sectionsForProfile("site"), ["content", "media", "site"]);
+  assert.deepStrictEqual(sp.sectionsForProfile("full"),
+    ["content", "media", "site", "settings", "credentials"]);
+});
+
+test("export honours a sections subset", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "subset.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "full", sections: ["content"], outFile: out });
+    const listing = execFileSync("tar", ["-tzf", out], { encoding: "utf8" });
+    assert.match(listing, /content\//);
+    assert.doesNotMatch(listing, /media\//);
+    assert.doesNotMatch(listing, /auth-config\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("export with no sections option still packs everything (back-compat)", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "all.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "full", outFile: out });
+    const listing = execFileSync("tar", ["-tzf", out], { encoding: "utf8" });
+    assert.match(listing, /content\//);
+    assert.match(listing, /media\//);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("export --profile site omits auth-config.json but keeps site.json, content, media", () => {
   const dir = makeDataDir();
   const out = path.join(dir, "out.tar.gz");
