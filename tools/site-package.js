@@ -60,6 +60,12 @@ function exportPackage(opts) {
     if (want.has("site") && faviconDir && fs.existsSync(faviconDir)) {
       fs.cpSync(faviconDir, path.join(stage, "favicon"), { recursive: true });
     }
+    if (want.has("settings") && opts.settings) {
+      fs.writeFileSync(
+        path.join(stage, "settings.json"),
+        JSON.stringify(opts.settings, null, 2) + "\n"
+      );
+    }
     // Belt-and-braces: `profile === "full"` stays as a hard gate alongside the
     // section check, so a "site" profile can NEVER emit credentials even if a
     // caller passes sections:["credentials"] by mistake or by malice.
