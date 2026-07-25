@@ -697,6 +697,12 @@ test("keygen puts the public half in backup.env and the private half in a 0600 o
   const env = keygenEnv("fp-bc-keygen-");
   bc.applyRequest(env);
 
+  // Assert the agent's own verdict FIRST. Without this, a machine that simply
+  // has no `age` fails with an opaque ENOENT on backup.env three tests later
+  // instead of saying what is actually wrong — which is how this went red on CI.
+  const first = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(first.lastRequestOk, true, `keygen did not succeed: ${first.lastRequestError}`);
+
   const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
   const recipient = (written.match(/^AGE_RECIPIENT=(age1[0-9a-z]+)$/m) || [])[1];
   assert.ok(recipient, `expected a recipient in backup.env, got:\n${written}`);
@@ -711,7 +717,6 @@ test("keygen puts the public half in backup.env and the private half in a 0600 o
 
   const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
   assert.strictEqual(status.encrypted, true);
-  assert.strictEqual(status.lastRequestOk, true);
   assert.doesNotMatch(JSON.stringify(status), /AGE-SECRET-KEY/, "the status file is 0644 — no secrets");
 });
 
