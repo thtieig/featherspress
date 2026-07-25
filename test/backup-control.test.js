@@ -643,3 +643,124 @@ test("a save that lands mid-apply is left for the next run, not dropped", () => 
   assert.strictEqual(fs.existsSync(env.BACKUP_REQUEST), true, "the newer request must survive");
   assert.strictEqual(JSON.parse(fs.readFileSync(env.BACKUP_REQUEST, "utf8")).requestId, 99);
 });
+
+// ---- Task 15: age keygen through the root agent ---------------------------
+// The app must never hold the private key. Root generates it, keeps only the
+// PUBLIC half in backup.env, and hands the private half over exactly once
+// through a 0600 file the app unlinks as it reads it.
+
+test("keygen is refused when a recipient already exists", () => {
+  const r = bc.validateRequest({ requestId: 9, action: "keygen" }, { ...CTX, ageRecipientSet: true });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /already/);
+});
+
+test("keygen is accepted on a box with no recipient", () => {
+  const r = bc.validateRequest({ requestId: 9, action: "keygen" }, { ...CTX, ageRecipientSet: false });
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.config.action, "keygen");
+});
+
+test("keygen needs no destination, keepLast or schedule to validate", () => {
+  // The panel's Set up encryption button has none of those fields to send.
+  const r = bc.validateRequest({ requestId: 9, action: "keygen" }, { ...CTX, ageRecipientSet: false });
+  assert.ok(r.ok, r.error);
+});
+
+test("keygen still honours the requestId guard", () => {
+  const r = bc.validateRequest({ requestId: 3, action: "keygen" }, { ...CTX, ageRecipientSet: false });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /requestId/);
+});
+
+// The agent side of keygen: root generates, keeps only the PUBLIC half, and
+// leaves the private half in a 0600 file for the app's single read.
+
+function keygenEnv(name, existingEnv) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "backup-request.json"),
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+  };
+  if (existingEnv !== undefined) fs.writeFileSync(env.BACKUP_ENV, existingEnv);
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({ requestId: 5, action: "keygen" }));
+  return env;
+}
+const onceFileOf = (env) => path.join(path.dirname(env.BACKUP_STATUS), "age-key-once.txt");
+
+// `age` is installed on the dev box and on every server. A SKIPPED encryption
+// test is a FAILED one here — a skip once hid a wholly broken decrypt path.
+test("keygen puts the public half in backup.env and the private half in a 0600 one-shot file", () => {
+  const env = keygenEnv("fp-bc-keygen-");
+  bc.applyRequest(env);
+
+  const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
+  const recipient = (written.match(/^AGE_RECIPIENT=(age1[0-9a-z]+)$/m) || [])[1];
+  assert.ok(recipient, `expected a recipient in backup.env, got:\n${written}`);
+  assert.doesNotMatch(written, /AGE-SECRET-KEY/, "the private half must never touch backup.env");
+
+  const once = onceFileOf(env);
+  assert.ok(fs.existsSync(once), "the private half must be handed to the app");
+  assert.strictEqual(fs.statSync(once).mode & 0o777, 0o600);
+  const body = fs.readFileSync(once, "utf8");
+  assert.match(body, /AGE-SECRET-KEY-1[0-9A-Z]+/);
+  assert.ok(body.includes(recipient), "the one-shot file should carry its own public half too");
+
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.encrypted, true);
+  assert.strictEqual(status.lastRequestOk, true);
+  assert.doesNotMatch(JSON.stringify(status), /AGE-SECRET-KEY/, "the status file is 0644 — no secrets");
+});
+
+test("keygen preserves the rest of backup.env instead of rewriting it", () => {
+  const env = keygenEnv("fp-bc-keygen-keep-",
+    "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=9\n" +
+    "BACKUP_SCHEDULE_PRESET=weekly\nBACKUP_SCHEDULE_TIME=03:00\nBACKUP_SCHEDULE_WEEKDAY=Sun\n");
+  bc.applyRequest(env);
+  const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
+  assert.match(written, /^KEEP_LAST=9$/m, "generating a key must not reset retention");
+  assert.match(written, /^BACKUP_SCHEDULE_WEEKDAY=Sun$/m, "nor invent a new schedule");
+  assert.match(written, /^AGE_RECIPIENT=age1[0-9a-z]+$/m);
+});
+
+test("keygen on a box that already has a recipient changes nothing", () => {
+  const existing = "age1qkq20rc7vsnstc49kwhdttql6sglpfwcpnp2mwz6080eurn42ypqqh20ys";
+  const env = keygenEnv("fp-bc-keygen-dup-",
+    `DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=14\nAGE_RECIPIENT=${existing}\n`);
+  bc.applyRequest(env);
+  assert.match(fs.readFileSync(env.BACKUP_ENV, "utf8"),
+    new RegExp(`^AGE_RECIPIENT=${existing}$`, "m"), "the existing key must survive");
+  assert.strictEqual(fs.existsSync(onceFileOf(env)), false, "and no private half is left lying about");
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.lastRequestOk, false);
+  assert.match(status.lastRequestError, /already/);
+});
+
+test("the keygen request is consumed like any other", () => {
+  const env = keygenEnv("fp-bc-keygen-consume-");
+  bc.applyRequest(env);
+  assert.strictEqual(fs.existsSync(env.BACKUP_REQUEST), false);
+});
+
+test("the generated key actually round-trips a backup", () => {
+  // Parsing age-keygen's output correctly is the whole job; a recipient that
+  // merely LOOKS like one is worth nothing. Encrypt with the half we kept,
+  // decrypt with the half we handed over.
+  const { execFileSync } = require("node:child_process");
+  const env = keygenEnv("fp-bc-keygen-roundtrip-");
+  bc.applyRequest(env);
+  const recipient = fs.readFileSync(env.BACKUP_ENV, "utf8").match(/^AGE_RECIPIENT=(age1[0-9a-z]+)$/m)[1];
+  const identity = fs.readFileSync(onceFileOf(env), "utf8");
+
+  const dir = path.dirname(env.BACKUP_ENV);
+  const plain = path.join(dir, "plain.txt");
+  const enc = path.join(dir, "plain.txt.age");
+  fs.writeFileSync(plain, "a backup artifact");
+  execFileSync("age", ["-r", recipient, "-o", enc, plain]);
+  // `-i -`, not `-i /dev/stdin`: the latter fails when Node supplies stdin.
+  const out = execFileSync("age", ["-d", "-i", "-", enc], { input: identity, encoding: "utf8" });
+  assert.strictEqual(out, "a backup artifact");
+});

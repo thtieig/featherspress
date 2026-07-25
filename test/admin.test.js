@@ -493,3 +493,40 @@ test("import-upload answers 507 before reading a body that cannot fit", async ()
   });
   assert.strictEqual(status, 507);
 });
+
+// ---- "Set up encryption": the one-shot key handover ------------------------
+
+test("backup-keygen writes a keygen request for the root agent", async () => {
+  const res = await api("POST", "/admin/api/backup-keygen");
+  assert.strictEqual(res.status, 200);
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.strictEqual(written.action, "keygen");
+  assert.ok(Number.isInteger(written.requestId));
+});
+
+test("age-key-once hands the key over exactly once, then 404s", async () => {
+  const config = require("../config");
+  const once = path.join(path.dirname(config.BACKUP_STATUS_FILE), "age-key-once.txt");
+  const KEY = "# public key: age1testtesttest\nAGE-SECRET-KEY-1EXAMPLE\n";
+  fs.writeFileSync(once, KEY, { mode: 0o600 });
+
+  const first = await api("GET", "/admin/api/age-key-once");
+  assert.strictEqual(first.status, 200);
+  assert.strictEqual(await first.text(), KEY);
+  assert.strictEqual(fs.existsSync(once), false, "the file must be gone before the body is served");
+
+  const second = await api("GET", "/admin/api/age-key-once");
+  assert.strictEqual(second.status, 404, "a reload must not produce the key a second time");
+});
+
+test("age-key-once 404s when no key is waiting", async () => {
+  const res = await api("GET", "/admin/api/age-key-once");
+  assert.strictEqual(res.status, 404);
+});
+
+test("the key handover endpoints require auth", async () => {
+  for (const [method, p] of [["POST", "/admin/api/backup-keygen"], ["GET", "/admin/api/age-key-once"]]) {
+    const res = await fetch(base + p, { method });
+    assert.strictEqual(res.status, 401, `${method} ${p} must be behind the auth gate`);
+  }
+});
