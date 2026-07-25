@@ -333,15 +333,19 @@ function applyRequest(env) {
   }
   fs.writeFileSync(env.BACKUP_ENV, renderBackupEnv(v.config, conf), { mode: 0o600 });
   fs.chmodSync(env.BACKUP_ENV, 0o600);
-  fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
-  fs.writeFileSync(
-    env.SCHEDULE_DROPIN,
-    `[Timer]\nOnCalendar=\nOnCalendar=${buildOnCalendar(v.config.schedule)}\n`
-  );
-  try {
-    execFileSync("systemctl", ["daemon-reload"]);
-    execFileSync("systemctl", ["restart", "featherspress-backup.timer"]);
-  } catch {}
+  // "Back up now" must never change WHEN backups run. Only an explicit
+  // apply rewrites the timer.
+  if (v.config.action === "apply") {
+    fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
+    fs.writeFileSync(
+      env.SCHEDULE_DROPIN,
+      `[Timer]\nOnCalendar=\nOnCalendar=${buildOnCalendar(v.config.schedule)}\n`
+    );
+    try {
+      execFileSync("systemctl", ["daemon-reload"]);
+      execFileSync("systemctl", ["restart", "featherspress-backup.timer"]);
+    } catch {}
+  }
   if (v.config.action === "run-now") {
     try {
       execFileSync("systemctl", ["start", "--no-block", "featherspress-backup.service"]);
@@ -388,4 +392,5 @@ module.exports = {
   readRequestNoFollow,
   renderBackupEnv,
   parseEnvFile,
+  applyRequest,
 };

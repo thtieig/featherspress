@@ -1002,6 +1002,11 @@
     if (s.nextRun) parts.push('next ' + fmtTime(s.nextRun));
     parts.push(s.artifactCount + ' kept');
     parts.push(s.encrypted ? 'encrypted (age)' : 'NOT encrypted');
+    var sch = (s.config || {}).schedule || {};
+    if (sch.preset) {
+      parts.push('schedule: ' + sch.preset + (sch.preset === 'hourly' ? '' :
+        ' ' + (sch.weekday ? sch.weekday + ' ' : '') + (sch.timeOfDay || '')));
+    }
     if (s.lastRequestOk === false && s.lastRequestError) parts.push('· last change rejected: ' + s.lastRequestError);
     el('bk-status').textContent = parts.join(' · ');
 
@@ -1011,6 +1016,11 @@
     document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.checked = r.value === dest; });
     if (c.localDir) el('bk-localdir').value = c.localDir;
     if (typeof c.keepLast === 'number') el('bk-keeplast').value = c.keepLast;
+    if (sch.preset) {
+      el('bk-preset').value = sch.preset;
+      if (sch.timeOfDay) el('bk-time').value = sch.timeOfDay;
+      if (sch.weekday) el('bk-weekday').value = sch.weekday;
+    }
 
     // Off-box availability + encryption progressive disclosure.
     var remotes = s.availableRemotes || [];

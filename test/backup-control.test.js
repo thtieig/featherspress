@@ -294,3 +294,29 @@ test("hourly preset with omitted timeOfDay still works", () => {
   const r = bc.validateRequest({ ...base, schedule: { preset: "hourly" } }, CTX);
   assert.ok(r.ok, r.error);
 });
+
+// ---- Task 2: run-now must not touch the schedule --------------------------
+
+test("a run-now request does not rewrite the schedule drop-in", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-"));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "backup-request.json"),
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+  };
+  fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
+  fs.writeFileSync(env.SCHEDULE_DROPIN, "[Timer]\nOnCalendar=\nOnCalendar=Sun *-*-* 03:00:00\n");
+  fs.writeFileSync(env.BACKUP_ENV,
+    "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=14\n" +
+    "BACKUP_SCHEDULE_PRESET=weekly\nBACKUP_SCHEDULE_TIME=03:00\nBACKUP_SCHEDULE_WEEKDAY=Sun\n");
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({
+    requestId: 99, action: "run-now",
+    destination: { type: "local", localDir: "/var/backups/featherspress" },
+    keepLast: 14, schedule: { preset: "daily", timeOfDay: "00:24" },
+  }));
+  bc.applyRequest(env);
+  assert.match(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), /Sun \*-\*-\* 03:00:00/,
+    "run-now must leave the configured schedule alone");
+});

@@ -212,7 +212,13 @@ router.post("/api/backup-run", (req, res) => {
     destination,
     keepLast: cur.keepLast || 14,
     schedule:
-      cur.schedule && cur.schedule.preset ? cur.schedule : { preset: "daily", timeOfDay: "00:24" },
+      cur.schedule && cur.schedule.preset
+        ? {
+            preset: cur.schedule.preset,
+            timeOfDay: cur.schedule.timeOfDay || "00:24",
+            weekday: cur.schedule.weekday || null,
+          }
+        : { preset: "daily", timeOfDay: "00:24", weekday: null },
   });
   res.json({ requestId });
 });
