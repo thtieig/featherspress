@@ -111,6 +111,12 @@ const agentEnv = () => ({
 });
 
 // ---- a DISTINCT source site to restore from -------------------------------
+
+// Deliberately NOT base32: nothing here ever verifies a token against this, it
+// is only round-tripped and compared, and a real-looking seed in the source
+// makes secret scanners cry wolf.
+const SOURCE_TOTP_SENTINEL = "not-a-real-totp-secret";
+
 function buildSourceArchive(name, over = {}) {
   const src = fs.mkdtempSync(path.join(TMP, "source-"));
   fs.mkdirSync(path.join(src, "content", "posts"), { recursive: true });
@@ -125,7 +131,7 @@ function buildSourceArchive(name, over = {}) {
   const authPath = path.join(src, "auth-config.json");
   fs.writeFileSync(authPath, JSON.stringify({
     passwordHash: bcrypt.hashSync("the-source-password", 8),
-    totpSecret: "KRSXG5CTMVRXEZLU",
+    totpSecret: SOURCE_TOTP_SENTINEL,
     recoveryCodeHashes: [],
   }));
   const out = path.join(TMP, name);
@@ -217,7 +223,7 @@ test("a healthy restore replaces the site and reports done", async () => {
   assert.ok(fs.existsSync(path.join(LIVE, "media", "2026", "01", "pic.txt")), "media must land too");
   assert.strictEqual(
     JSON.parse(fs.readFileSync(path.join(LIVE, "auth-config.json"), "utf8")).totpSecret,
-    "KRSXG5CTMVRXEZLU",
+    SOURCE_TOTP_SENTINEL,
     "credentials in the section list must actually migrate"
   );
 
