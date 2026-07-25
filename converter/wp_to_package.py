@@ -35,6 +35,7 @@ import gzip
 import json
 import re
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -218,6 +219,11 @@ def main():
         action="store_true",
         help="wrap prose words containing underscores in `code` (for code-heavy blogs)",
     )
+    ap.add_argument(
+        "--tar",
+        action="store_true",
+        help="also write <out>.tar.gz, ready to upload in /admin -> Restore",
+    )
     args = ap.parse_args()
 
     txt = read_dump(args.db)
@@ -246,6 +252,19 @@ def main():
     write_manifest(args.out, args)
     print(f"\nSite Package ready: {args.out}")
     print(f"Serve it with:  SITE_PACKAGE={args.out} npm start")
+
+    if args.tar:
+        tgz = Path(str(args.out).rstrip("/") + ".tar.gz")
+        # Members are stored relative to the package root, exactly as
+        # site-package.js's `tar -czf out -C stage .` does, so the engine's
+        # importer sees the identical layout.
+        with tarfile.open(tgz, "w:gz") as tf:
+            for item in sorted(args.out.rglob("*")):
+                # recursive=False: rglob("*") already yields every file AND
+                # every directory, so a recursive add() would add each file
+                # a second time once its parent directory is visited.
+                tf.add(item, arcname=str(item.relative_to(args.out)), recursive=False)
+        print(f"uploadable archive: {tgz}")
 
 
 if __name__ == "__main__":

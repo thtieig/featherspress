@@ -10,6 +10,7 @@ prefix, media paths, statuses, shortcodes, link rewriting, YAML safety).
 import json
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -169,6 +170,21 @@ def main():
     out3, log3 = run(build_dump(prefix="myblog_"), prefix="myblog_")
     check("auto-detected non-wp_ prefix", read(out3, "content/posts/first-post.md") is not None)
     check("prefix reported", "myblog_" in log3)
+
+    # --- --tar: uploadable archive with package-root-relative members ---
+    out4, log4 = run(build_dump(), extra=["--tar"])
+    tgz = out4.parent / (out4.name + ".tar.gz")
+    check("--tar reports the archive path", "uploadable archive" in log4)
+    check("--tar archive file created", tgz.exists())
+    if tgz.exists():
+        with tarfile.open(tgz, "r:gz") as tf:
+            names = tf.getnames()
+        check("archive has site.json at the root", "site.json" in names)
+        check("archive has content/posts/first-post.md at the root", "content/posts/first-post.md" in names)
+        check(
+            "no member path includes the output dir name (root-relative, not absolute)",
+            not any(n.startswith(out4.name) or n.startswith("/") or ".." in n.split("/") for n in names),
+        )
 
     # --- report ---
     ok = sum(1 for _, c in checks if c)
