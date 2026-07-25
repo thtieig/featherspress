@@ -18,6 +18,7 @@ const bcrypt = require("bcryptjs");
 const { verify: verifyTotp } = require("otplib");
 const matter = require("gray-matter");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const multer = require("multer");
@@ -29,6 +30,8 @@ const contract = require("../src/contract");
 const manifest = require("../src/manifest");
 const skin = require("../src/skin");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
+const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
+const archive = require("./archive");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
 const PAGES_DIR = path.join(config.CONTENT_DIR, "pages");
@@ -225,6 +228,65 @@ router.post("/api/backup-run", (req, res) => {
         : { preset: "daily", timeOfDay: "00:24", weekday: null },
   });
   res.json({ requestId });
+});
+
+// ---- export (Site Package download) ---------------------------------------
+// Streams a .tar.gz (profile "site": content/media/site, no credentials) or,
+// when the caller asks for "credentials" or `encrypt=1`, a .tar.gz.age
+// encrypted to the box's configured age recipient. A credentials-bearing
+// export is refused outright when no recipient is configured — never
+// downgraded to plaintext.
+router.get("/api/export", (req, res) => {
+  const requested = String(req.query.sections || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const sections = requested.length ? requested : ["content", "media", "site"];
+  for (const s of sections) {
+    if (!SECTIONS.includes(s)) return res.status(400).json({ error: "unknown section" });
+  }
+
+  let status = null;
+  try {
+    status = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+  } catch {}
+
+  const wantsSecrets = sections.includes("credentials");
+  const recipient = status && status.ageRecipient;
+  // An archive carrying the password hash + TOTP secret must never leave the
+  // box in plaintext. Refuse rather than silently downgrade.
+  if (wantsSecrets && !recipient) {
+    return res.status(409).json({
+      error: "This archive contains your credentials, so it must be encrypted. " +
+             "Set up encryption first (Scheduled backup → Set up encryption).",
+    });
+  }
+
+  // 0700 dir: the staged artifact may carry credentials.
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "fp-uiexport-"));
+  fs.chmodSync(stage, 0o700);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
+  let file = path.join(stage, `featherspress-${stamp}.tar.gz`);
+  try {
+    const manifestObj = manifest.load();
+    const paths = resolvePackagePaths(config, manifestObj);
+    exportPackage({
+      ...paths,
+      profile: wantsSecrets ? "full" : "site",
+      sections,
+      settings: sections.includes("settings") ? archive.buildSettings(status) : null,
+      outFile: file,
+    });
+    if (wantsSecrets || req.query.encrypt === "1") {
+      if (!recipient) throw new Error("no age recipient configured");
+      archive.encryptToRecipient(file, file + ".age", recipient);
+      fs.rmSync(file, { force: true });
+      file = file + ".age";
+    }
+    res.download(file, path.basename(file), () => {
+      fs.rmSync(stage, { recursive: true, force: true });
+    });
+  } catch (e) {
+    fs.rmSync(stage, { recursive: true, force: true });
+    res.status(500).json({ error: "Export failed: " + e.message });
+  }
 });
 
 // ---- content helpers -----------------------------------------------------

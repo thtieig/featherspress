@@ -1,0 +1,76 @@
+"use strict";
+
+// admin/archive.js: the age encryption helper (key-based both ways — `age -p`
+// cannot be driven from a web app, see the module header) and buildSettings,
+// which turns the root-written backup-status.json into a portable
+// settings.json. The age round-trip tests SKIP (not fail) when `age`/
+// `age-keygen` are absent, so the suite still runs on a dev box without them.
+
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+const archive = require("../admin/archive");
+
+const HAVE_AGE = (() => {
+  try {
+    execFileSync("age", ["--version"], { stdio: "pipe" });
+    execFileSync("age-keygen", ["--version"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test("age round-trip with a piped identity", { skip: !HAVE_AGE }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-age-"));
+  execFileSync("age-keygen", ["-o", path.join(dir, "key.txt")], { stdio: "pipe" });
+  const identity = fs.readFileSync(path.join(dir, "key.txt"), "utf8");
+  const recipient = identity.match(/public key: (age1\w+)/)[1];
+  fs.writeFileSync(path.join(dir, "plain.txt"), "the site");
+  archive.encryptToRecipient(path.join(dir, "plain.txt"), path.join(dir, "c.age"), recipient);
+  archive.decryptWithIdentity(path.join(dir, "c.age"), path.join(dir, "out.txt"), identity);
+  assert.strictEqual(fs.readFileSync(path.join(dir, "out.txt"), "utf8"), "the site");
+  // The decrypted artifact may carry credentials — must never be world-readable.
+  assert.strictEqual(fs.statSync(path.join(dir, "out.txt")).mode & 0o777, 0o600);
+});
+
+test("decrypting with the wrong identity throws", { skip: !HAVE_AGE }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-age-"));
+  execFileSync("age-keygen", ["-o", path.join(dir, "key.txt")], { stdio: "pipe" });
+  const identity = fs.readFileSync(path.join(dir, "key.txt"), "utf8");
+  const recipient = identity.match(/public key: (age1\w+)/)[1];
+
+  execFileSync("age-keygen", ["-o", path.join(dir, "wrong-key.txt")], { stdio: "pipe" });
+  const wrongIdentity = fs.readFileSync(path.join(dir, "wrong-key.txt"), "utf8");
+
+  fs.writeFileSync(path.join(dir, "plain.txt"), "the site");
+  archive.encryptToRecipient(path.join(dir, "plain.txt"), path.join(dir, "c.age"), recipient);
+
+  assert.throws(
+    () => archive.decryptWithIdentity(path.join(dir, "c.age"), path.join(dir, "out.txt"), wrongIdentity),
+    /could not decrypt/
+  );
+});
+
+test("buildSettings pulls the portable fields out of status", () => {
+  const s = archive.buildSettings({
+    config: {
+      destType: "local",
+      localDir: "/var/backups/featherspress",
+      keepLast: 14,
+      schedule: { preset: "weekly", timeOfDay: "03:00", weekday: "Sun" },
+      sections: ["content"],
+    },
+    ageRecipient: "age1abc",
+    update: { autoApply: false, repoRef: "main" },
+  });
+  assert.strictEqual(s.schemaVersion, 1);
+  assert.strictEqual(s.backup.keepLast, 14);
+  assert.strictEqual(s.backup.schedule.weekday, "Sun");
+  assert.strictEqual(s.backup.ageRecipient, "age1abc");
+  assert.strictEqual(s.update.autoApply, false);
+  assert.strictEqual(s.backup.localDir, "/var/backups/featherspress");
+});

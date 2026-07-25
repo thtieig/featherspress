@@ -371,3 +371,25 @@ test("backup endpoints require auth", async () => {
   const res = await fetch(base + "/admin/api/backup-status");
   assert.strictEqual(res.status, 401);
 });
+
+// ---- export (Site Package download) --------------------------------------
+
+test("export: content-only package downloads as a non-empty archive", async () => {
+  const res = await api("GET", "/admin/api/export?sections=content");
+  assert.strictEqual(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /application\/(gzip|octet-stream)/);
+  const buf = Buffer.from(await res.arrayBuffer());
+  assert.ok(buf.length > 0, "archive body must not be empty");
+});
+
+test("export: unknown section is rejected", async () => {
+  const res = await api("GET", "/admin/api/export?sections=bogus");
+  assert.strictEqual(res.status, 400);
+});
+
+test("export: credentials without a configured age recipient is refused", async () => {
+  const res = await api("GET", "/admin/api/export?sections=credentials");
+  assert.strictEqual(res.status, 409);
+  const j = await res.json();
+  assert.match(j.error, /encrypt/i);
+});
