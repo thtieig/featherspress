@@ -187,12 +187,32 @@ function importPackage(opts) {
     restoreAuth = false,
   } = opts;
 
+  // Which sections to restore. Omitting `sections` restores every section the
+  // package carries — exactly the pre-sections behaviour, which the production
+  // boxes' existing artifacts and the documented CLI restore both rely on.
+  const want = new Set(opts.sections || SECTIONS);
+  for (const s of want) {
+    if (!SECTIONS.includes(s)) throw new Error(`unknown section: ${s}`);
+  }
+
   const { dir, cleanup } = resolveSource(src);
   try {
-    // Validate the package is renderable before touching the live dir.
-    if (!fs.existsSync(path.join(dir, "site.json"))) throw new Error("package missing site.json");
-    if (!fs.existsSync(path.join(dir, "content"))) throw new Error("package missing content/");
-    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "site.json"), "utf8"));
+    // Validate the package is renderable before touching the live dir — but only
+    // for the sections actually being restored. Checking unconditionally made a
+    // content-only restore fail against a package that legitimately carries no
+    // site.json, and vice versa. The check still fires when the section IS
+    // requested, so restoring `site` from an archive without one is still loud.
+    if (want.has("site") && !fs.existsSync(path.join(dir, "site.json"))) {
+      throw new Error("package missing site.json");
+    }
+    if (want.has("content") && !fs.existsSync(path.join(dir, "content"))) {
+      throw new Error("package missing content/");
+    }
+    // The manifest is only needed to resolve the skin, which lives in `site`.
+    const manifest =
+      want.has("site") && fs.existsSync(path.join(dir, "site.json"))
+        ? JSON.parse(fs.readFileSync(path.join(dir, "site.json"), "utf8"))
+        : {};
     const skinName = manifest.skin;
     // The skin name comes from the PACKAGE's site.json — untrusted input — and is
     // used below as a path segment under skinsDir, where replaceDir()'s first act
@@ -228,14 +248,17 @@ function importPackage(opts) {
     // Everything this package will need a destination for must be known BEFORE
     // the first replaceDir: a missing path discovered later throws with content
     // and media already gone, leaving a half-restored data dir and no rollback.
-    const required = [
-      ["contentDir", contentDir],
-      ["mediaDir", mediaDir],
-      ["manifestPath", manifestPath],
-    ];
-    if (skinName && fs.existsSync(path.join(dir, "skins", skinName))) required.push(["skinsDir", skinsDir]);
-    if (fs.existsSync(path.join(dir, "favicon"))) required.push(["faviconDir", faviconDir]);
-    if (restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
+    // Each entry is conditional on its section actually being restored, or a
+    // sections-limited restore would demand a path it will never write to.
+    const required = [];
+    if (want.has("content")) required.push(["contentDir", contentDir]);
+    if (want.has("media") && fs.existsSync(path.join(dir, "media"))) required.push(["mediaDir", mediaDir]);
+    if (want.has("site")) required.push(["manifestPath", manifestPath]);
+    if (want.has("site") && skinName && fs.existsSync(path.join(dir, "skins", skinName))) {
+      required.push(["skinsDir", skinsDir]);
+    }
+    if (want.has("site") && fs.existsSync(path.join(dir, "favicon"))) required.push(["faviconDir", faviconDir]);
+    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
       required.push(["authConfigPath", authConfigPath]);
     }
     for (const [name, value] of required) {
@@ -248,29 +271,42 @@ function importPackage(opts) {
     // existing: docs/DEPLOY.md step 1 creates an empty content dir, so testing
     // existence made every first-ever import fail with "already has content" —
     // which was both obstructive and untrue.
-    if (!force && fs.existsSync(contentDir) && fs.readdirSync(contentDir).length > 0) {
+    if (
+      want.has("content") &&
+      !force &&
+      fs.existsSync(contentDir) &&
+      fs.readdirSync(contentDir).length > 0
+    ) {
       throw new Error(
         `refusing to overwrite existing content at ${contentDir} without --force ` +
           `(${fs.readdirSync(contentDir).length} entries)`
       );
     }
 
-    // site.json + content + media are required sections → always replaced.
-    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-    fs.copyFileSync(path.join(dir, "site.json"), manifestPath);
-    replaceDir(contentDir, path.join(dir, "content"));
-    if (fs.existsSync(path.join(dir, "media"))) {
+    // Each section is replaced only when it was requested AND the package
+    // carries it. A section the caller did not ask for is left untouched on
+    // disk — that is the whole point of a selective restore.
+    if (want.has("site")) {
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.copyFileSync(path.join(dir, "site.json"), manifestPath);
+    }
+    if (want.has("content")) {
+      replaceDir(contentDir, path.join(dir, "content"));
+    }
+    if (want.has("media") && fs.existsSync(path.join(dir, "media"))) {
       replaceDir(mediaDir, path.join(dir, "media"));
     }
-    // Optional sections: replaced only when the package carries them.
-    if (skinName && fs.existsSync(path.join(dir, "skins", skinName))) {
+    // site.json names the skin, so the skin and favicon travel WITH `site`:
+    // restoring a manifest that names a skin we did not restore leaves the
+    // service unable to boot.
+    if (want.has("site") && skinName && fs.existsSync(path.join(dir, "skins", skinName))) {
       replaceDir(path.join(skinsDir, skinName), path.join(dir, "skins", skinName));
     }
-    if (fs.existsSync(path.join(dir, "favicon"))) {
+    if (want.has("site") && fs.existsSync(path.join(dir, "favicon"))) {
       replaceDir(faviconDir, path.join(dir, "favicon"));
     }
-    // Credentials: only from a package that carries them, and only on request.
-    if (restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
+    // Credentials: requested section AND explicit restoreAuth AND present.
+    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
       fs.copyFileSync(path.join(dir, "auth-config.json"), authConfigPath);
       // Restore must not widen permissions on the password hash + TOTP secret,
       // whatever mode the file had inside the archive.
@@ -520,7 +556,22 @@ function main(argv = process.argv.slice(2)) {
       exportPackage({ ...paths, profile: "full", outFile: safety });
       process.stderr.write(`pre-restore backup of current data → ${safety}\n`);
     }
-    importPackage({ src, ...paths, force: !!flags.force, restoreAuth: !!flags.restoreAuth });
+    const importSections = flags.sections
+      ? flags.sections.split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    if (importSections) {
+      for (const s of importSections) {
+        if (!SECTIONS.includes(s)) throw new Error(`unknown section: ${s}`);
+      }
+      process.stderr.write(`restoring sections: ${importSections.join(", ")}\n`);
+    }
+    importPackage({
+      src,
+      ...paths,
+      sections: importSections,
+      force: !!flags.force,
+      restoreAuth: !!flags.restoreAuth,
+    });
     const reowned = reownAfterRootRestore(paths);
     if (reowned) {
       process.stderr.write(`restored as root — handed the data back to uid ${reowned.uid}:${reowned.gid}\n`);
