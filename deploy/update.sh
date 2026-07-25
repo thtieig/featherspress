@@ -157,10 +157,16 @@ if ! healthy; then
   exit 1
 fi
 
-# Success: we're now at the pulled commit; refresh status (behind=0).
+# Success: the restart and health-check both passed, so the deploy is already
+# healthy — disarm the rollback trap BEFORE the status refresh below, since an
+# assignment from a failing command substitution fires ERR too, and that would
+# roll back an already-healthy, already-restarted deploy over nothing worse
+# than a flaky `git rev-parse`.
+trap - ERR
+
+# Refresh status (behind=0) now that we're at the pulled commit.
 CURRENT="$(git_as rev-parse HEAD)"
 BEHIND=0
 AVAILABLE_BOOL=false
-trap - ERR
 write_status
 echo "[update] applied and healthy at ${CURRENT:0:7}."

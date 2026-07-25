@@ -219,6 +219,13 @@ router.post("/api/backup-run", (req, res) => {
     action: "run-now",
     destination,
     keepLast: cur.keepLast || 14,
+    // Forward the current scope so "Back up now" never widens it back to
+    // all five sections. `cur.sections` is null on any box that has never
+    // set a scope (both production boxes as of this writing) — that MUST
+    // become `undefined`, not null, so validateRequest's absent-field
+    // back-compat default (all sections) applies instead of the array
+    // check rejecting the whole run-now request.
+    sections: Array.isArray(cur.sections) ? cur.sections : undefined,
     schedule:
       cur.schedule && cur.schedule.preset
         ? {
