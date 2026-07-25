@@ -25,6 +25,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { buildSettings } = require("../src/settings");
 
 // The five sections are the shared unit of export, selective import, and the
 // scheduled backup's scope. site.json travels WITH the skin and favicon: the
@@ -469,7 +470,22 @@ function main(argv = process.argv.slice(2)) {
     for (const s of sections) {
       if (!SECTIONS.includes(s)) throw new Error(`unknown section: ${s}`);
     }
-    exportPackage({ ...paths, profile, sections, outFile });
+    // settings.json needs an OBJECT built from the root agent's
+    // backup-status.json (config.BACKUP_STATUS_FILE) — nothing else on this
+    // path has that. A missing/unparseable status file must never fail the
+    // whole backup: skip just the settings section and say so.
+    let settings;
+    if (sections.includes("settings")) {
+      try {
+        const status = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+        settings = buildSettings(status);
+      } catch {
+        process.stderr.write(
+          "settings not captured: backup-status.json is missing or unreadable\n"
+        );
+      }
+    }
+    exportPackage({ ...paths, profile, sections, outFile, settings });
     process.stderr.write(`exported ${profile} package → ${outFile}\n`);
     return outFile;
   }

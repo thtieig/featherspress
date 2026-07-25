@@ -63,6 +63,90 @@ function listTar(tarball) {
     .filter(Boolean);
 }
 
+// The nightly backup (deploy/backup.sh) runs exactly `export --profile full`,
+// so the "full" profile must actually capture settings.json — not just list
+// "settings" in sectionsForProfile. The status file (config.BACKUP_STATUS_FILE,
+// which defaults beside content/) is written by the root backup-control agent;
+// the CLI must read it and build settings via the SAME buildSettings the
+// /admin export endpoint uses.
+test("CLI export --profile full with a backup-status.json produces settings.json with the expected values", () => {
+  const pkg = makePkg();
+  fs.writeFileSync(
+    path.join(pkg, "backup-status.json"),
+    JSON.stringify({
+      config: {
+        destType: "local",
+        localDir: "/var/backups/featherspress",
+        keepLast: 7,
+        schedule: { preset: "weekly", timeOfDay: "02:15", weekday: "Sat" },
+        sections: ["content", "media", "site", "settings", "credentials"],
+      },
+      ageRecipient: "age1testrecipient",
+      update: { autoApply: true, repoRef: "main" },
+    })
+  );
+  const out = path.join(pkg, "full.tar.gz");
+  try {
+    run(["export", "--profile", "full", "--out", out], envFor(pkg));
+    const entries = listTar(out);
+    assert.ok(entries.includes("settings.json"), "settings.json present");
+    assert.ok(entries.includes("content/posts/hello.md"), "content still present");
+
+    const unpack = fs.mkdtempSync(path.join(os.tmpdir(), "fp-cli-settings-"));
+    try {
+      execFileSync("tar", ["-xzf", out, "-C", unpack]);
+      const settings = JSON.parse(fs.readFileSync(path.join(unpack, "settings.json"), "utf8"));
+      assert.strictEqual(settings.schemaVersion, 1);
+      assert.strictEqual(settings.backup.keepLast, 7);
+      assert.strictEqual(settings.backup.localDir, "/var/backups/featherspress");
+      assert.strictEqual(settings.backup.schedule.weekday, "Sat");
+      assert.strictEqual(settings.backup.ageRecipient, "age1testrecipient");
+      assert.strictEqual(settings.update.autoApply, true);
+    } finally {
+      fs.rmSync(unpack, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+  }
+});
+
+// A missing status file must never fail the whole nightly backup — it must
+// just omit the settings section.
+test("CLI export --profile full with no backup-status.json still succeeds and omits settings.json", () => {
+  const pkg = makePkg();
+  const out = path.join(pkg, "full.tar.gz");
+  try {
+    const res = spawnSync("node", [CLI, "export", "--profile", "full", "--out", out], {
+      encoding: "utf8",
+      env: { ...process.env, ...envFor(pkg) },
+    });
+    assert.strictEqual(res.status, 0, res.stderr);
+    assert.match(res.stderr, /settings not captured/);
+    assert.ok(fs.existsSync(out), "archive still produced");
+    const entries = listTar(out);
+    assert.ok(!entries.includes("settings.json"), "settings.json omitted, not written with nulls");
+    assert.ok(entries.includes("content/posts/hello.md"), "content still present");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+  }
+});
+
+test("CLI export --profile site never contains settings.json, even with a backup-status.json present", () => {
+  const pkg = makePkg();
+  fs.writeFileSync(
+    path.join(pkg, "backup-status.json"),
+    JSON.stringify({ config: { destType: "local", keepLast: 14 } })
+  );
+  const out = path.join(pkg, "site.tar.gz");
+  try {
+    run(["export", "--profile", "site", "--out", out], envFor(pkg));
+    const entries = listTar(out);
+    assert.ok(!entries.includes("settings.json"), "site profile never carries settings.json");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+  }
+});
+
 test("CLI export --profile full resolves skin+favicon+auth from SITE_PACKAGE config", () => {
   const pkg = makePkg();
   const out = path.join(pkg, "full.tar.gz");

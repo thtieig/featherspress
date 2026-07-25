@@ -1,7 +1,8 @@
 "use strict";
 
-// Artifact helpers for the /admin export + restore path: age encryption, and
-// turning the root-written backup-status.json into a portable settings.json.
+// Artifact helpers for the /admin export + restore path: age encryption, plus
+// a re-export of buildSettings (src/settings.js), which turns the
+// root-written backup-status.json into a portable settings.json.
 //
 // Encryption is KEY-BASED in both directions. `age -p` cannot be used: it opens
 // /dev/tty unconditionally and 1.1.1 has no --passphrase-file, so a web app
@@ -15,6 +16,7 @@
 
 const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
+const { buildSettings } = require("../src/settings");
 
 function encryptToRecipient(inFile, outFile, recipient) {
   if (!recipient) throw new Error("no age recipient configured");
@@ -36,33 +38,7 @@ function decryptWithIdentity(inFile, outFile, identityText) {
   fs.chmodSync(outFile, 0o600);
 }
 
-// The portable half of the box's configuration. Box-specific facts (paths,
-// users, NODE_BIN, SESSION_SECRET) are absent by construction — this only ever
-// reads fields the root agent already publishes.
-function buildSettings(status) {
-  const c = (status && status.config) || {};
-  const sch = c.schedule || {};
-  return {
-    schemaVersion: 1,
-    backup: {
-      destType: c.destType || "local",
-      localDir: c.localDir || null,
-      remote: c.remote || null,
-      remotePath: c.remotePath || null,
-      keepLast: typeof c.keepLast === "number" ? c.keepLast : 14,
-      schedule: {
-        preset: sch.preset || "daily",
-        timeOfDay: sch.timeOfDay || "00:24",
-        weekday: sch.weekday || null,
-      },
-      sections: Array.isArray(c.sections) ? c.sections : null,
-      ageRecipient: (status && status.ageRecipient) || null,
-    },
-    update: {
-      autoApply: !!(status && status.update && status.update.autoApply),
-      repoRef: (status && status.update && status.update.repoRef) || "main",
-    },
-  };
-}
-
+// buildSettings itself now lives in src/settings.js — pure logic shared with
+// the CLI (tools/site-package.js). Re-exported here so admin/router.js keeps
+// working unchanged.
 module.exports = { encryptToRecipient, decryptWithIdentity, buildSettings };
