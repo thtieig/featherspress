@@ -244,6 +244,37 @@ under `/media/`, and `/admin` (sign in, create a test draft, preview, publish,
 delete it). A `Cache-Control: public, max-age=…` header on a `/media` file
 confirms Apache served it off disk instead of proxying it to Node.
 
+## 10. The backup / restore agent
+
+**Install this if you want the `/admin` → *Backup & Restore* panel to work at
+all** — including restoring an archive onto this box. The app runs unprivileged:
+it can neither edit `/etc` nor restart itself, so it only ever *writes a request
+file* into the data dir. A root systemd unit reads that request, decides whether
+to honour it, and does the work. Without these units nothing reads the requests,
+the panel reports "Backups are not configured on this server yet", and a Restore
+would never be applied.
+
+```sh
+sudo cp /opt/featherspress/deploy/featherspress-backup-control.{path,service,timer} \
+        /etc/systemd/system/
+# If your Node is not at /opt/node (e.g. a distro package at /usr/bin/node),
+# fix the two ExecStart lines first:
+#   sudo sed -i 's|/opt/node/bin/node|/usr/bin/node|' \
+#     /etc/systemd/system/featherspress-backup-control.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now featherspress-backup-control.path \
+                            featherspress-backup-control.timer
+# Within ~2 minutes it writes the status file the panel reads. Force it now:
+sudo systemctl start featherspress-backup-control.service
+ls -l /var/lib/featherspress/backup-status.json
+```
+
+Reload `/admin` → **Backup & Restore**; the panel should now show a schedule
+form, Export and Restore instead of the "not configured" message. Set the
+schedule itself from that panel — you do not need to write `backup.env` by hand.
+The *scheduled* backup additionally needs `featherspress-backup.{service,timer}`
+(see "Day-to-day" below); restore does not.
+
 ## Day-to-day
 
 Write at `https://your-domain/admin`. Saving publishes instantly (the engine
@@ -321,15 +352,27 @@ rejected (it can carry scripts).
 
 ## Migrating an existing site onto this box
 
-Instead of copying content by hand at step 5:
+Skip step 5 entirely — the archive *is* the content. The engine boots fine with
+an empty data dir and no `site.json`.
 
-1. Finish steps 0-4 (packages, user, node, code, runtime config).
-2. Run `node setup.js` to create a temporary login.
-3. Start the service and sign in to `/admin`.
-4. **Backup & Restore → Restore**: upload the archive exported from the old box,
-   paste its age private key if encrypted, tick every section, confirm.
-5. The service restarts and signs you out. Sign back in with the **old site's**
+1. Finish steps 0-4 (packages, user, node, code, runtime config). Install `age`
+   at step 0 if the archive is encrypted; the restore decrypts it on this box.
+2. Run `node setup.js` (step 6) to create a temporary login.
+3. Start the service (step 7) and put the proxy in front (step 9).
+4. **Install the backup/restore agent — step 10.** This is not optional for
+   this flow: without it the Restore block reports that the agent is missing and
+   stays disabled, because nothing would ever apply the request.
+5. Sign in to `/admin` → **Backup & Restore → Restore**: upload the archive
+   exported from the old box, paste its age private key if encrypted, tick every
+   section, type `RESTORE`, confirm.
+6. The service restarts and signs you out. Sign back in with the **old site's**
    password and 2FA — restoring Credentials replaced the ones setup.js just made.
+
+Restoring the `settings` section also brings the old box's backup schedule,
+retention, destination and age recipient across, so the new box starts backing
+itself up on the same terms. Check with
+`systemctl list-timers featherspress-backup.timer` afterwards — it needs
+`featherspress-backup.{service,timer}` installed (see "Day-to-day") to run.
 
 If the restored site fails to render, the root agent puts your previous state
 back automatically and reports `rolled-back` in the panel.

@@ -266,6 +266,7 @@
 
   <!-- BACKUPS -->
   <section id="view-backups" hidden>
+    <h3 style="margin-top:0;">Scheduled backup</h3>
     <div id="bk-status" class="sub" style="margin-bottom:16px;">Loading backup status…</div>
 
     <div id="bk-form" hidden>
@@ -326,53 +327,58 @@
         <button class="secondary" id="bk-run">Back up now</button>
       </div>
       <div id="bk-msg" style="margin-top:12px;"></div>
-
-      <hr style="margin:22px 0;">
-      <h3>Export</h3>
-      <div style="margin:4px 0 14px; display:flex; flex-direction:column; align-items:flex-start; gap:8px;">
-        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="migrate" checked> Migrate this site <span class="hint">(everything, encrypted)</span></label>
-        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="portable"> Portable site <span class="hint">(no secrets)</span></label>
-        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="custom"> Custom…</label>
-      </div>
-      <div id="ex-custom" hidden style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
-        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="content" checked> Content</label>
-        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="media" checked> Media</label>
-        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="site" checked> Site &amp; skin</label>
-        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="settings"> Settings</label>
-        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="credentials"> Credentials</label>
-      </div>
-      <div id="ex-note" class="hint" style="margin-bottom:10px;"></div>
-      <div class="actions"><button id="ex-download">Download archive</button></div>
-
-      <hr style="margin:22px 0;">
-      <h3>Restore</h3>
-      <div class="hint" style="margin-bottom:10px;">
-        Upload a Featherspress archive (.tar.gz, or .tar.gz.age if encrypted) and choose what to bring back.
-        Restoring <strong>replaces</strong> the sections you pick &mdash; anything in them that is not in the
-        archive is deleted. Your current site is snapshotted first, and put back automatically if the
-        restored site fails to come up.
-      </div>
-      <div style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
-      <div id="rs-key-wrap" hidden style="margin-bottom:12px;">
-        <label>Decryption key <span class="hint">the age private key you saved when you set up encryption</span></label>
-        <textarea id="rs-key" rows="3" placeholder="AGE-SECRET-KEY-1..." style="width:100%;font-family:monospace;"></textarea>
-      </div>
-      <label>What to restore</label>
-      <div id="rs-scope" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:4px 0 12px;">
-        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="content" checked> Content</label>
-        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="media" checked> Media</label>
-        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="site" checked> Site &amp; skin</label>
-        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="settings"> Settings</label>
-        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="credentials"> Credentials</label>
-      </div>
-      <div id="rs-cred-warn" hidden style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
-      <div id="rs-confirm-wrap" hidden style="margin-bottom:12px;">
-        <label>Type <code id="rs-sitename"></code> to confirm</label>
-        <input type="text" id="rs-confirm" autocomplete="off">
-      </div>
-      <div class="actions"><button id="rs-go" disabled>Restore</button></div>
-      <div id="rs-msg" class="hint" style="margin-top:10px;"></div>
     </div>
+
+    <!-- Export and Restore live OUTSIDE #bk-form on purpose. Neither needs a
+         configured backup schedule, and hiding Restore until backups are set up
+         made the one flow this feature exists for — bare box, install, restore
+         an archive from the old box — impossible to reach. -->
+    <hr style="margin:22px 0;">
+    <h3>Export</h3>
+    <div style="margin:4px 0 14px; display:flex; flex-direction:column; align-items:flex-start; gap:8px;">
+      <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="migrate" checked> Migrate this site <span class="hint">(everything, encrypted)</span></label>
+      <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="portable"> Portable site <span class="hint">(no secrets)</span></label>
+      <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="custom"> Custom…</label>
+    </div>
+    <div id="ex-custom" hidden style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
+      <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="content" checked> Content</label>
+      <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="media" checked> Media</label>
+      <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="site" checked> Site &amp; skin</label>
+      <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="settings"> Settings</label>
+      <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="credentials"> Credentials</label>
+    </div>
+    <div id="ex-note" class="hint" style="margin-bottom:10px;"></div>
+    <div class="actions"><button id="ex-download">Download archive</button></div>
+
+    <hr style="margin:22px 0;">
+    <h3>Restore</h3>
+    <div class="hint" style="margin-bottom:10px;">
+      Upload a Featherspress archive (.tar.gz, or .tar.gz.age if encrypted) and choose what to bring back.
+      Restoring <strong>replaces</strong> the sections you pick &mdash; anything in them that is not in the
+      archive is deleted. Your current site is snapshotted first, and put back automatically if the
+      restored site fails to come up.
+    </div>
+    <div id="rs-noagent" hidden class="hint" style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
+    <div style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
+    <div id="rs-key-wrap" hidden style="margin-bottom:12px;">
+      <label>Decryption key <span class="hint">the age private key you saved when you set up encryption</span></label>
+      <textarea id="rs-key" rows="3" placeholder="AGE-SECRET-KEY-1..." style="width:100%;font-family:monospace;"></textarea>
+    </div>
+    <label>What to restore</label>
+    <div id="rs-scope" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:4px 0 12px;">
+      <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="content" checked> Content</label>
+      <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="media" checked> Media</label>
+      <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="site" checked> Site &amp; skin</label>
+      <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="settings"> Settings</label>
+      <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="credentials"> Credentials</label>
+    </div>
+    <div id="rs-cred-warn" hidden style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
+    <div id="rs-confirm-wrap" hidden style="margin-bottom:12px;">
+      <label>Type <code id="rs-sitename"></code> to confirm</label>
+      <input type="text" id="rs-confirm" autocomplete="off">
+    </div>
+    <div class="actions"><button id="rs-go" disabled>Restore</button></div>
+    <div id="rs-msg" class="hint" style="margin-top:10px;"></div>
   </section>
 </main>
 
@@ -1047,9 +1053,25 @@
 
   function renderBackupStatus(s) {
     bkLastStatus = s;
-    if (!s || s.configured === false) {
+    // The status file is written by the ROOT agent, every apply and every
+    // 2-minute safety tick, whether or not a schedule is set. So its total
+    // absence means one thing only: the agent has never run here, i.e. the
+    // backup-control units are not installed. Restore is applied by that same
+    // agent, so say so plainly rather than letting a Restore click write a
+    // request nothing will ever read.
+    var noAgent = !s || s.configured === false;
+    el('rs-noagent').hidden = !noAgent;
+    if (noAgent) {
+      el('rs-noagent').textContent =
+        'The backup/restore agent is not installed on this server, so a restore would never be ' +
+        'applied. Install it first (see DEPLOY.md): copy deploy/featherspress-backup-control.* to ' +
+        '/etc/systemd/system, then enable featherspress-backup-control.path and .timer.';
+    }
+    if (noAgent) {
       el('bk-status').textContent = 'Backups are not configured on this server yet.';
       el('bk-form').hidden = true;
+      syncExportNote();
+      rsSync();
       return;
     }
     el('bk-form').hidden = false;
@@ -1247,7 +1269,10 @@
     el('rs-confirm-wrap').hidden = !f;
     el('rs-sitename').textContent = rsSiteName();
     var typed = (el('rs-confirm').value || '').trim() === rsSiteName();
-    el('rs-go').disabled = !(f && secs.length && typed && (!enc || (el('rs-key').value || '').trim()));
+    // null means "status not loaded yet" — only a status we have actually read
+    // and found absent proves the agent is missing.
+    var noAgent = !!bkLastStatus && bkLastStatus.configured === false;
+    el('rs-go').disabled = !(f && secs.length && typed && !noAgent && (!enc || (el('rs-key').value || '').trim()));
   }
   ['rs-file', 'rs-confirm', 'rs-key'].forEach(function (id) {
     el(id) && el(id).addEventListener('input', rsSync);
