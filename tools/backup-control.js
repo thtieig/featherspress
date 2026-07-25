@@ -65,7 +65,19 @@ function validateRequest(req, ctx) {
   if (!req || typeof req !== "object") return fail("malformed request");
   if (!Number.isInteger(req.requestId) || req.requestId <= ctx.appliedRequestId)
     return fail("stale or invalid requestId");
-  if (req.action !== "apply" && req.action !== "run-now") return fail("action must be apply or run-now");
+  if (req.action !== "apply" && req.action !== "run-now" && req.action !== "keygen") {
+    return fail("action must be apply, run-now or keygen");
+  }
+
+  // Generating the box's backup key needs no destination, retention or
+  // schedule, so it short-circuits the rest of the whitelist. It is refused
+  // outright once a recipient exists: silently rotating the key would orphan
+  // every encrypted backup already taken, and the operator would not find out
+  // until the day they needed one.
+  if (req.action === "keygen") {
+    if (ctx.ageRecipientSet) return fail("encryption is already set up on this box");
+    return { ok: true, config: { action: "keygen" } };
+  }
 
   const d = req.destination || {};
   let localDir = null;
@@ -445,6 +457,71 @@ function consumeRequest(requestPath, requestId) {
   } catch {}
 }
 
+// Set one variable in backup.env, leaving every other line exactly as it was.
+// Deliberately NOT renderBackupEnv: on a box that has never configured a
+// backup there is no destination, retention or schedule to render, and
+// inventing a schedule as a side effect of generating a key would be a nasty
+// surprise. Creates the file if it is not there yet.
+function setEnvVar(envPath, key, value) {
+  assertEnvSafe(key, value);
+  let lines = [];
+  try {
+    lines = fs.readFileSync(envPath, "utf8").split("\n");
+  } catch {}
+  const re = new RegExp(`^\\s*${key}\\s*=`);
+  const idx = lines.findIndex((l) => re.test(l));
+  if (idx === -1) {
+    while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+    lines.push(`${key}=${value}`);
+  } else {
+    lines[idx] = `${key}=${value}`;
+  }
+  const body = lines.join("\n").replace(/\n*$/, "\n");
+  fs.writeFileSync(envPath, body, { mode: 0o600 });
+  fs.chmodSync(envPath, 0o600);
+}
+
+// Generate the box's backup key. The PUBLIC half goes into backup.env; the
+// PRIVATE half is written once, 0600, owned by the app user, into the data dir
+// for the app to hand to the operator and delete. Root never keeps it and it is
+// never logged or put in the status file — lose it and encrypted backups are
+// unrecoverable, which is exactly what the UI has to say out loud.
+// Returns null on success, or a fixed error string.
+function generateAgeKey(env, conf) {
+  if (conf.AGE_RECIPIENT) return "encryption is already set up on this box";
+  let out;
+  try {
+    out = execFileSync("age-keygen", [], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
+    return "could not run age-keygen — is `age` installed on this server?";
+  }
+  const secret = (out.match(/^(AGE-SECRET-KEY-1[0-9A-Z]+)$/m) || [])[1];
+  const recipient = (out.match(/public key:\s*(age1[0-9a-z]+)/) || [])[1];
+  if (!secret || !recipient) return "age-keygen produced something unrecognisable";
+
+  const onceFile = path.join(path.dirname(env.BACKUP_STATUS), "age-key-once.txt");
+  try {
+    fs.writeFileSync(onceFile, out, { mode: 0o600 });
+    fs.chmodSync(onceFile, 0o600);
+    // The app runs as the data dir's owner and has to read this exactly once.
+    const st = fs.statSync(path.dirname(onceFile));
+    fs.chownSync(onceFile, st.uid, st.gid);
+  } catch {
+    try {
+      fs.rmSync(onceFile, { force: true });
+    } catch {}
+    return "could not hand the new key to the app";
+  }
+  try {
+    setEnvVar(env.BACKUP_ENV, "AGE_RECIPIENT", recipient);
+  } catch {
+    // Never leave the private half lying about for a key the box will not use.
+    fs.rmSync(onceFile, { force: true });
+    return "could not record the new key in backup.env";
+  }
+  return null;
+}
+
 function applyRequest(env) {
   let request;
   try {
@@ -467,6 +544,15 @@ function applyRequest(env) {
     env._appliedRequestId = request.requestId;
     env._lastOk = false;
     env._lastErr = v.error;
+    consumeRequest(env.BACKUP_REQUEST, request.requestId);
+    refreshStatus(env);
+    return;
+  }
+  if (v.config.action === "keygen") {
+    env._appliedRequestId = request.requestId;
+    const err = generateAgeKey(env, conf);
+    env._lastOk = !err;
+    env._lastErr = err;
     consumeRequest(env.BACKUP_REQUEST, request.requestId);
     refreshStatus(env);
     return;

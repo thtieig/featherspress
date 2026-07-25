@@ -238,6 +238,32 @@ router.post("/api/backup-run", (req, res) => {
   res.json({ requestId });
 });
 
+// ---- "Set up encryption": ask root for a backup key -----------------------
+// The app cannot generate it: the recipient belongs in root-owned backup.env,
+// beside the destination and schedule. So it asks, and root leaves the private
+// half in a 0600 file here for exactly one read.
+const AGE_KEY_ONCE_FILE = path.join(path.dirname(config.BACKUP_STATUS_FILE), "age-key-once.txt");
+
+router.post("/api/backup-keygen", (req, res) => {
+  const requestId = nextBackupRequestId();
+  writeBackupRequest({ requestId, action: "keygen" });
+  res.json({ requestId });
+});
+
+// Show-once, and it means it: the file is unlinked before the body is sent, so
+// a reload cannot produce the key a second time and nothing keeps a copy. Never
+// logged, never in backup-status.json.
+router.get("/api/age-key-once", (req, res) => {
+  let body;
+  try {
+    body = fs.readFileSync(AGE_KEY_ONCE_FILE, "utf8");
+  } catch {
+    return res.status(404).json({ error: "no new key is waiting" });
+  }
+  fs.rmSync(AGE_KEY_ONCE_FILE, { force: true });
+  res.type("text/plain").send(body);
+});
+
 // ---- export (Site Package download) ---------------------------------------
 // Streams a .tar.gz (profile "site": content/media/site, no credentials) or,
 // when the caller asks for "credentials" or `encrypt=1`, a .tar.gz.age

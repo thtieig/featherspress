@@ -290,6 +290,16 @@
 
       <div id="bk-rclone-note" hidden class="hint" style="margin-bottom:14px;"></div>
       <div id="bk-encrypt-note" hidden class="hint" style="margin-bottom:14px;"></div>
+      <div id="bk-keygen-wrap" hidden style="margin-bottom:14px;">
+        <button class="secondary" id="bk-keygen">Set up encryption</button>
+      </div>
+      <div id="bk-key-shown" hidden style="margin-bottom:14px;">
+        <div style="color:#a33; font-weight:600; margin-bottom:6px;">
+          This is the ONLY copy of your backup key. Save it now &mdash; without it, encrypted backups cannot be restored.
+        </div>
+        <pre id="bk-key-text" style="white-space:pre-wrap; word-break:break-all; background:#f6f6f6; padding:10px; border-radius:4px;"></pre>
+        <div class="actions"><button class="secondary" id="bk-key-download">Download key file</button></div>
+      </div>
 
       <label>Keep last</label>
       <div style="margin:4px 0 14px;"><input type="number" id="bk-keeplast" min="1" max="365" value="14" style="width:90px;"> backups</div>
@@ -1134,8 +1144,11 @@
     offboxRadio.disabled = !canOffbox;
     if (!s.encrypted) {
       el('bk-encrypt-note').hidden = false;
-      el('bk-encrypt-note').textContent = 'Off-box backups must be encrypted. Set an age key on the server (age-keygen; add AGE_RECIPIENT to /etc/featherspress/backup.env), then it unlocks here.';
+      el('bk-encrypt-note').textContent = 'Backups are not encrypted on this server. Set up encryption to protect them — off-box destinations require it, and a backup that includes Credentials carries your password hash and 2FA secret.';
     } else { el('bk-encrypt-note').hidden = true; }
+    // Only offered while there is no recipient: rotating it would orphan every
+    // encrypted backup already taken, so the agent refuses outright.
+    el('bk-keygen-wrap').hidden = !!s.encrypted;
     if (remotes.length === 0) {
       el('bk-rclone-note').hidden = false;
       el('bk-rclone-note').textContent = 'To enable off-box backups, run `rclone config` as root on the server — configured remotes appear here automatically.';
@@ -1393,6 +1406,48 @@
           }).catch(function () { if (tries > 60) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Status unreadable.'; } else setTimeout(wait, 1000); });
         })();
       }).catch(function (e) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Run failed: ' + e.message; });
+  });
+
+  el('bk-keygen') && el('bk-keygen').addEventListener('click', function () {
+    if (!window.confirm(
+      'Generate a backup encryption key on this server?\n\n' +
+      'The private half is shown ONCE and never stored. Save it somewhere safe — ' +
+      'without it, encrypted backups cannot be restored.')) return;
+    el('bk-keygen').disabled = true;
+    el('bk-msg').textContent = 'Generating a key…';
+    fetch('/admin/api/backup-keygen', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        pollBackupApplied(res.requestId, function (err) {
+          el('bk-keygen').disabled = false;
+          if (err) { el('bk-msg').textContent = 'Not applied: ' + err; return; }
+          el('bk-msg').textContent = '';
+          // Root left the private half in a 0600 file; this read deletes it.
+          fetch('/admin/api/age-key-once').then(function (r) {
+            if (!r.ok) throw new Error('the key was not handed over');
+            return r.text();
+          }).then(function (text) {
+            el('bk-key-text').textContent = text;
+            el('bk-key-shown').hidden = false;
+            el('bk-keygen-wrap').hidden = true;
+          }).catch(function (e) {
+            el('bk-msg').textContent =
+              'The key was generated but could not be shown: ' + e.message +
+              '. Retrieve it from the server before anything else touches it.';
+          });
+        });
+      }).catch(function (e) { el('bk-keygen').disabled = false; el('bk-msg').textContent = 'Failed: ' + e.message; });
+  });
+
+  el('bk-key-download') && el('bk-key-download').addEventListener('click', function () {
+    var blob = new Blob([el('bk-key-text').textContent], { type: 'text/plain' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'featherspress-backup-key.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
   });
 
   // Show a banner when the root update timer reports a newer engine version.
