@@ -79,7 +79,7 @@ function search(query) {
       rank,
       url: `/${post.slug}/`,
       title,
-      excerpt: excerptFor(excerptSource, inBody ? term : inTitle ? term : term),
+      excerpt: excerptFor(excerptSource, term),
     });
   }
 
