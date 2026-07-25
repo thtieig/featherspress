@@ -137,6 +137,12 @@ healthy() {
 }
 
 git_as merge --ff-only "origin/$REPO_REF"
+
+# From here on the code dir has MOVED FORWARD. Any failure below must restore
+# the rollback point rather than leave a half-applied update behind: `set -e`
+# would otherwise abort straight past rollback() on a failed chown or restart.
+trap 'echo "[update] step failed — rolling back" >&2; rollback; exit 1' ERR
+
 if ! run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"; then
   echo "[update] dependency install FAILED on the new commit" >&2
   rollback
@@ -155,5 +161,6 @@ fi
 CURRENT="$(git_as rev-parse HEAD)"
 BEHIND=0
 AVAILABLE_BOOL=false
+trap - ERR
 write_status
 echo "[update] applied and healthy at ${CURRENT:0:7}."
