@@ -72,6 +72,7 @@ function validateRequest(req, ctx) {
   let remotePath = null;
   if (d.type === "local") {
     if (typeof d.localDir !== "string" || !path.isAbsolute(d.localDir)) return fail("localDir must be absolute");
+    if (!/^[A-Za-z0-9._/-]+$/.test(d.localDir)) return fail("localDir has invalid characters");
     const norm = path.normalize(d.localDir);
     const rel = path.relative(LOCAL_ROOT, norm);
     if (rel.startsWith("..") || path.isAbsolute(rel)) return fail("localDir must be under /var/backups");
@@ -97,7 +98,7 @@ function validateRequest(req, ctx) {
 
   const s = req.schedule || {};
   if (!PRESETS.includes(s.preset)) return fail("unknown schedule preset");
-  if (s.preset !== "hourly" && !validTimeOfDay(s.timeOfDay)) return fail("bad timeOfDay");
+  if (!validTimeOfDay(s.timeOfDay || "00:00")) return fail("bad timeOfDay");
   if (s.preset === "weekly" && !WEEKDAYS.includes(s.weekday)) return fail("weekly needs a weekday");
 
   return {
@@ -147,9 +148,37 @@ function readRequestNoFollow(p) {
   }
 }
 
+// backup.env is sourced by bash (deploy/backup.sh). A value carrying a
+// newline would inject an arbitrary extra variable into a root-read file,
+// so refuse rather than write one — validateRequest should have caught it.
+function assertEnvSafe(name, value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9._:@/+-]*$/.test(value)) {
+    throw new Error(`refusing to write unsafe value for ${name}`);
+  }
+}
+
 // Render /etc/featherspress/backup.env from a validated config, preserving the
 // operator-set, non-UI fields (encryption key, node path, engine dir).
 function renderBackupEnv(config, prev) {
+  assertEnvSafe("destType", config.destType);
+  assertEnvSafe("keepLast", String(config.keepLast));
+  if (config.destType === "local") {
+    assertEnvSafe("localDir", config.localDir);
+  } else {
+    assertEnvSafe("remote", config.remote);
+    assertEnvSafe("remotePath", config.remotePath);
+  }
+  if (config.schedule) {
+    assertEnvSafe("schedule.preset", config.schedule.preset);
+    assertEnvSafe("schedule.timeOfDay", config.schedule.timeOfDay);
+    if (config.schedule.weekday) {
+      assertEnvSafe("schedule.weekday", config.schedule.weekday);
+    }
+  }
+  if (prev.AGE_RECIPIENT) assertEnvSafe("AGE_RECIPIENT", prev.AGE_RECIPIENT);
+  if (prev.NODE_BIN) assertEnvSafe("NODE_BIN", prev.NODE_BIN);
+  if (prev.ENGINE_DIR) assertEnvSafe("ENGINE_DIR", prev.ENGINE_DIR);
+
   const lines = [
     "# Managed by tools/backup-control.js — /admin may overwrite edits here.",
     `DEST_TYPE=${config.destType}`,

@@ -228,3 +228,39 @@ test("renderBackupEnv omits the weekday when the preset is not weekly", () => {
   assert.match(out, /^BACKUP_SCHEDULE_PRESET=daily$/m);
   assert.doesNotMatch(out, /BACKUP_SCHEDULE_WEEKDAY/);
 });
+
+test("rejects hourly with newline-injected timeOfDay", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, schedule: { preset: "hourly", timeOfDay: "00:00\nRCLONE_REMOTE=evil:pwned" } }, CTX).ok,
+    false
+  );
+});
+
+test("rejects localDir with newline injection", () => {
+  assert.strictEqual(
+    bc.validateRequest({ ...base, destination: { type: "local", localDir: "/var/backups/ok\nAGE_RECIPIENT=attacker" } }, CTX).ok,
+    false
+  );
+});
+
+test("renderBackupEnv throws when localDir contains a newline", () => {
+  assert.throws(
+    () => bc.renderBackupEnv(
+      { destType: "local", localDir: "/var/backups/ok\nEVIL=injected", keepLast: 5, schedule: { preset: "daily", timeOfDay: "00:24", weekday: null } },
+      {}
+    ),
+    /refusing to write unsafe/i
+  );
+});
+
+test("rclone config with normal remote:path still renders correctly", () => {
+  const out = bc.renderBackupEnv(
+    { destType: "rclone", remote: "mys3", remotePath: "backups/prod", keepLast: 14, schedule: { preset: "daily", timeOfDay: "09:00", weekday: null } },
+    { AGE_RECIPIENT: "age1xyz", NODE_BIN: "/usr/bin/node" }
+  );
+  assert.match(out, /RCLONE_REMOTE=mys3:backups\/prod/);
+  assert.match(out, /AGE_RECIPIENT=age1xyz/);
+  assert.match(out, /NODE_BIN=\/usr\/bin\/node/);
+  assert.match(out, /BACKUP_SCHEDULE_PRESET=daily/);
+  assert.match(out, /BACKUP_SCHEDULE_TIME=09:00/);
+});
