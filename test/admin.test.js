@@ -360,6 +360,22 @@ test("backup-config writes an apply request with the posted fields", async () =>
   assert.strictEqual(written.requestId, j.requestId);
 });
 
+// Regression: backup-config previously dropped the `sections` field on the
+// floor when writing backup-request.json, so the /admin scope checkboxes
+// were silently ignored and the root agent always applied all five sections.
+test("backup-config forwards the posted sections into the request file", async () => {
+  const res = await api("POST", "/admin/api/backup-config", {
+    destination: { type: "local", localDir: "/var/backups/featherspress" },
+    keepLast: 7,
+    schedule: { preset: "daily", timeOfDay: "01:00" },
+    sections: ["content", "media"],
+  });
+  const j = await res.json();
+  assert.strictEqual(res.status, 200, JSON.stringify(j));
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.deepStrictEqual(written.sections, ["content", "media"]);
+});
+
 test("backup-run writes a run-now request", async () => {
   const res = await api("POST", "/admin/api/backup-run", {});
   assert.strictEqual(res.status, 200);
