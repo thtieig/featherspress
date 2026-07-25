@@ -469,3 +469,107 @@ test("export --profile full will not write through a symlink at the output path"
     fs.rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+// ---- selective restore (sections) ----------------------------------------
+// A section the caller did not ask for must be left completely untouched on
+// disk. That is the whole point of a selective restore, and getting it wrong
+// deletes data the operator explicitly chose to keep.
+
+test("import restores only the requested sections", () => {
+  const pkg = makePackageDir();
+  const t = makeTarget();
+  try {
+    fs.mkdirSync(t.mediaDir, { recursive: true });
+    fs.writeFileSync(path.join(t.mediaDir, "sentinel.txt"), "keep me");
+    sp.importPackage({ src: pkg, ...t, sections: ["content"], force: true });
+    assert.ok(
+      fs.existsSync(path.join(t.mediaDir, "sentinel.txt")),
+      "media must be untouched when only content was requested"
+    );
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "hello.md")), "content restored");
+    assert.ok(!fs.existsSync(t.manifestPath), "site.json must not be written for a content-only restore");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("import with no sections restores everything the package carries", () => {
+  const pkg = makePackageDir();
+  const t = makeTarget();
+  try {
+    sp.importPackage({ src: pkg, ...t, force: true });
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "hello.md")), "content");
+    assert.ok(fs.existsSync(path.join(t.mediaDir, "2024", "01", "pic.png")), "media");
+    assert.ok(fs.existsSync(t.manifestPath), "site.json");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+// The trap: the package-validity checks used to run unconditionally, so a
+// content-only restore from an archive with no site.json threw even though the
+// operation is entirely legitimate.
+test("a content-only restore succeeds against a package with no site.json", () => {
+  const pkg = makePackageDir();
+  const t = makeTarget();
+  try {
+    fs.rmSync(path.join(pkg, "site.json"));
+    sp.importPackage({ src: pkg, ...t, sections: ["content"], force: true });
+    assert.ok(fs.existsSync(path.join(t.contentDir, "posts", "hello.md")), "content restored");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+// ...but the check must still fire when that section IS requested.
+test("restoring `site` from a package with no site.json still throws", () => {
+  const pkg = makePackageDir();
+  const t = makeTarget();
+  try {
+    fs.rmSync(path.join(pkg, "site.json"));
+    assert.throws(
+      () => sp.importPackage({ src: pkg, ...t, sections: ["site"], force: true }),
+      /missing site\.json/
+    );
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("credentials need BOTH the section and restoreAuth", () => {
+  const pkg = makePackageDir({ withAuth: true });
+  const t = makeTarget();
+  try {
+    // section requested, but restoreAuth not set
+    sp.importPackage({ src: pkg, ...t, sections: ["content", "credentials"], force: true });
+    assert.ok(!fs.existsSync(t.authConfigPath), "no credentials without restoreAuth");
+    // restoreAuth set, but section not requested
+    sp.importPackage({ src: pkg, ...t, sections: ["content"], restoreAuth: true, force: true });
+    assert.ok(!fs.existsSync(t.authConfigPath), "no credentials without the section");
+    // both
+    sp.importPackage({ src: pkg, ...t, sections: ["content", "credentials"], restoreAuth: true, force: true });
+    assert.ok(fs.existsSync(t.authConfigPath), "credentials restored when both are set");
+    assert.strictEqual(fs.statSync(t.authConfigPath).mode & 0o777, 0o600, "restored 0600");
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("an unknown section name is refused", () => {
+  const pkg = makePackageDir();
+  const t = makeTarget();
+  try {
+    assert.throws(
+      () => sp.importPackage({ src: pkg, ...t, sections: ["content", "etc"], force: true }),
+      /unknown section/
+    );
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
