@@ -58,6 +58,17 @@ case "$KEEP_LAST" in
   ''|*[!0-9]*) echo "[backup] refusing: KEEP_LAST must be a positive integer (got '$KEEP_LAST')" >&2; exit 1 ;;
 esac
 [ "$KEEP_LAST" -ge 1 ] || { echo "[backup] refusing: KEEP_LAST must be >= 1 (got $KEEP_LAST) — 0 would delete every backup, including the one just taken" >&2; exit 1; }
+
+# Which sections the scheduled backup captures (set from /admin). Empty = all.
+# A bash array is used so that an empty BACKUP_SECTIONS passes NO --sections
+# argument at all — an empty string argument would be parsed by site-package.js
+# as a (single, invalid) section name rather than meaning "all of them".
+BACKUP_SECTIONS="${BACKUP_SECTIONS:-}"
+SECTION_ARGS=()
+if [ -n "$BACKUP_SECTIONS" ]; then
+  SECTION_ARGS=(--sections "$BACKUP_SECTIONS")
+fi
+
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BASENAME="featherspress-full-${STAMP}.tar.gz"
 
@@ -66,7 +77,7 @@ trap 'rm -rf "$WORK"' EXIT
 ARTIFACT="$WORK/$BASENAME"
 
 echo "[backup] exporting full Site Package…"
-"$NODE_BIN" "$ENGINE_DIR/tools/site-package.js" export --profile full --out "$ARTIFACT"
+"$NODE_BIN" "$ENGINE_DIR/tools/site-package.js" export --profile full "${SECTION_ARGS[@]}" --out "$ARTIFACT"
 
 # Encryption is MANDATORY off-box (the full artifact carries the TOTP secret and
 # password hash). Local stays plaintext (same trust boundary as the machine).
