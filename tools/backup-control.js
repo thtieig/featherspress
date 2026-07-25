@@ -428,8 +428,33 @@ function applyRequest(env) {
     refreshStatus(env);
     return;
   }
-  fs.writeFileSync(env.BACKUP_ENV, renderBackupEnv(v.config, conf), { mode: 0o600 });
-  fs.chmodSync(env.BACKUP_ENV, 0o600);
+  // renderBackupEnv/assertEnvSafe can throw — e.g. a hand-edited backup.env
+  // whose preserved AGE_RECIPIENT/NODE_BIN/ENGINE_DIR fails the character
+  // class. Left uncaught, that propagates to the top-level handler and exits
+  // 1 without writing the status file or advancing appliedRequestId, so the
+  // .path unit and the safety timer retry the same doomed request forever
+  // and the panel just stops updating with no visible error. Route it
+  // through the same rejected-request path validation failures use instead.
+  let rendered;
+  try {
+    rendered = renderBackupEnv(v.config, conf);
+  } catch {
+    env._appliedRequestId = request.requestId;
+    env._lastOk = false;
+    env._lastErr = "failed to apply: could not render backup.env";
+    refreshStatus(env);
+    return;
+  }
+  try {
+    fs.writeFileSync(env.BACKUP_ENV, rendered, { mode: 0o600 });
+    fs.chmodSync(env.BACKUP_ENV, 0o600);
+  } catch {
+    env._appliedRequestId = request.requestId;
+    env._lastOk = false;
+    env._lastErr = "failed to apply: could not write backup.env";
+    refreshStatus(env);
+    return;
+  }
   // "Back up now" must never change WHEN backups run. Only an explicit
   // apply rewrites the timer.
   if (v.config.action === "apply") {

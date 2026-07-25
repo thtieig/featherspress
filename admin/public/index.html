@@ -1097,12 +1097,26 @@
 
   function syncScopeWarning() {
     var picked = [].slice.call(document.querySelectorAll('.bk-sec:checked')).map(function (c) { return c.value; });
-    var missing = ['content', 'credentials'].filter(function (s) { return picked.indexOf(s) === -1; });
     var w = el('bk-scope-warn');
+    var save = el('bk-save');
+    // Unticking every section sends sections: [], which validateRequest
+    // rejects outright — and since destination/keepLast/schedule ride in the
+    // same request, that rejection would silently fail those too. Block the
+    // save client-side instead, same as Download archive already does on an
+    // empty export selection.
+    if (picked.length === 0) {
+      if (save) save.disabled = true;
+      w.hidden = false;
+      w.textContent = 'Select at least one section — an empty scope cannot be saved.';
+      return;
+    }
+    if (save) save.disabled = false;
+    var missing = ['content', 'credentials'].filter(function (s) { return picked.indexOf(s) === -1; });
     if (missing.length) {
       w.hidden = false;
       w.textContent = 'Heads up: without ' + missing.join(' and ') +
-        ', this scheduled backup will NOT be able to fully restore your site.';
+        ', this scheduled backup will NOT be able to fully restore your site. ' +
+        'These backups still count toward the keep-last limit and will replace older, complete backups as it prunes.';
     } else { w.hidden = true; }
   }
   document.querySelectorAll('.bk-sec').forEach(function (c) { c.addEventListener('change', syncScopeWarning); });
@@ -1169,7 +1183,7 @@
       ? 'No credentials in this archive — safe to keep anywhere.'
       : (haveKey
           ? 'Contains your password hash and 2FA secret. It will be encrypted with your age key — you need that key to restore it.'
-          : 'This archive contains your credentials, so it must be encrypted. Set up encryption first.');
+          : 'This archive contains your credentials, so it must be encrypted. Set an age key on the server first (age-keygen; add AGE_RECIPIENT to /etc/featherspress/backup.env), then this unlocks.');
     el('ex-download').disabled = secs.length === 0 || (secrets && !haveKey);
   }
   document.querySelectorAll('input[name=ex-preset], .ex-sec').forEach(function (c) {

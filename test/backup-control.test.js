@@ -398,6 +398,47 @@ test("a run-now request does not rewrite the schedule drop-in", () => {
     "run-now must leave the configured schedule alone");
 });
 
+// Regression: a hand-edited backup.env whose preserved AGE_RECIPIENT fails
+// assertEnvSafe's character class (e.g. a trailing comment leaving a space in
+// the value) made renderBackupEnv throw. Uncaught, that propagated out of
+// applyRequest, exiting 1 without writing the status file or advancing
+// appliedRequestId — so the .path unit and the safety timer would retry the
+// same doomed request forever with the panel just frozen and no error shown.
+// It must instead be routed through the same rejected-request path
+// validation failures use: appliedRequestId advances, status is written,
+// lastRequestOk is false, and a fixed (non-echoing) error string is set.
+test("a poisoned preserved AGE_RECIPIENT is reported, not left wedged", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-poison-"));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "backup-request.json"),
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+  };
+  // Trailing comment on AGE_RECIPIENT parses to a value containing spaces,
+  // which fails assertEnvSafe's character class.
+  fs.writeFileSync(
+    env.BACKUP_ENV,
+    "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=14\n" +
+      "AGE_RECIPIENT=age1xxx # my key\n"
+  );
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({
+    requestId: 5, action: "apply",
+    destination: { type: "local", localDir: "/var/backups/featherspress" },
+    keepLast: 14, schedule: { preset: "daily", timeOfDay: "00:24" },
+  }));
+  assert.doesNotThrow(() => bc.applyRequest(env));
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.appliedRequestId, 5, "appliedRequestId must still advance");
+  assert.strictEqual(status.lastRequestOk, false);
+  assert.ok(status.lastRequestError, "must report an error, not just wedge silently");
+  assert.ok(
+    !status.lastRequestError.includes("age1xxx"),
+    "must never echo the offending value"
+  );
+});
+
 test("apply refreshes status even when there is no pending request", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-norq-"));
   const env = {

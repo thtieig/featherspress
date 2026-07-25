@@ -383,6 +383,39 @@ test("backup-run writes a run-now request", async () => {
   assert.strictEqual(written.action, "run-now");
 });
 
+// Regression: "Back up now" rebuilt the request from backup-status.json but
+// forwarded only destination/keepLast/schedule, never `sections` — so
+// validateRequest's absent-field back-compat default silently widened the
+// scope back to all five sections on every "Back up now" click, even right
+// after an operator had saved a narrower scope.
+test("backup-run forwards the current scope from status into the request file", async () => {
+  const statusFile = require("../config").BACKUP_STATUS_FILE;
+  fs.writeFileSync(
+    statusFile,
+    JSON.stringify({ appliedRequestId: 1, config: { sections: ["content", "media"] } })
+  );
+  const res = await api("POST", "/admin/api/backup-run", {});
+  assert.strictEqual(res.status, 200);
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.deepStrictEqual(written.sections, ["content", "media"]);
+});
+
+// Both production boxes have never set a scope, so config.sections is null
+// there. Sending `sections: null` would make validateRequest fail("bad
+// sections") and reject the whole run-now — it must be omitted entirely so
+// the back-compat default (all sections) applies.
+test("backup-run omits sections entirely when status has never set a scope", async () => {
+  const statusFile = require("../config").BACKUP_STATUS_FILE;
+  fs.writeFileSync(
+    statusFile,
+    JSON.stringify({ appliedRequestId: 1, config: { sections: null } })
+  );
+  const res = await api("POST", "/admin/api/backup-run", {});
+  assert.strictEqual(res.status, 200);
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.ok(!("sections" in written), `expected no sections key, got ${JSON.stringify(written)}`);
+});
+
 test("backup endpoints require auth", async () => {
   const res = await fetch(base + "/admin/api/backup-status");
   assert.strictEqual(res.status, 401);

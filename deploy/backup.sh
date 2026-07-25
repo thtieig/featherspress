@@ -26,9 +26,13 @@ if ! exec 9>"/run/featherspress-backup.lock"; then
   echo "[backup] refusing: cannot open the lock file /run/featherspress-backup.lock" >&2
   exit 1
 fi
-if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
-  echo "[backup] another backup is already running; skipping this run" >&2
-  exit 0
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -n 9; then
+    echo "[backup] another backup is already running; skipping this run" >&2
+    exit 0
+  fi
+else
+  echo "[backup] warning: flock not found; concurrent backup runs will NOT be serialized" >&2
 fi
 
 # Record the outcome for the /admin Backups panel (via backup-control.js status).
