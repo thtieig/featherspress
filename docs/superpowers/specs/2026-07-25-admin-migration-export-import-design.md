@@ -133,7 +133,8 @@ and acts. This is the same protocol the Backups panel already uses.
 
 ```
 browser ──upload──> app stages artifact (0600, data dir)
-                    app decrypts here if encrypted ── passphrase never hits disk
+                    app decrypts here if encrypted, piping the uploaded
+                    identity to `age -d -i /dev/stdin` ── key never hits disk
                          │
                          └─ writes restore-request.json  {sections, stagedPath}
                                     │  .path unit (+ 2-min safety timer)
@@ -170,26 +171,89 @@ Consequences to honour:
 - `sections` gains a whitelist entry in `validateRequest` (backup scope is now
   GUI-configurable — see Section 5).
 
-**Decryption happens in the app, not root**, specifically so the passphrase is
-never written to a file. Cost: a plaintext artifact briefly exists in the data
-dir at 0600, app-owned, deleted by root as soon as it is consumed. This is an
-accepted, stated trade — the alternative puts a passphrase on disk.
+**Decryption happens in the app, not root**, so the uploaded identity can be
+piped straight into `age -d -i /dev/stdin` and never written to a file. Cost: a
+plaintext artifact briefly exists in the data dir at 0600, app-owned, deleted by
+root as soon as it is consumed. That is the accepted, stated trade.
 
 ## Section 4 — Encryption
 
-`age`, two key modes for two different users:
+**Key-based both ways. Passphrase mode was investigated and rejected: it is not
+implementable.** Verified on the boxes (age 1.1.1):
 
-- **Passphrase (`age -p`)** for `/admin` export and restore. A human is present to
-  type it. This is the usable form for download-then-re-upload.
-- **Recipient (`age -r`)** for the unattended scheduled backup, unchanged. No
-  human present to type anything.
+```
+$ printf 's3cret\ns3cret\n' | age -p -o out.age in.txt
+age: error: could not read passphrase: standard input is not a terminal,
+     and /dev/tty is not available
+```
 
-Both produce standard age artifacts decryptable with the stock `age` CLI, so the
-existing attic keys and the documented recovery drill keep working.
+`age -p` opens `/dev/tty` unconditionally and there is no `--passphrase-file` in
+1.1.1, so a web app cannot drive it. Driving it under a pty (`script -qec …`) was
+considered and rejected as fragile for a path whose failure mode is an
+undecryptable backup.
+
+The key-based design is also more coherent with the "generate the key from the
+UI, show it once" flow already chosen:
+
+- **Encrypt** (`age -r <AGE_RECIPIENT>`) — non-interactive, identical to the
+  nightly backup. Used for `/admin` export and the scheduled backup alike.
+- **Decrypt** (`age -d -i <identity>`) — the operator uploads or pastes the
+  private key they saved when they set up encryption.
+
+The private key **never touches disk on restore**: verified that the identity can
+be piped, so the app runs `age -d -i /dev/stdin` and writes the key only to the
+child process's stdin.
+
+```
+$ cat key.txt | age -d -i /dev/stdin -o out.txt cipher.age    # verified working
+$ age -d -i wrong.txt cipher.age
+age: error: no identity matched any of the recipients          # fails cleanly
+```
+
+So the key the "Set up encryption" screen shows you once is exactly the file you
+upload to restore. One key, one story, and the existing attic keys and documented
+recovery drill keep working unchanged.
 
 Encryption is **optional in general, mandatory when the archive carries
 `credentials`** — the rule the user asked for. `settings` alone carries only a
-public key, so it does not force encryption.
+public key, so it does not force encryption. Note `age` writes its output 0644;
+a credentials-bearing artifact must be created/chmod'd 0600 by the app, the same
+discipline `exportPackage` already applies on the `full` profile.
+
+**Consequence for export on a box with no key yet:** encryption requires an
+`AGE_RECIPIENT`. Exporting a `credentials`-bearing archive from a box that has
+never set up encryption must therefore direct the operator to "Set up encryption"
+first, rather than silently producing a plaintext archive containing the TOTP
+secret.
+
+## Section 4b — "Set up encryption" (age key generation from /admin)
+
+The v1 spec deliberately kept the age private key out of the web app. The user's
+decision (2026-07-25) is to generate it from `/admin`, **show it once, and never
+store the private half**.
+
+Flow, through the existing request/status protocol — the app never generates or
+holds the key:
+
+1. Operator presses "Set up encryption". App writes a request with
+   `action: "keygen"`.
+2. Root agent refuses if `AGE_RECIPIENT` is already set (never silently rotate a
+   key that existing backups are encrypted to; require an explicit "replace" flag
+   with its own warning).
+3. Root runs `age-keygen`, writes the **public** half into `backup.env` as
+   `AGE_RECIPIENT`, and writes the **private** half to a one-shot file in the data
+   dir, 0600, owned by the app user.
+4. App reads that file exactly once, returns it in the HTTP response, and unlinks
+   it immediately. The UI shows it with "this is the ONLY copy — save it now" and
+   a download button.
+5. Status reports `encrypted: true` from then on; the private half exists nowhere
+   on the box.
+
+**Stated exposure:** an `/admin` compromise *during that one display* captures the
+key. The operator accepted this trade for the convenience, and it is a
+single-authenticated-operator tool. Everything else about the key is unchanged —
+it is the same file the recovery drill in `docs/BACKUP-IMPORT-EXPORT.md` uses, and
+the same file that gets uploaded to decrypt a restore.
 
 ## Section 5 — Scheduled-backup scope in the GUI
 
@@ -226,14 +290,19 @@ Export
   (o) Migrate this site  (all sections)
   ( ) Portable site      (no secrets)
   ( ) Custom...
-  [ ] Encrypt with a passphrase   [__________]
+  [x] Encrypt (age)   — forced on, this archive contains credentials
   [Download archive]
 
 Restore
-  [Choose file...]   passphrase [__________]
+  [Choose file...]
+  Encrypted? paste or upload your age private key [__________]
   Restore: [x] content [x] media [x] site [ ] settings [ ] credentials
   [Restore]
 ```
+
+The "Set up encryption" control lives in the Scheduled backup block: it asks the
+root agent to run `age-keygen`, keeps the public half in `backup.env`, and shows
+the private half **once** with a "this is the only copy — save it now" warning.
 
 "Back up now" and "Download archive" are the same engine differing only in
 destination — that is the consolidation made visible.
@@ -296,6 +365,10 @@ Unit / integration (in-repo, `node --test`):
   the current failure and becomes the guard.
 - Converter `--tar` output imports cleanly (closes the format loop end-to-end).
 - `assertSafeTar` / `assertNoEscapingLinks` still reject the known-bad packages.
+- age round-trip: encrypt to a recipient, decrypt with the identity piped via
+  `/dev/stdin`, and confirm a wrong identity fails rather than yielding garbage.
+- A `credentials`-bearing export on a box with no `AGE_RECIPIENT` is refused, not
+  silently written in plaintext.
 
 On real hardware (`test-feathers`, 77.68.32.182, 112 GB free):
 - **The drill that matters:** bare box → install → `setup.js` → upload a
