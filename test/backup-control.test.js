@@ -190,6 +190,44 @@ test("buildStatus defaults ageRecipient/update to null when not supplied", () =>
   assert.strictEqual(s.update, null);
 });
 
+// ---- Task 9c: honest schedule reporting on upgraded boxes ------------------
+// A box upgraded from older code has no BACKUP_SCHEDULE_* in backup.env, so
+// `preset` is null even though systemd is actually running a real schedule
+// (the shipped .timer, or an old drop-in). `effective` — read straight off
+// the systemd unit — must survive buildStatus so the panel can be honest
+// about it instead of silently showing its HTML default.
+
+test("buildStatus carries config.schedule.effective through", () => {
+  const s = bc.buildStatus({
+    writtenAt: "now",
+    config: {
+      destType: "local",
+      keepLast: 14,
+      schedule: { preset: null, timeOfDay: "00:24", weekday: null, effective: "*-*-* 00:20:00" },
+    },
+  });
+  assert.strictEqual(s.config.schedule.effective, "*-*-* 00:20:00");
+});
+
+test("parseTimersCalendar extracts OnCalendar from the real systemd 252 form", () => {
+  assert.strictEqual(
+    bc.parseTimersCalendar("{ OnCalendar=*-*-* 00:20:00 ; next_elapse=Sun 2026-07-26 00:20:00 UTC }"),
+    "*-*-* 00:20:00"
+  );
+});
+
+test("parseTimersCalendar tolerates a bare calendar expression with no braces", () => {
+  assert.strictEqual(bc.parseTimersCalendar("*-*-* 00:20:00"), "*-*-* 00:20:00");
+});
+
+test("parseTimersCalendar returns null for malformed or empty values", () => {
+  assert.strictEqual(bc.parseTimersCalendar(""), null);
+  assert.strictEqual(bc.parseTimersCalendar(null), null);
+  assert.strictEqual(bc.parseTimersCalendar(undefined), null);
+  assert.strictEqual(bc.parseTimersCalendar("n/a"), null);
+  assert.strictEqual(bc.parseTimersCalendar("garbage output"), null);
+});
+
 // ---- Task 3: IO helpers ---------------------------------------------------
 
 test("readRequestNoFollow refuses a symlink", () => {
