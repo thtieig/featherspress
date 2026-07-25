@@ -574,3 +574,72 @@ test("an archive's rclone destination validates once its recipient travels with 
   assert.ok(!skipped.some((s) => /needs encryption/.test(s)),
     `the recipient must be adopted before the destination is validated; got ${JSON.stringify(skipped)}`);
 });
+
+// ---- An applied request must be consumed, not left lying around ------------
+// Found by the bare-box drill, and live on BOTH production boxes at the time:
+// the panel reported "last change rejected: stale or invalid requestId" for a
+// change that had applied fine, because every 2-minute safety tick re-read the
+// leftover request file and re-rejected it.
+
+function applyEnv(name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
+  return {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "backup-request.json"),
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+  };
+}
+
+const applyReq = (requestId) => JSON.stringify({
+  requestId, action: "apply",
+  destination: { type: "local", localDir: "/var/backups/featherspress" },
+  keepLast: 14, schedule: { preset: "daily", timeOfDay: "00:20" },
+});
+
+test("an applied request file is deleted, so the next tick has nothing to re-reject", () => {
+  const env = applyEnv("fp-bc-consume-");
+  fs.writeFileSync(env.BACKUP_ENV, "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=7\n");
+  fs.writeFileSync(env.BACKUP_REQUEST, applyReq(42));
+  bc.applyRequest(env);
+  assert.strictEqual(fs.existsSync(env.BACKUP_REQUEST), false, "the request must be consumed");
+
+  // The safety tick that used to poison the status.
+  bc.applyRequest(env);
+  const s = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(s.lastRequestError, null, "a successful save must not read back as rejected");
+  assert.strictEqual(s.appliedRequestId, 42);
+});
+
+test("a rejected request file is deleted too, instead of retrying forever", () => {
+  const env = applyEnv("fp-bc-consume-bad-");
+  fs.writeFileSync(env.BACKUP_ENV, "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=7\n");
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({
+    requestId: 7, action: "apply",
+    destination: { type: "local", localDir: "/etc/passwd" }, // outside /var/backups
+    keepLast: 14, schedule: { preset: "daily", timeOfDay: "00:20" },
+  }));
+  bc.applyRequest(env);
+  assert.strictEqual(fs.existsSync(env.BACKUP_REQUEST), false);
+  const s = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(s.lastRequestOk, false);
+  assert.match(s.lastRequestError, /localDir/);
+});
+
+test("a save that lands mid-apply is left for the next run, not dropped", () => {
+  const env = applyEnv("fp-bc-consume-race-");
+  fs.writeFileSync(env.BACKUP_ENV, "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=7\n");
+  fs.writeFileSync(env.BACKUP_REQUEST, applyReq(42));
+  const realWrite = fs.writeFileSync;
+  let swapped = false;
+  fs.writeFileSync = function (p, ...rest) {
+    const r = realWrite.call(fs, p, ...rest);
+    // The instant backup.env is written, a newer save arrives.
+    if (!swapped && p === env.BACKUP_ENV) { swapped = true; realWrite.call(fs, env.BACKUP_REQUEST, applyReq(99)); }
+    return r;
+  };
+  try { bc.applyRequest(env); } finally { fs.writeFileSync = realWrite; }
+  assert.strictEqual(fs.existsSync(env.BACKUP_REQUEST), true, "the newer request must survive");
+  assert.strictEqual(JSON.parse(fs.readFileSync(env.BACKUP_REQUEST, "utf8")).requestId, 99);
+});

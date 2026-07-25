@@ -416,6 +416,35 @@ function refreshStatus(env) {
   }
 }
 
+// Delete a request we have finished with — exactly what the restore path's
+// cleanup() already does, and for the same two reasons.
+//
+// Left behind, an applied request is re-read by the .path unit and by every
+// 2-minute safety tick, found stale, and recorded as
+// lastRequestError:"stale or invalid requestId" — so the panel reports a
+// successful save as rejected, forever. (Both production boxes were doing
+// exactly this when the bare-box drill went looking.) A REJECTED request must
+// go too, or it is retried until the end of time.
+//
+// It also breaks the trigger: writeBackupRequest renames into place, so when
+// the target already exists systemd's inotify watch is on the old inode and
+// PathModified never fires. The first save on a box is prompt and every one
+// after it waits for the 2-minute backstop.
+//
+// Only unlink when the file still holds the request we processed: a save that
+// landed while we were working is someone else's to apply, not ours to drop.
+function consumeRequest(requestPath, requestId) {
+  try {
+    if (readRequestNoFollow(requestPath).requestId !== requestId) return;
+  } catch {
+    // Unreadable or already gone: nothing safe to remove.
+    return;
+  }
+  try {
+    fs.unlinkSync(requestPath);
+  } catch {}
+}
+
 function applyRequest(env) {
   let request;
   try {
@@ -438,6 +467,7 @@ function applyRequest(env) {
     env._appliedRequestId = request.requestId;
     env._lastOk = false;
     env._lastErr = v.error;
+    consumeRequest(env.BACKUP_REQUEST, request.requestId);
     refreshStatus(env);
     return;
   }
@@ -489,6 +519,7 @@ function applyRequest(env) {
   env._appliedRequestId = request.requestId;
   env._lastOk = true;
   env._lastErr = null;
+  consumeRequest(env.BACKUP_REQUEST, request.requestId);
   // A change arriving during apply: re-read once so a rapid second save isn't lost.
   refreshStatus(env);
 }
