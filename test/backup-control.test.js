@@ -264,3 +264,33 @@ test("rclone config with normal remote:path still renders correctly", () => {
   assert.match(out, /BACKUP_SCHEDULE_PRESET=daily/);
   assert.match(out, /BACKUP_SCHEDULE_TIME=09:00/);
 });
+
+test("renderBackupEnv throws when prev.NODE_BIN contains a newline", () => {
+  assert.throws(
+    () => bc.renderBackupEnv(
+      { destType: "local", localDir: "/var/backups/ok", keepLast: 5, schedule: { preset: "daily", timeOfDay: "00:24", weekday: null } },
+      { NODE_BIN: "/usr/bin/node\nAGE_RECIPIENT=attacker" }
+    ),
+    /refusing to write unsafe/i
+  );
+});
+
+test("renderBackupEnv throws when prev.AGE_RECIPIENT contains a newline", () => {
+  assert.throws(
+    () => bc.renderBackupEnv(
+      { destType: "local", localDir: "/var/backups/ok", keepLast: 5, schedule: { preset: "daily", timeOfDay: "00:24", weekday: null } },
+      { AGE_RECIPIENT: "age1xxx\nKEEP_LAST=1" }
+    ),
+    /refusing to write unsafe/i
+  );
+});
+
+test("hourly preset with normal timeOfDay still works", () => {
+  const r = bc.validateRequest({ ...base, schedule: { preset: "hourly", timeOfDay: "00:00" } }, CTX);
+  assert.ok(r.ok, r.error);
+});
+
+test("hourly preset with omitted timeOfDay still works", () => {
+  const r = bc.validateRequest({ ...base, schedule: { preset: "hourly" } }, CTX);
+  assert.ok(r.ok, r.error);
+});

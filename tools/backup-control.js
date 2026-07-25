@@ -161,7 +161,9 @@ function assertEnvSafe(name, value) {
 // operator-set, non-UI fields (encryption key, node path, engine dir).
 function renderBackupEnv(config, prev) {
   assertEnvSafe("destType", config.destType);
-  assertEnvSafe("keepLast", String(config.keepLast));
+  if (!Number.isInteger(config.keepLast)) {
+    throw new Error(`refusing to write unsafe value for keepLast`);
+  }
   if (config.destType === "local") {
     assertEnvSafe("localDir", config.localDir);
   } else {
