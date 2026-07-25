@@ -263,7 +263,8 @@ router.get("/api/export", (req, res) => {
   if (wantsSecrets && !recipient) {
     return res.status(409).json({
       error: "This archive contains your credentials, so it must be encrypted. " +
-             "Set up encryption first (Scheduled backup → Set up encryption).",
+             "Set an age key on the server first (run `age-keygen`, then add " +
+             "AGE_RECIPIENT to /etc/featherspress/backup.env).",
     });
   }
 
