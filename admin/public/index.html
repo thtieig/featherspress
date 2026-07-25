@@ -67,6 +67,9 @@
     padding: 10px 18px; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: var(--sans);
   }
   button:hover { opacity: 0.9; }
+  /* A disabled button that looks clickable is a lie: several here are gated on
+     a missing key, a missing agent or an unticked confirmation. */
+  button:disabled, button:disabled:hover { opacity: 0.45; cursor: not-allowed; }
   button.secondary { background: none; border: 1px solid var(--rule); color: var(--ink-soft); }
   .status { margin-top: 14px; padding: 10px 14px; border-radius: 6px; font-size: 0.85rem; }
   .status.ok { background: #E9F3EC; color: #2E5C3A; }
@@ -1081,6 +1084,14 @@
       el('bk-status').textContent = 'Backups are not configured on this server yet.';
       el('bk-form').hidden = true;
       syncExportNote();
+      // syncExportNote's advice is "use Set up encryption above" — which lives
+      // inside the block we just hid. Point at the thing that is actually in
+      // the way instead of at a button that is not on screen.
+      if (exportSections().indexOf('credentials') !== -1) {
+        el('ex-note').textContent =
+          'This archive contains your credentials, so it must be encrypted. Install the ' +
+          'backup/restore agent (see DEPLOY.md), then generate a backup key from this panel.';
+      }
       rsSync();
       return;
     }
