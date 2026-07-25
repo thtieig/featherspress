@@ -275,6 +275,11 @@ schedule itself from that panel — you do not need to write `backup.env` by han
 The *scheduled* backup additionally needs `featherspress-backup.{service,timer}`
 (see "Day-to-day" below); restore does not.
 
+While you are there, press **Set up encryption** (needs `age` from step 0). The
+server generates a backup key, keeps only the public half, and shows you the
+private half **once** — save it off the box. Without a key, backups are written
+in plaintext and any export containing credentials is refused outright.
+
 ## Day-to-day
 
 Write at `https://your-domain/admin`. Saving publishes instantly (the engine

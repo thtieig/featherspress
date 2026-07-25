@@ -1247,7 +1247,7 @@
       ? 'No credentials in this archive — safe to keep anywhere.'
       : (haveKey
           ? 'Contains your password hash and 2FA secret. It will be encrypted with your age key — you need that key to restore it.'
-          : 'This archive contains your credentials, so it must be encrypted. Set an age key on the server first (age-keygen; add AGE_RECIPIENT to /etc/featherspress/backup.env), then this unlocks.');
+          : 'This archive contains your credentials, so it must be encrypted. Use Set up encryption above to generate a backup key, then this unlocks.');
     el('ex-download').disabled = secs.length === 0 || (secrets && !haveKey);
   }
   document.querySelectorAll('input[name=ex-preset], .ex-sec').forEach(function (c) {

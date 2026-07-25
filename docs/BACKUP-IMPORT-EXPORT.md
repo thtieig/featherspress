@@ -150,6 +150,13 @@ sudo systemctl start featherspress-backup.service    # run one now to test
 Backups carry `auth-config.json` (your TOTP secret in cleartext + password
 hash), so any off-box copy **must** be encrypted. We use [age](https://age-encryption.org):
 
+The easy way is **`/admin` → Backup & Restore → Set up encryption**. The server
+generates the key, keeps only the public half in `backup.env`, and shows you the
+private half **once** — save it, off the box. It is refused if a key already
+exists: rotating it would orphan every encrypted backup you already have.
+
+By hand instead:
+
 ```sh
 age-keygen -o key.txt          # prints the public key; KEEP key.txt OFF the box
 # put the public key in backup.env as AGE_RECIPIENT=age1...
