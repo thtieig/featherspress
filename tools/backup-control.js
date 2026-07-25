@@ -569,6 +569,21 @@ function applyRestoredSettings(env, settings) {
   const skipped = [];
   const b = (settings && settings.backup) || {};
   const conf = parseEnvFile(env.BACKUP_ENV);
+
+  // The age recipient is a PUBLIC key, and the one box-level setting that must
+  // travel: without it a migrated box silently starts writing PLAINTEXT nightly
+  // archives that carry the password hash and TOTP secret, and an off-box
+  // destination fails validation outright. It is not a box-specific fact, so
+  // nothing in the whitelist's rationale argues against carrying it.
+  //
+  // Only ever FILLS IN a missing one. Overwriting a recipient this box already
+  // has would orphan every encrypted backup it has already taken — the same
+  // reason keygen refuses to rotate.
+  if (!conf.AGE_RECIPIENT && typeof b.ageRecipient === "string") {
+    if (/^age1[0-9a-z]{50,}$/.test(b.ageRecipient)) conf.AGE_RECIPIENT = b.ageRecipient;
+    else skipped.push("the archive's backup encryption key was not a valid age recipient");
+  }
+
   const req = {
     requestId: Number.MAX_SAFE_INTEGER - 1, // not persisted; this is a direct apply
     action: "apply",
@@ -781,5 +796,6 @@ module.exports = {
   parseTimersCalendar,
   validateRestoreRequest,
   restoreRequest,
+  applyRestoredSettings,
   siteHealthy,
 };

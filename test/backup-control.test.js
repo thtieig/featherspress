@@ -505,3 +505,72 @@ test("buildStatus carries the restore state", () => {
   });
   assert.strictEqual(s.restore.state, "rolled-back");
 });
+
+// ---- The age recipient must survive a migration ---------------------------
+// Found by the bare-box drill: gvm's settings.json carried its ageRecipient,
+// the restored box's backup.env did not, so the migrated box would have started
+// writing PLAINTEXT nightly archives containing the password hash and TOTP
+// secret — silently, because nothing reports it.
+
+function restoreSettingsEnv(name, existingEnv) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+  };
+  if (existingEnv !== undefined) fs.writeFileSync(env.BACKUP_ENV, existingEnv);
+  return env;
+}
+
+const GVM_RECIPIENT = "age1qkq20rc7vsnstc49kwhdttql6sglpfwcpnp2mwz6080eurn42ypqqh20ys";
+
+const migrateSettings = (over) => ({
+  schemaVersion: 1,
+  backup: {
+    destType: "local",
+    localDir: "/var/backups/featherspress",
+    keepLast: 14,
+    schedule: { preset: "daily", timeOfDay: "00:20", weekday: null },
+    sections: ["content", "media", "site", "settings", "credentials"],
+    ageRecipient: GVM_RECIPIENT,
+    ...over,
+  },
+});
+
+test("a restored settings.json carries its age recipient onto a box that has none", () => {
+  const env = restoreSettingsEnv("fp-bc-rec-");
+  bc.applyRestoredSettings(env, migrateSettings());
+  const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
+  assert.match(written, new RegExp(`^AGE_RECIPIENT=${GVM_RECIPIENT}$`, "m"),
+    "without this the migrated box backs up credentials in plaintext");
+  assert.match(written, /^BACKUP_SCHEDULE_TIME=00:20$/m);
+});
+
+test("a recipient this box already has is NOT overwritten by the archive's", () => {
+  const mine = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+  const env = restoreSettingsEnv("fp-bc-rec-keep-",
+    `DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=7\nAGE_RECIPIENT=${mine}\n`);
+  bc.applyRestoredSettings(env, migrateSettings());
+  const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
+  assert.match(written, new RegExp(`^AGE_RECIPIENT=${mine}$`, "m"),
+    "rotating it would orphan every backup this box has already taken");
+  assert.doesNotMatch(written, new RegExp(GVM_RECIPIENT));
+});
+
+test("a junk age recipient in an archive is refused and reported, not written", () => {
+  const env = restoreSettingsEnv("fp-bc-rec-junk-");
+  const skipped = bc.applyRestoredSettings(env, migrateSettings({ ageRecipient: "not-a-key" }));
+  assert.doesNotMatch(fs.readFileSync(env.BACKUP_ENV, "utf8"), /^AGE_RECIPIENT=/m);
+  assert.ok(skipped.some((s) => /age recipient/i.test(s)), `expected a report, got ${JSON.stringify(skipped)}`);
+});
+
+test("an archive's rclone destination validates once its recipient travels with it", () => {
+  // Pre-fix this failed outright ("off-box needs encryption: set AGE_RECIPIENT
+  // first") because the recipient was dropped before the destination was
+  // validated, so a migrating off-box user got NO backup config at all.
+  const env = restoreSettingsEnv("fp-bc-rec-rclone-");
+  const skipped = bc.applyRestoredSettings(env,
+    migrateSettings({ destType: "rclone", remote: "nosuchremote", remotePath: "featherspress" }));
+  assert.ok(!skipped.some((s) => /needs encryption/.test(s)),
+    `the recipient must be adopted before the destination is validated; got ${JSON.stringify(skipped)}`);
+});
