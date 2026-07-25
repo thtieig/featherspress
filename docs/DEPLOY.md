@@ -318,3 +318,18 @@ per box, knowingly.
 Uploaded via `/admin` to `/var/lib/featherspress/media/<YYYY>/<MM>/`, served at
 `/media/`. Capped at 25 MB and validated by content, not extension. SVG is
 rejected (it can carry scripts).
+
+## Migrating an existing site onto this box
+
+Instead of copying content by hand at step 5:
+
+1. Finish steps 0-4 (packages, user, node, code, runtime config).
+2. Run `node setup.js` to create a temporary login.
+3. Start the service and sign in to `/admin`.
+4. **Backup & Restore → Restore**: upload the archive exported from the old box,
+   paste its age private key if encrypted, tick every section, confirm.
+5. The service restarts and signs you out. Sign back in with the **old site's**
+   password and 2FA — restoring Credentials replaced the ones setup.js just made.
+
+If the restored site fails to render, the root agent puts your previous state
+back automatically and reports `rolled-back` in the panel.

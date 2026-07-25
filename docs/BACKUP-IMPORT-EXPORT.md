@@ -228,3 +228,40 @@ Full-tar-every-run + keep-last-N is ideal while media is small (the common case)
 If `media/` ever grows past a few GB, switch the media portion to `rclone sync`
 (dedup) and tar only `content/ + site.json + skin + favicon (+ auth)`. Until
 then, keep it simple.
+
+## Restoring from /admin (the usual way, since 2026-07-25)
+
+You no longer need SSH for a normal restore. In **Backup & Restore**:
+
+1. **Export** an archive from the old site ("Migrate this site" = everything).
+2. On the new box, install Featherspress and run `node setup.js` so you have a
+   login, then sign in to `/admin`.
+3. **Restore**: choose the file, paste your age private key if it is `.age`,
+   tick the sections to bring back, type `RESTORE` to confirm.
+
+What happens under the hood: the app stages the upload and decrypts it (the key
+is piped to `age`, never written to disk), then writes a restore request. The
+ROOT agent snapshots your current site, restores the requested sections, applies
+any `settings.json` through the same whitelist the backup panel uses, restarts
+the service, and checks that `/healthz` AND the home page both respond. **If the
+restored site does not come up, the snapshot is put back automatically.**
+
+Two things to expect:
+
+- The restart **signs you out** — sessions live in memory. That is normal.
+- If you restore **Credentials**, your password and 2FA become the ones from the
+  site the archive came from. Sign back in with *those*.
+
+Selective restore is available from the CLI too:
+
+    npm run import -- <artifact> --force --sections content,media \
+      --env-file /etc/featherspress/featherspress.env
+
+Omitting `--sections` restores everything the archive carries, as before.
+
+### Choosing what the scheduled backup captures
+
+The **What to back up** checkboxes set `BACKUP_SECTIONS` in `backup.env`. A scope
+that omits `content` or `credentials` cannot fully restore the site, and those
+artifacts still count against `KEEP_LAST` — so a narrow scope will prune complete
+backups out. The panel warns about both.
