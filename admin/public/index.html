@@ -1291,7 +1291,21 @@
     var tries = 0;
     (function tick() {
       tries++;
-      fetch('/admin/api/backup-status').then(function (r) { return r.json(); }).then(function (s) {
+      fetch('/admin/api/backup-status').then(function (r) {
+        // Sessions live in memory, so the restore's service restart signs you
+        // out. A 401 here is the expected end of the story, not an error.
+        if (r.status === 401) {
+          el('rs-go').disabled = false;
+          el('rs-msg').textContent =
+            'The site restarted and signed you out — that is expected. Sign in again to see the result' +
+            (rsSections().indexOf('credentials') !== -1
+              ? ', using the password and 2FA from the site you restored.'
+              : '.');
+          return null;
+        }
+        return r.json();
+      }).then(function (s) {
+        if (s === null) return;
         var st = s && s.restore;
         if (st && st.appliedRequestId >= requestId && ['done', 'failed', 'rolled-back'].indexOf(st.state) !== -1) {
           el('rs-go').disabled = false;
