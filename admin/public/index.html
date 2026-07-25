@@ -270,9 +270,9 @@
 
     <div id="bk-form" hidden>
       <label>Destination</label>
-      <div style="margin:4px 0 14px;">
-        <label style="font-weight:400;"><input type="radio" name="bk-dest" value="local"> Local (this server)</label>
-        <label style="font-weight:400; margin-left:18px;"><input type="radio" name="bk-dest" value="rclone"> Off-box (rclone)</label>
+      <div style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:18px;">
+        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="local"> Local (this server)</label>
+        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="rclone"> Off-box (rclone)</label>
       </div>
 
       <div id="bk-local-row" style="margin-bottom:14px;">
@@ -294,12 +294,12 @@
       <div style="margin:4px 0 14px;"><input type="number" id="bk-keeplast" min="1" max="365" value="14" style="width:90px;"> backups</div>
 
       <label>What to back up</label>
-      <div id="bk-scope" style="margin:4px 0 14px;">
-        <label style="font-weight:400;"><input type="checkbox" class="bk-sec" value="content" checked> Content</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="media" checked> Media</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="site" checked> Site &amp; skin</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="settings" checked> Settings</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="credentials" checked> Credentials</label>
+      <div id="bk-scope" style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="bk-sec" value="content" checked> Content</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="bk-sec" value="media" checked> Media</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="bk-sec" value="site" checked> Site &amp; skin</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="bk-sec" value="settings" checked> Settings</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="bk-sec" value="credentials" checked> Credentials</label>
       </div>
       <div id="bk-scope-warn" hidden class="hint" style="margin-bottom:14px;"></div>
 
@@ -328,17 +328,17 @@
 
       <hr style="margin:22px 0;">
       <h3>Export</h3>
-      <div style="margin:4px 0 14px;">
-        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="migrate" checked> Migrate this site <span class="hint">(everything, encrypted)</span></label><br>
-        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="portable"> Portable site <span class="hint">(no secrets)</span></label><br>
-        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="custom"> Custom…</label>
+      <div style="margin:4px 0 14px; display:flex; flex-direction:column; align-items:flex-start; gap:8px;">
+        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="migrate" checked> Migrate this site <span class="hint">(everything, encrypted)</span></label>
+        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="portable"> Portable site <span class="hint">(no secrets)</span></label>
+        <label style="font-weight:400; margin:0;"><input type="radio" name="ex-preset" value="custom"> Custom…</label>
       </div>
-      <div id="ex-custom" hidden style="margin:4px 0 14px;">
-        <label style="font-weight:400;"><input type="checkbox" class="ex-sec" value="content" checked> Content</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="media" checked> Media</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="site" checked> Site &amp; skin</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="settings"> Settings</label>
-        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="credentials"> Credentials</label>
+      <div id="ex-custom" hidden style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="content" checked> Content</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="media" checked> Media</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="site" checked> Site &amp; skin</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="settings"> Settings</label>
+        <label style="font-weight:400; margin:0;"><input type="checkbox" class="ex-sec" value="credentials"> Credentials</label>
       </div>
       <div id="ex-note" class="hint" style="margin-bottom:10px;"></div>
       <div class="actions"><button id="ex-download">Download archive</button></div>
