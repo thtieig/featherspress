@@ -343,6 +343,35 @@
       </div>
       <div id="ex-note" class="hint" style="margin-bottom:10px;"></div>
       <div class="actions"><button id="ex-download">Download archive</button></div>
+
+      <hr style="margin:22px 0;">
+      <h3>Restore</h3>
+      <div class="hint" style="margin-bottom:10px;">
+        Upload a Featherspress archive (.tar.gz, or .tar.gz.age if encrypted) and choose what to bring back.
+        Restoring <strong>replaces</strong> the sections you pick &mdash; anything in them that is not in the
+        archive is deleted. Your current site is snapshotted first, and put back automatically if the
+        restored site fails to come up.
+      </div>
+      <div style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
+      <div id="rs-key-wrap" hidden style="margin-bottom:12px;">
+        <label>Decryption key <span class="hint">the age private key you saved when you set up encryption</span></label>
+        <textarea id="rs-key" rows="3" placeholder="AGE-SECRET-KEY-1..." style="width:100%;font-family:monospace;"></textarea>
+      </div>
+      <label>What to restore</label>
+      <div id="rs-scope" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:4px 0 12px;">
+        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="content" checked> Content</label>
+        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="media" checked> Media</label>
+        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="site" checked> Site &amp; skin</label>
+        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="settings"> Settings</label>
+        <label style="font-weight:400;"><input type="checkbox" class="rs-sec" value="credentials"> Credentials</label>
+      </div>
+      <div id="rs-cred-warn" hidden style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
+      <div id="rs-confirm-wrap" hidden style="margin-bottom:12px;">
+        <label>Type <code id="rs-sitename"></code> to confirm</label>
+        <input type="text" id="rs-confirm" autocomplete="off">
+      </div>
+      <div class="actions"><button id="rs-go" disabled>Restore</button></div>
+      <div id="rs-msg" class="hint" style="margin-top:10px;"></div>
     </div>
   </section>
 </main>
@@ -1189,6 +1218,109 @@
   document.querySelectorAll('input[name=ex-preset], .ex-sec').forEach(function (c) {
     c.addEventListener('change', syncExportNote);
   });
+
+  // ---- Restore -------------------------------------------------------------
+  // Upload -> stage (+ decrypt in the app, key never written to disk) -> write a
+  // restore request. The ROOT agent does the actual restore, health-checks the
+  // result and rolls back if the site does not come up.
+  var rsStaged = null;
+
+  function rsSections() {
+    return [].slice.call(document.querySelectorAll('.rs-sec:checked')).map(function (c) { return c.value; });
+  }
+  // A typed confirmation, not a site name: the admin page's own title is
+  // "Featherspress", not the site's, and there is no endpoint that exposes the
+  // manifest title. RESTORE is unambiguous and cannot be got wrong by accident.
+  function rsSiteName() { return 'RESTORE'; }
+  function rsSync() {
+    var f = el('rs-file').files && el('rs-file').files[0];
+    var enc = !!(f && /\.age$/i.test(f.name));
+    el('rs-key-wrap').hidden = !enc;
+    var secs = rsSections();
+    var creds = secs.indexOf('credentials') !== -1;
+    el('rs-cred-warn').hidden = !creds;
+    if (creds) {
+      el('rs-cred-warn').textContent =
+        'This will replace your password and 2FA. You will be signed out, and must sign back in with the ' +
+        'password and authenticator app from the site this archive came from.';
+    }
+    el('rs-confirm-wrap').hidden = !f;
+    el('rs-sitename').textContent = rsSiteName();
+    var typed = (el('rs-confirm').value || '').trim() === rsSiteName();
+    el('rs-go').disabled = !(f && secs.length && typed && (!enc || (el('rs-key').value || '').trim()));
+  }
+  ['rs-file', 'rs-confirm', 'rs-key'].forEach(function (id) {
+    el(id) && el(id).addEventListener('input', rsSync);
+    el(id) && el(id).addEventListener('change', rsSync);
+  });
+  document.querySelectorAll('.rs-sec').forEach(function (c) { c.addEventListener('change', rsSync); });
+
+  el('rs-go') && el('rs-go').addEventListener('click', function () {
+    var f = el('rs-file').files[0];
+    el('rs-go').disabled = true;
+    el('rs-msg').textContent = 'Uploading archive…';
+    var fd = new FormData();
+    fd.append('file', f);
+    var key = (el('rs-key').value || '').trim();
+    if (key) fd.append('identity', key);
+    fetch('/admin/api/import-upload', { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.j.error || 'upload failed');
+        rsStaged = res.j.stagedName;
+        el('rs-msg').textContent = 'Restoring… the site will restart.';
+        return fetch('/admin/api/restore', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stagedName: rsStaged, sections: rsSections() }),
+        });
+      })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.j.error || 'restore refused');
+        pollRestore(res.j.requestId);
+      })
+      .catch(function (e) {
+        el('rs-go').disabled = false;
+        el('rs-msg').textContent = 'Restore failed: ' + e.message;
+      });
+  });
+
+  // The service restarts mid-restore, so fetches WILL fail for a few seconds.
+  // That is expected, not an error — keep polling until the agent reports.
+  function pollRestore(requestId) {
+    var tries = 0;
+    (function tick() {
+      tries++;
+      fetch('/admin/api/backup-status').then(function (r) { return r.json(); }).then(function (s) {
+        var st = s && s.restore;
+        if (st && st.appliedRequestId >= requestId && ['done', 'failed', 'rolled-back'].indexOf(st.state) !== -1) {
+          el('rs-go').disabled = false;
+          if (st.state === 'done') {
+            var extra = st.skipped && st.skipped.length ? ' (skipped: ' + st.skipped.join('; ') + ')' : '';
+            el('rs-msg').textContent = 'Restore complete.' + extra +
+              (rsSections().indexOf('credentials') !== -1
+                ? ' Your login is now the one from the restored site — sign in again with those credentials.'
+                : ' Reload to see the restored site.');
+          } else if (st.state === 'rolled-back') {
+            el('rs-msg').textContent = 'Restore rolled back: ' + (st.error || 'the site did not come up') +
+              ' Your previous site was put back.';
+          } else {
+            el('rs-msg').textContent = 'Restore failed: ' + (st.error || 'unknown');
+          }
+          loadBackups();
+          return;
+        }
+        if (st && st.state) el('rs-msg').textContent = 'Restore: ' + st.state + '…';
+        if (tries > 120) { el('rs-go').disabled = false; el('rs-msg').textContent = 'Still restoring — check the server.'; return; }
+        setTimeout(tick, 2000);
+      }).catch(function () {
+        // Expected while the service restarts.
+        if (tries > 120) { el('rs-go').disabled = false; el('rs-msg').textContent = 'Status unreadable — check the server.'; }
+        else setTimeout(tick, 2000);
+      });
+    })();
+  }
+
   el('ex-download') && el('ex-download').addEventListener('click', function () {
     window.location = '/admin/api/export?sections=' + encodeURIComponent(exportSections().join(','));
   });

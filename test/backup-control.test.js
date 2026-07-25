@@ -457,3 +457,51 @@ test("apply refreshes status even when there is no pending request", () => {
   assert.deepStrictEqual(status.update, { autoApply: false, repoRef: "main" });
   assert.strictEqual(status.ageRecipient, null);
 });
+
+// ---- restore request validation -------------------------------------------
+// stagedName is joined to the staging dir, so anything but a bare filename would
+// aim the import at an arbitrary file. Errors must be fixed strings.
+
+const RCTX = { appliedRestoreId: 4 };
+const rbase = { requestId: 5, stagedName: "abc123.tar.gz", sections: ["content"] };
+
+test("accepts a well-formed restore request", () => {
+  const r = bc.validateRestoreRequest(rbase, RCTX);
+  assert.ok(r.ok, r.error);
+  assert.deepStrictEqual(r.config.sections, ["content"]);
+  assert.strictEqual(r.config.stagedName, "abc123.tar.gz");
+});
+
+test("rejects a stale restore requestId", () => {
+  assert.strictEqual(bc.validateRestoreRequest({ ...rbase, requestId: 4 }, RCTX).ok, false);
+});
+
+test("rejects a stagedName that is not a bare filename", () => {
+  for (const bad of ["../../etc/passwd", "a/b.tar.gz", "..", ".", "/abs.tar.gz", "", "x\\y"]) {
+    const r = bc.validateRestoreRequest({ ...rbase, stagedName: bad }, RCTX);
+    assert.strictEqual(r.ok, false, `must reject ${JSON.stringify(bad)}`);
+    assert.doesNotMatch(r.error, /passwd|etc/, "error must not echo the input");
+  }
+});
+
+test("rejects unknown or empty restore sections", () => {
+  assert.strictEqual(bc.validateRestoreRequest({ ...rbase, sections: ["etc"] }, RCTX).ok, false);
+  assert.strictEqual(bc.validateRestoreRequest({ ...rbase, sections: [] }, RCTX).ok, false);
+  assert.strictEqual(bc.validateRestoreRequest({ ...rbase, sections: "content" }, RCTX).ok, false);
+});
+
+test("restoreAuth requires the credentials section", () => {
+  const a = bc.validateRestoreRequest({ ...rbase, restoreAuth: true }, RCTX);
+  assert.strictEqual(a.config.restoreAuth, false, "restoreAuth without the section must not stick");
+  const b = bc.validateRestoreRequest(
+    { ...rbase, sections: ["content", "credentials"], restoreAuth: true }, RCTX);
+  assert.strictEqual(b.config.restoreAuth, true);
+});
+
+test("buildStatus carries the restore state", () => {
+  const s = bc.buildStatus({
+    writtenAt: "2026-07-25T00:00:00Z",
+    restore: { state: "rolled-back", error: "did not come up" },
+  });
+  assert.strictEqual(s.restore.state, "rolled-back");
+});
