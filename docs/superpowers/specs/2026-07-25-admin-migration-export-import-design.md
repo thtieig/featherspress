@@ -200,15 +200,31 @@ UI, show it once" flow already chosen:
 - **Decrypt** (`age -d -i <identity>`) — the operator uploads or pastes the
   private key they saved when they set up encryption.
 
-The private key **never touches disk on restore**: verified that the identity can
-be piped, so the app runs `age -d -i /dev/stdin` and writes the key only to the
-child process's stdin.
+The private key **never touches disk on restore**: the identity is piped, so the
+app writes the key only to the child process's stdin.
+
+**Use `-i -`, not `-i /dev/stdin`.** This bit us once, so it is recorded here.
+`/dev/stdin` works from a bash pipeline but NOT when Node supplies stdin via
+`execFileSync`'s `input:` option — the same underlying reason `age -p` cannot be
+driven from a web app. Measured on the box, all four variants:
 
 ```
-$ cat key.txt | age -d -i /dev/stdin -o out.txt cipher.age    # verified working
+input: + -i /dev/stdin   FAILED — age: error: reading "/dev/stdin":
+                                  failed to open file: no such device or address
+input: + -i -            OK        <- what we use; age reads the identity from stdin
+stdin = fd of a real file OK
+real 0600 temp key file   OK       <- rejected: writes the private key to disk
+
 $ age -d -i wrong.txt cipher.age
 age: error: no identity matched any of the recipients          # fails cleanly
 ```
+
+**Testing note, learned the hard way:** the "wrong identity is rejected" test
+passed while decryption was *completely* broken — a blanket failure is
+indistinguishable from correct rejection. That test must first assert the correct
+identity succeeds, then assert the wrong one throws. And because `age` is absent
+from the dev machine, the encryption tests skip there: the skip must be loud, and
+this path must be verified on hardware before it is believed.
 
 So the key the "Set up encryption" screen shows you once is exactly the file you
 upload to restore. One key, one story, and the existing attic keys and documented
