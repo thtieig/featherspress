@@ -26,28 +26,44 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
+// The five sections are the shared unit of export, selective import, and the
+// scheduled backup's scope. site.json travels WITH the skin and favicon: the
+// manifest names the skin, so splitting them permits a restored manifest
+// pointing at a skin that is not there — which kills the service at boot.
+const SECTIONS = ["content", "media", "site", "settings", "credentials"];
+
+function sectionsForProfile(profile) {
+  return profile === "full" ? [...SECTIONS] : ["content", "media", "site"];
+}
+
 // Stage the canonical layout into a fresh temp dir, then tar it. Staging (a
 // copy) means a mid-publish write to the live dir can't yield a truncated entry.
 function exportPackage(opts) {
   const { contentDir, mediaDir, manifestPath, authConfigPath, faviconDir, skin, profile, outFile } = opts;
+  // Omitting `sections` entirely must pack exactly what it packs today (two
+  // production boxes' nightly `export --profile full` depends on this).
+  const want = new Set(opts.sections || SECTIONS);
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "fp-export-"));
   try {
-    if (manifestPath && fs.existsSync(manifestPath)) {
+    if (want.has("site") && manifestPath && fs.existsSync(manifestPath)) {
       fs.copyFileSync(manifestPath, path.join(stage, "site.json"));
     }
-    if (contentDir && fs.existsSync(contentDir)) {
+    if (want.has("content") && contentDir && fs.existsSync(contentDir)) {
       fs.cpSync(contentDir, path.join(stage, "content"), { recursive: true });
     }
-    if (mediaDir && fs.existsSync(mediaDir)) {
+    if (want.has("media") && mediaDir && fs.existsSync(mediaDir)) {
       fs.cpSync(mediaDir, path.join(stage, "media"), { recursive: true });
     }
-    if (skin && skin.name && skin.dir && fs.existsSync(skin.dir)) {
+    if (want.has("site") && skin && skin.name && skin.dir && fs.existsSync(skin.dir)) {
       fs.cpSync(skin.dir, path.join(stage, "skins", skin.name), { recursive: true });
     }
-    if (faviconDir && fs.existsSync(faviconDir)) {
+    if (want.has("site") && faviconDir && fs.existsSync(faviconDir)) {
       fs.cpSync(faviconDir, path.join(stage, "favicon"), { recursive: true });
     }
-    if (profile === "full" && authConfigPath && fs.existsSync(authConfigPath)) {
+    // Belt-and-braces: `profile === "full"` stays as a hard gate alongside the
+    // section check, so a "site" profile can NEVER emit credentials even if a
+    // caller passes sections:["credentials"] by mistake or by malice.
+    if (profile === "full" && want.has("credentials") && authConfigPath && fs.existsSync(authConfigPath)) {
       fs.copyFileSync(authConfigPath, path.join(stage, "auth-config.json"));
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
@@ -380,6 +396,7 @@ function parseFlags(argv) {
     else if (a === "--restore-auth") flags.restoreAuth = true;
     else if (a === "--env-file") flags.envFile = argv[++i];
     else if (a === "--allow-engine-dir") flags.allowEngineDir = true;
+    else if (a === "--sections") flags.sections = argv[++i];
     else positional.push(a);
   }
   return { flags, positional };
@@ -440,7 +457,13 @@ function main(argv = process.argv.slice(2)) {
     const profile = flags.profile || "site";
     if (profile !== "site" && profile !== "full") throw new Error(`unknown profile: ${profile}`);
     const outFile = flags.out || path.join(process.cwd(), `featherspress-${profile}-${timestamp()}.tar.gz`);
-    exportPackage({ ...paths, profile, outFile });
+    const sections = flags.sections
+      ? flags.sections.split(",").map((s) => s.trim()).filter(Boolean)
+      : sectionsForProfile(profile);
+    for (const s of sections) {
+      if (!SECTIONS.includes(s)) throw new Error(`unknown section: ${s}`);
+    }
+    exportPackage({ ...paths, profile, sections, outFile });
     process.stderr.write(`exported ${profile} package → ${outFile}\n`);
     return outFile;
   }
@@ -487,7 +510,7 @@ function main(argv = process.argv.slice(2)) {
   throw new Error(`usage: site-package <export|import> [...]\n  got: ${cmd || "(nothing)"}`);
 }
 
-module.exports = { exportPackage, importPackage, resolvePackagePaths, main };
+module.exports = { exportPackage, importPackage, resolvePackagePaths, main, SECTIONS, sectionsForProfile };
 
 if (require.main === module) {
   try {
