@@ -157,6 +157,13 @@ function renderBackupEnv(config, prev) {
   if (config.destType === "local") lines.push(`LOCAL_DIR=${config.localDir}`);
   else lines.push(`RCLONE_REMOTE=${config.remote}:${config.remotePath}`);
   lines.push(`KEEP_LAST=${config.keepLast}`);
+  if (config.schedule) {
+    lines.push(`BACKUP_SCHEDULE_PRESET=${config.schedule.preset}`);
+    lines.push(`BACKUP_SCHEDULE_TIME=${config.schedule.timeOfDay}`);
+    if (config.schedule.preset === "weekly" && config.schedule.weekday) {
+      lines.push(`BACKUP_SCHEDULE_WEEKDAY=${config.schedule.weekday}`);
+    }
+  }
   if (prev.AGE_RECIPIENT) lines.push(`AGE_RECIPIENT=${prev.AGE_RECIPIENT}`);
   if (prev.NODE_BIN) lines.push(`NODE_BIN=${prev.NODE_BIN}`);
   if (prev.ENGINE_DIR) lines.push(`ENGINE_DIR=${prev.ENGINE_DIR}`);
@@ -250,7 +257,12 @@ function refreshStatus(env) {
     remote: conf.RCLONE_REMOTE ? conf.RCLONE_REMOTE.split(":")[0] : null,
     remotePath: conf.RCLONE_REMOTE ? conf.RCLONE_REMOTE.split(":").slice(1).join(":") : null,
     keepLast: Number(conf.KEEP_LAST || 14),
-    schedule: { raw: readScheduleDropIn(env.SCHEDULE_DROPIN) },
+    schedule: {
+      preset: conf.BACKUP_SCHEDULE_PRESET || null,
+      timeOfDay: conf.BACKUP_SCHEDULE_TIME || "00:24",
+      weekday: conf.BACKUP_SCHEDULE_WEEKDAY || null,
+      raw: readScheduleDropIn(env.SCHEDULE_DROPIN),
+    },
   };
   const status = buildStatus({
     appliedRequestId: env._appliedRequestId ?? readAppliedId(env.BACKUP_STATUS),
