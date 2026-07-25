@@ -790,7 +790,39 @@ const importUpload = multer({
   limits: { fileSize: config.MAX_IMPORT_BYTES, files: 1 },
 });
 
+// A restore needs room for THREE copies of the archive on this filesystem: the
+// uploaded artifact, its unpacked contents, and the pre-restore snapshot the
+// root agent takes so it can roll back. MAX_IMPORT_BYTES alone (2 GB) is a cap,
+// not a promise the disk can take it — accepting an upload that fills the disk
+// would take the site down on the way to restoring it.
+//
+// content-length is the multipart body, so it slightly over-states the archive:
+// erring high is the right direction here. A request that declares no length
+// (chunked) cannot be checked and falls through to the fileSize limit.
+const IMPORT_SPACE_FACTOR = 3;
+
+function importSpaceError(dir, declared) {
+  if (!Number.isFinite(declared) || declared <= 0) return null;
+  let free;
+  try {
+    const st = fs.statfsSync(dir);
+    free = st.bavail * st.bsize;
+  } catch {
+    return null; // can't measure it: don't invent a reason to refuse
+  }
+  const need = declared * IMPORT_SPACE_FACTOR;
+  if (free >= need) return null;
+  const gb = (n) => (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+  return (
+    `Not enough free disk space to restore safely: this needs about ${gb(need)} ` +
+    `(the archive, its contents, and a snapshot to roll back to) and the server has ${gb(free)}. ` +
+    `Free some space and try again.`
+  );
+}
+
 router.post("/api/import-upload", (req, res) => {
+  const spaceError = importSpaceError(stagingDir(), Number(req.headers["content-length"]));
+  if (spaceError) return res.status(507).json({ error: spaceError });
   importUpload.single("file")(req, res, async (err) => {
     if (err) {
       const tooBig = err.code === "LIMIT_FILE_SIZE";
@@ -869,3 +901,6 @@ router.post("/api/restore", (req, res) => {
 });
 
 module.exports = router;
+// Exported for tests: the free-space arithmetic is worth pinning independently
+// of an HTTP round trip.
+module.exports.importSpaceError = importSpaceError;

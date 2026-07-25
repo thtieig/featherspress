@@ -442,3 +442,54 @@ test("export: credentials without a configured age recipient is refused", async 
   const j = await res.json();
   assert.match(j.error, /encrypt/i);
 });
+
+// ---- import upload: free-disk guard ---------------------------------------
+// MAX_IMPORT_BYTES caps the upload but promises nothing about the disk. A
+// restore needs room for the artifact, its unpacked contents, and the
+// pre-restore snapshot — accepting an upload that fills the disk would take
+// the site down on the way to restoring it.
+
+const routerModule = require("../admin/router");
+
+test("free-space guard: refuses when 3x the declared size does not fit", () => {
+  const err = routerModule.importSpaceError(os.tmpdir(), Number.MAX_SAFE_INTEGER);
+  assert.ok(err, "an archive larger than any real disk must be refused");
+  assert.match(err, /free disk space/i);
+  assert.match(err, /GB/, "the operator needs the numbers, not just a refusal");
+});
+
+test("free-space guard: a small archive is accepted", () => {
+  assert.strictEqual(routerModule.importSpaceError(os.tmpdir(), 1024), null);
+});
+
+test("free-space guard: an unmeasurable path or absent length never invents a refusal", () => {
+  assert.strictEqual(routerModule.importSpaceError(os.tmpdir(), NaN), null, "no content-length");
+  assert.strictEqual(routerModule.importSpaceError(os.tmpdir(), 0), null, "empty body");
+  assert.strictEqual(
+    routerModule.importSpaceError(path.join(os.tmpdir(), "definitely-not-here-" + Date.now()), 1024),
+    null,
+    "statfs failure must not become a refusal"
+  );
+});
+
+test("import-upload answers 507 before reading a body that cannot fit", async () => {
+  const http = require("node:http");
+  const url = new URL(base + "/admin/api/import-upload");
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: url.hostname, port: url.port, path: url.pathname, method: "POST",
+        headers: {
+          cookie,
+          "content-type": "multipart/form-data; boundary=xxx",
+          // Declared, never sent: the guard must answer on the headers alone.
+          "content-length": String(2 ** 53 - 1),
+        },
+      },
+      (res) => { res.resume(); resolve(res.statusCode); }
+    );
+    req.on("error", reject);
+    req.write("--xxx\r\n"); // a token first chunk; the rest never arrives
+  });
+  assert.strictEqual(status, 507);
+});
