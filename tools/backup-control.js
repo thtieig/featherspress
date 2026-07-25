@@ -315,7 +315,11 @@ function applyRequest(env) {
   try {
     request = readRequestNoFollow(env.BACKUP_REQUEST);
   } catch {
-    return; // no/invalid/symlinked request file: nothing to apply
+    // No/invalid/symlinked request: nothing to apply — but still refresh, or
+    // the panel's nextRun/artifactCount only ever update during a backup run
+    // (when systemd reports no next elapse at all).
+    refreshStatus(env);
+    return;
   }
   const conf = parseEnvFile(env.BACKUP_ENV);
   const ctx = {
