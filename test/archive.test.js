@@ -24,6 +24,15 @@ const HAVE_AGE = (() => {
   }
 })();
 
+if (!HAVE_AGE) {
+  // A silent skip of the ONLY tests covering the encryption path is dangerous:
+  // it is easy to ship a broken encrypt/decrypt round-trip and have the suite
+  // stay green. Make the gap loud instead.
+  console.warn(
+    "SKIPPING age tests: age binary not found — encryption path is UNVERIFIED on this machine"
+  );
+}
+
 test("age round-trip with a piped identity", { skip: !HAVE_AGE }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-age-"));
   execFileSync("age-keygen", ["-o", path.join(dir, "key.txt")], { stdio: "pipe" });
@@ -48,6 +57,14 @@ test("decrypting with the wrong identity throws", { skip: !HAVE_AGE }, () => {
 
   fs.writeFileSync(path.join(dir, "plain.txt"), "the site");
   archive.encryptToRecipient(path.join(dir, "plain.txt"), path.join(dir, "c.age"), recipient);
+
+  // Prove the CORRECT identity decrypts first. Without this, a totally broken
+  // decryptWithIdentity (e.g. every call throws regardless of identity) would
+  // make the "wrong identity throws" assertion below pass for the wrong
+  // reason — exactly what happened when `-i /dev/stdin` broke the round-trip
+  // but this test still reported green.
+  archive.decryptWithIdentity(path.join(dir, "c.age"), path.join(dir, "out-correct.txt"), identity);
+  assert.strictEqual(fs.readFileSync(path.join(dir, "out-correct.txt"), "utf8"), "the site");
 
   assert.throws(
     () => archive.decryptWithIdentity(path.join(dir, "c.age"), path.join(dir, "out.txt"), wrongIdentity),
