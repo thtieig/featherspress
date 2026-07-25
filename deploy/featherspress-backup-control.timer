@@ -3,7 +3,9 @@ Description=Safety net for the Featherspress backup control agent
 
 [Timer]
 # Backstop for any inotify event the .path unit misses: re-run the (idempotent)
-# agent every 2 minutes. Cheap — it no-ops unless requestId advanced.
+# agent every 2 minutes. It always refreshes backup-status.json (lastRun,
+# nextRun, artifactCount, etc. can change between requests); it only skips
+# re-applying backup.env/the timer drop-in when requestId hasn't advanced.
 OnBootSec=2min
 OnUnitActiveSec=2min
 Unit=featherspress-backup-control.service

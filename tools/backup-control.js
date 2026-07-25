@@ -101,6 +101,19 @@ function validateRequest(req, ctx) {
   if (!validTimeOfDay(s.timeOfDay || "00:00")) return fail("bad timeOfDay");
   if (s.preset === "weekly" && !WEEKDAYS.includes(s.weekday)) return fail("weekly needs a weekday");
 
+  // Which sections the scheduled backup captures — the same five the export
+  // already uses (tools/site-package.js SECTIONS). Absent field = back-compat
+  // default of "all five" (existing requests predate this field).
+  const ALL_SECTIONS = ["content", "media", "site", "settings", "credentials"];
+  let sections = ALL_SECTIONS;
+  if (req.sections !== undefined) {
+    if (!Array.isArray(req.sections) || req.sections.length === 0) return fail("bad sections");
+    for (const sec of req.sections) {
+      if (typeof sec !== "string" || !ALL_SECTIONS.includes(sec)) return fail("unknown section");
+    }
+    sections = [...new Set(req.sections)];
+  }
+
   return {
     ok: true,
     config: {
@@ -110,6 +123,7 @@ function validateRequest(req, ctx) {
       remotePath,
       keepLast: req.keepLast,
       schedule: { preset: s.preset, timeOfDay: s.timeOfDay || "00:00", weekday: s.weekday || null },
+      sections,
       action: req.action,
     },
   };
@@ -154,7 +168,11 @@ function readRequestNoFollow(p) {
 // newline would inject an arbitrary extra variable into a root-read file,
 // so refuse rather than write one — validateRequest should have caught it.
 function assertEnvSafe(name, value) {
-  if (typeof value !== "string" || !/^[A-Za-z0-9._:@/+-]*$/.test(value)) {
+  // Comma is included solely for BACKUP_SECTIONS (a comma-joined section list).
+  // It is inert on the value side of an unquoted bash assignment (FOO=a,b,c) —
+  // bash does not split or expand on ",", so this does not widen the injection
+  // surface the rest of the whitelist exists to close.
+  if (typeof value !== "string" || !/^[A-Za-z0-9._:@/+,-]*$/.test(value)) {
     throw new Error(`refusing to write unsafe value for ${name}`);
   }
 }
@@ -179,6 +197,12 @@ function renderBackupEnv(config, prev) {
       assertEnvSafe("schedule.weekday", config.schedule.weekday);
     }
   }
+  if (config.sections) {
+    if (!Array.isArray(config.sections) || config.sections.length === 0) {
+      throw new Error("refusing to write unsafe value for sections");
+    }
+    assertEnvSafe("sections", config.sections.join(","));
+  }
   if (prev.AGE_RECIPIENT) assertEnvSafe("AGE_RECIPIENT", prev.AGE_RECIPIENT);
   if (prev.NODE_BIN) assertEnvSafe("NODE_BIN", prev.NODE_BIN);
   if (prev.ENGINE_DIR) assertEnvSafe("ENGINE_DIR", prev.ENGINE_DIR);
@@ -190,6 +214,9 @@ function renderBackupEnv(config, prev) {
   if (config.destType === "local") lines.push(`LOCAL_DIR=${config.localDir}`);
   else lines.push(`RCLONE_REMOTE=${config.remote}:${config.remotePath}`);
   lines.push(`KEEP_LAST=${config.keepLast}`);
+  if (config.sections) {
+    lines.push(`BACKUP_SECTIONS=${config.sections.join(",")}`);
+  }
   if (config.schedule) {
     lines.push(`BACKUP_SCHEDULE_PRESET=${config.schedule.preset}`);
     lines.push(`BACKUP_SCHEDULE_TIME=${config.schedule.timeOfDay}`);
@@ -296,6 +323,7 @@ function refreshStatus(env) {
     remote: conf.RCLONE_REMOTE ? conf.RCLONE_REMOTE.split(":")[0] : null,
     remotePath: conf.RCLONE_REMOTE ? conf.RCLONE_REMOTE.split(":").slice(1).join(":") : null,
     keepLast: Number(conf.KEEP_LAST || 14),
+    sections: conf.BACKUP_SECTIONS ? conf.BACKUP_SECTIONS.split(",") : null,
     schedule: {
       preset: conf.BACKUP_SCHEDULE_PRESET || null,
       timeOfDay: conf.BACKUP_SCHEDULE_TIME || "00:24",
@@ -317,7 +345,19 @@ function refreshStatus(env) {
     ageRecipient: conf.AGE_RECIPIENT || null,
     update: { autoApply: upd.AUTO_APPLY === "1", repoRef: upd.REPO_REF || "main" },
   });
-  writeStatusFile(env.BACKUP_STATUS, status);
+  // refreshStatus now runs every 2 minutes off the safety timer (in addition to
+  // every apply). A transient unwritable data dir must not make the systemd
+  // unit show as failed on every tick — so, unlike every other read above,
+  // this is the one place we swallow rather than let it propagate: log to
+  // stderr and continue. The top-level `status` CLI command still surfaces a
+  // real failure (see main below), it just doesn't come from an uncaught throw.
+  try {
+    writeStatusFile(env.BACKUP_STATUS, status);
+    return true;
+  } catch (e) {
+    process.stderr.write(`backup-control: failed to write status file: ${e.message}\n`);
+    return false;
+  }
 }
 
 function applyRequest(env) {
@@ -388,8 +428,12 @@ if (require.main === module) {
   const cmd = process.argv[2];
   const env = envFromProcess();
   try {
-    if (cmd === "status") refreshStatus(env);
-    else if (cmd === "apply") applyRequest(env);
+    if (cmd === "status") {
+      // Unlike apply's periodic use of refreshStatus, an explicit `status`
+      // invocation is the operator/monitoring asking "did this actually
+      // work?" — so a swallowed write failure must still exit non-zero here.
+      if (!refreshStatus(env)) process.exit(1);
+    } else if (cmd === "apply") applyRequest(env);
     else {
       process.stderr.write("usage: backup-control.js <apply|status>\n");
       process.exit(2);

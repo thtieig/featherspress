@@ -122,6 +122,26 @@ test("action must be apply or run-now", () => {
   assert.strictEqual(bc.validateRequest({ ...base, action: "rm" }, CTX).ok, false);
 });
 
+// ---- Task 10: configurable backup sections ---------------------------------
+
+test("accepts a valid sections list", () => {
+  const r = bc.validateRequest({ ...base, sections: ["content", "media"] }, CTX);
+  assert.ok(r.ok, r.error);
+  assert.deepStrictEqual(r.config.sections, ["content", "media"]);
+});
+
+test("rejects an unknown section", () => {
+  const r = bc.validateRequest({ ...base, sections: ["content", "etc"] }, CTX);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /section/);
+});
+
+test("defaults to all sections when none are given", () => {
+  const r = bc.validateRequest(base, CTX);
+  assert.deepStrictEqual(r.config.sections,
+    ["content", "media", "site", "settings", "credentials"]);
+});
+
 // ---- Task 2: status assembler --------------------------------------------
 
 test("buildStatus produces the documented shape with no secrets", () => {
