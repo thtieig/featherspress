@@ -714,8 +714,11 @@ function restoreRequest(env) {
   }
 
   // 2. Restore the requested sections.
-  const importArgs = [pkgTool, "import", staged, "--force", "--env-file", env.FP_ENV,
-    "--sections", cfg.sections.join(",")];
+  // --no-safety-snapshot: we took our own snapshot above and own the rollback.
+  // Without it the CLI strands a second full copy of the site, credentials and
+  // all, in /tmp after every single restore, and nothing ever prunes it.
+  const importArgs = [pkgTool, "import", staged, "--force", "--no-safety-snapshot",
+    "--env-file", env.FP_ENV, "--sections", cfg.sections.join(",")];
   if (cfg.restoreAuth) importArgs.push("--restore-auth");
   let skipped = [];
   try {
@@ -760,9 +763,8 @@ function restoreRequest(env) {
 
   // 5. It did not come up — put the old site back and restart again.
   try {
-    execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth", "--env-file", env.FP_ENV], {
-      stdio: "pipe",
-    });
+    execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth",
+      "--no-safety-snapshot", "--env-file", env.FP_ENV], { stdio: "pipe" });
     execFileSync("systemctl", ["restart", env.SERVICE]);
   } catch {}
   const recovered = siteHealthy(port);

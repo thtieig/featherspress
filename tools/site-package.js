@@ -440,6 +440,7 @@ function parseFlags(argv) {
     else if (a === "--env-file") flags.envFile = argv[++i];
     else if (a === "--allow-engine-dir") flags.allowEngineDir = true;
     else if (a === "--sections") flags.sections = argv[++i];
+    else if (a === "--no-safety-snapshot") flags.noSafetySnapshot = true;
     else positional.push(a);
   }
   return { flags, positional };
@@ -551,7 +552,12 @@ function main(argv = process.argv.slice(2)) {
         `refusing to overwrite existing content at ${paths.contentDir} without --force`
       );
     }
-    if (hasExistingData) {
+    // A safety net for a human running this by hand, deliberately left behind
+    // for them to find. A caller that takes its OWN snapshot and owns the
+    // rollback (the root restore agent) passes --no-safety-snapshot: otherwise
+    // every /admin restore silently strands a second full copy of the site —
+    // credentials included — in /tmp, for ever, with nothing pruning it.
+    if (hasExistingData && !flags.noSafetySnapshot) {
       const safety = path.join(safeTmpDir(), `featherspress-prerestore-${timestamp()}.tar.gz`);
       exportPackage({ ...paths, profile: "full", outFile: safety });
       process.stderr.write(`pre-restore backup of current data → ${safety}\n`);
