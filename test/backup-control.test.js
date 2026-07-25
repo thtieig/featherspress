@@ -320,3 +320,18 @@ test("a run-now request does not rewrite the schedule drop-in", () => {
   assert.match(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), /Sun \*-\*-\* 03:00:00/,
     "run-now must leave the configured schedule alone");
 });
+
+test("apply refreshes status even when there is no pending request", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-norq-"));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "nope.json"),      // deliberately absent
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+  };
+  fs.writeFileSync(env.BACKUP_ENV, "DEST_TYPE=local\nLOCAL_DIR=/var/backups/x\nKEEP_LAST=7\n");
+  bc.applyRequest(env);
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.config.keepLast, 7);
+});
