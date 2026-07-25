@@ -197,6 +197,7 @@ router.post("/api/backup-config", (req, res) => {
     destination: b.destination,
     keepLast: b.keepLast,
     schedule: b.schedule,
+    sections: b.sections,
   });
   res.json({ requestId });
 });
