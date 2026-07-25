@@ -18,6 +18,7 @@
 // tested; the IO is exercised end-to-end on the test VPS.
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
@@ -146,6 +147,7 @@ function buildStatus(i) {
     artifactCount: i.artifactCount ?? 0,
     ageRecipient: i.ageRecipient ?? null,
     update: i.update ?? null,
+    restore: i.restore ?? null,
   };
 }
 
@@ -324,6 +326,16 @@ function readEffectiveSchedule(timer) {
   }
 }
 
+// Carry the last restore outcome across ordinary status refreshes, so the
+// panel keeps showing 'done' / 'rolled-back' instead of blanking every 2 min.
+function readRestoreState(statusPath) {
+  try {
+    return JSON.parse(fs.readFileSync(statusPath, "utf8")).restore || null;
+  } catch {
+    return null;
+  }
+}
+
 function readAppliedId(statusPath) {
   try {
     return JSON.parse(fs.readFileSync(statusPath, "utf8")).appliedRequestId || 0;
@@ -387,6 +399,7 @@ function refreshStatus(env) {
     writtenAt: new Date().toISOString(),
     ageRecipient: conf.AGE_RECIPIENT || null,
     update: { autoApply: upd.AUTO_APPLY === "1", repoRef: upd.REPO_REF || "main" },
+    restore: env._restore ?? readRestoreState(env.BACKUP_STATUS),
   });
   // refreshStatus now runs every 2 minutes off the safety timer (in addition to
   // every apply). A transient unwritable data dir must not make the systemd
@@ -480,9 +493,253 @@ function applyRequest(env) {
   refreshStatus(env);
 }
 
+// ---- restore ---------------------------------------------------------------
+// Restore is the same shape as a backup config change: the app writes an
+// untrusted request, root validates it against a whitelist and acts. The extra
+// obligation here is that restore can leave a site unbootable — src/manifest.js
+// rethrows on a malformed site.json and server.js loads the manifest and skin at
+// module scope — so this borrows update.sh's discipline: snapshot, restore,
+// restart, health-check, and roll back if the site does not come up.
+
+const RESTORE_SECTIONS = ["content", "media", "site", "settings", "credentials"];
+
+// Validate an untrusted restore request. `stagedName` must be a BARE filename:
+// it is joined to the staging dir, so a path or `..` would aim the import at an
+// arbitrary file. Errors are fixed strings and never echo the input.
+function validateRestoreRequest(req, ctx) {
+  if (!req || typeof req !== "object") return fail("malformed request");
+  if (!Number.isInteger(req.requestId) || req.requestId <= (ctx.appliedRestoreId || 0)) {
+    return fail("stale or invalid requestId");
+  }
+  const name = req.stagedName;
+  if (
+    typeof name !== "string" ||
+    name === "" ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    name === "." ||
+    name === ".." ||
+    path.basename(name) !== name
+  ) {
+    return fail("stagedName must be a plain filename");
+  }
+  if (!Array.isArray(req.sections) || req.sections.length === 0) return fail("bad sections");
+  for (const s of req.sections) {
+    if (typeof s !== "string" || !RESTORE_SECTIONS.includes(s)) return fail("unknown section");
+  }
+  return {
+    ok: true,
+    config: {
+      requestId: req.requestId,
+      stagedName: name,
+      sections: [...new Set(req.sections)],
+      restoreAuth: !!req.restoreAuth && req.sections.includes("credentials"),
+    },
+  };
+}
+
+// /healthz alone is too weak — it answers 200 on a wiped site. Require the home
+// page to render too, exactly as deploy/update.sh does.
+function siteHealthy(port, tries = 10) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      execFileSync("curl", ["-fsS", "-o", "/dev/null", `http://127.0.0.1:${port}/healthz`], { stdio: "pipe" });
+      execFileSync("curl", ["-fsS", "-o", "/dev/null", `http://127.0.0.1:${port}/`], { stdio: "pipe" });
+      return true;
+    } catch {
+      try {
+        execFileSync("sleep", ["2"]);
+      } catch {}
+    }
+  }
+  return false;
+}
+
+function restoreStatus(env, state, extra) {
+  env._restore = Object.assign({ state, at: new Date().toISOString() }, extra || {});
+  refreshStatus(env);
+}
+
+// Apply an archive's settings.json through the SAME validator the /admin backup
+// panel uses. That whitelist has no field for box-specific facts (paths, users,
+// NODE_BIN, SESSION_SECRET), so they structurally cannot travel from the source
+// box. Anything that fails to validate is skipped and reported, never fatal —
+// a site restored with the wrong backup destination is far better than no site.
+function applyRestoredSettings(env, settings) {
+  const skipped = [];
+  const b = (settings && settings.backup) || {};
+  const conf = parseEnvFile(env.BACKUP_ENV);
+  const req = {
+    requestId: Number.MAX_SAFE_INTEGER - 1, // not persisted; this is a direct apply
+    action: "apply",
+    destination:
+      b.destType === "rclone"
+        ? { type: "rclone", remote: b.remote, remotePath: b.remotePath }
+        : { type: "local", localDir: b.localDir || "/var/backups/featherspress" },
+    keepLast: Number.isInteger(b.keepLast) ? b.keepLast : 14,
+    schedule: b.schedule || { preset: "daily", timeOfDay: "00:20", weekday: null },
+    sections: Array.isArray(b.sections) ? b.sections : undefined,
+  };
+  const v = validateRequest(req, {
+    availableRemotes: listRemotes(),
+    ageRecipientSet: !!conf.AGE_RECIPIENT,
+    appliedRequestId: 0,
+  });
+  if (!v.ok) {
+    skipped.push(v.error);
+    return skipped;
+  }
+  try {
+    fs.writeFileSync(env.BACKUP_ENV, renderBackupEnv(v.config, conf), { mode: 0o600 });
+    fs.chmodSync(env.BACKUP_ENV, 0o600);
+    fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
+    fs.writeFileSync(
+      env.SCHEDULE_DROPIN,
+      `[Timer]\nOnCalendar=\nOnCalendar=${buildOnCalendar(v.config.schedule)}\n`
+    );
+    execFileSync("systemctl", ["daemon-reload"]);
+    execFileSync("systemctl", ["restart", "featherspress-backup.timer"]);
+  } catch {
+    skipped.push("could not apply restored backup settings");
+  }
+  return skipped;
+}
+
+function restoreRequest(env) {
+  let request;
+  try {
+    request = readRequestNoFollow(env.RESTORE_REQUEST);
+  } catch {
+    return; // no/invalid/symlinked restore request: nothing to do
+  }
+  let applied = 0;
+  try {
+    applied = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8")).restore?.appliedRequestId || 0;
+  } catch {}
+
+  const v = validateRestoreRequest(request, { appliedRestoreId: applied });
+  const finish = () => {
+    fs.rmSync(env.RESTORE_REQUEST, { force: true });
+  };
+  if (!v.ok) {
+    env._restoreApplied = Number.isInteger(request.requestId) ? request.requestId : applied;
+    restoreStatus(env, "failed", { error: v.error, appliedRequestId: env._restoreApplied });
+    finish();
+    return;
+  }
+
+  const cfg = v.config;
+  env._restoreApplied = cfg.requestId;
+  // Resolve the staged archive inside the staging dir and prove it stayed there.
+  const staged = path.join(env.IMPORT_STAGING, cfg.stagedName);
+  const rel = path.relative(env.IMPORT_STAGING, staged);
+  if (rel.startsWith("..") || path.isAbsolute(rel) || !fs.existsSync(staged)) {
+    restoreStatus(env, "failed", { error: "staged archive not found", appliedRequestId: cfg.requestId });
+    finish();
+    return;
+  }
+
+  const conf = parseEnvFile(env.BACKUP_ENV);
+  const node = conf.NODE_BIN || env.NODE_BIN;
+  const pkgTool = path.join(env.ENGINE_DIR, "tools", "site-package.js");
+  const port = parseEnvFile(env.FP_ENV).PORT || "8787";
+  const cleanup = () => {
+    fs.rmSync(staged, { force: true });
+    finish();
+  };
+
+  // 1. Snapshot the CURRENT data before touching anything, outside the data dir.
+  const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), "featherspress-prerestore-"));
+  fs.chmodSync(snapDir, 0o700);
+  const snapshot = path.join(snapDir, "pre-restore.tar.gz");
+  restoreStatus(env, "restoring", { appliedRequestId: cfg.requestId, sections: cfg.sections });
+  try {
+    execFileSync(node, [pkgTool, "export", "--profile", "full", "--env-file", env.FP_ENV, "--out", snapshot], {
+      stdio: "pipe",
+    });
+  } catch {
+    restoreStatus(env, "failed", {
+      error: "could not snapshot the current site; nothing was changed",
+      appliedRequestId: cfg.requestId,
+    });
+    fs.rmSync(snapDir, { recursive: true, force: true });
+    cleanup();
+    return;
+  }
+
+  // 2. Restore the requested sections.
+  const importArgs = [pkgTool, "import", staged, "--force", "--env-file", env.FP_ENV,
+    "--sections", cfg.sections.join(",")];
+  if (cfg.restoreAuth) importArgs.push("--restore-auth");
+  let skipped = [];
+  try {
+    execFileSync(node, importArgs, { stdio: "pipe" });
+  } catch {
+    restoreStatus(env, "failed", {
+      error: "the archive could not be restored; nothing was changed",
+      appliedRequestId: cfg.requestId,
+    });
+    fs.rmSync(snapDir, { recursive: true, force: true });
+    cleanup();
+    return;
+  }
+
+  // 3. Settings, through the same whitelist /admin writes go through.
+  if (cfg.sections.includes("settings")) {
+    try {
+      const raw = execFileSync("tar", ["-xzOf", staged, "./settings.json"], { encoding: "utf8", stdio: "pipe" });
+      skipped = applyRestoredSettings(env, JSON.parse(raw));
+    } catch {
+      skipped.push("archive carried no readable settings.json");
+    }
+  }
+
+  // 4. Restart, then prove the site actually renders — not just /healthz, which
+  //    answers 200 on a wiped site.
+  restoreStatus(env, "restarting", { appliedRequestId: cfg.requestId, sections: cfg.sections });
+  try {
+    execFileSync("systemctl", ["restart", env.SERVICE]);
+  } catch {}
+  if (siteHealthy(port)) {
+    restoreStatus(env, "done", {
+      appliedRequestId: cfg.requestId,
+      sections: cfg.sections,
+      skipped: skipped.length ? skipped : null,
+      error: null,
+    });
+    fs.rmSync(snapDir, { recursive: true, force: true });
+    cleanup();
+    return;
+  }
+
+  // 5. It did not come up — put the old site back and restart again.
+  try {
+    execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth", "--env-file", env.FP_ENV], {
+      stdio: "pipe",
+    });
+    execFileSync("systemctl", ["restart", env.SERVICE]);
+  } catch {}
+  const recovered = siteHealthy(port);
+  restoreStatus(env, "rolled-back", {
+    appliedRequestId: cfg.requestId,
+    sections: cfg.sections,
+    error: recovered
+      ? "the restored site did not come up; your previous site was put back"
+      : "the restored site did not come up AND the rollback did not recover it — check the server",
+  });
+  fs.rmSync(snapDir, { recursive: true, force: true });
+  cleanup();
+}
+
 function envFromProcess() {
   return {
     BACKUP_ENV: process.env.BACKUP_ENV || "/etc/featherspress/backup.env",
+    RESTORE_REQUEST: process.env.RESTORE_REQUEST || "/var/lib/featherspress/restore-request.json",
+    IMPORT_STAGING: process.env.IMPORT_STAGING || "/var/lib/featherspress/import-staging",
+    FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
+    ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
+    SERVICE: process.env.SERVICE || "featherspress",
+    NODE_BIN: process.env.NODE_BIN || "/opt/node/bin/node",
     BACKUP_REQUEST: process.env.BACKUP_REQUEST || "/var/lib/featherspress/backup-request.json",
     BACKUP_STATUS: process.env.BACKUP_STATUS || "/var/lib/featherspress/backup-status.json",
     LAST_RUN_FILE: process.env.LAST_RUN_FILE || "/var/lib/featherspress/backup-last-run.json",
@@ -502,8 +759,9 @@ if (require.main === module) {
       // work?" — so a swallowed write failure must still exit non-zero here.
       if (!refreshStatus(env)) process.exit(1);
     } else if (cmd === "apply") applyRequest(env);
+    else if (cmd === "restore") restoreRequest(env);
     else {
-      process.stderr.write("usage: backup-control.js <apply|status>\n");
+      process.stderr.write("usage: backup-control.js <apply|status|restore>\n");
       process.exit(2);
     }
   } catch (e) {
@@ -521,4 +779,7 @@ module.exports = {
   parseEnvFile,
   applyRequest,
   parseTimersCalendar,
+  validateRestoreRequest,
+  restoreRequest,
+  siteHealthy,
 };

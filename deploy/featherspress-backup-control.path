@@ -7,6 +7,7 @@ Description=Watch the Featherspress backup request file (/admin -> root agent)
 # safety timer (featherspress-backup-control.timer) backstops any missed event;
 # the agent is idempotent via requestId, so a double-trigger is harmless.
 PathModified=/var/lib/featherspress/backup-request.json
+PathModified=/var/lib/featherspress/restore-request.json
 Unit=featherspress-backup-control.service
 
 [Install]

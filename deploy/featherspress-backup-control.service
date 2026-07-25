@@ -9,8 +9,15 @@ Type=oneshot
 # NODE_BIN differs per box (/opt/node on gvm, /usr/bin on blog): the unit is
 # copied and the ExecStart node path adjusted at deploy time if needed.
 ExecStart=/opt/node/bin/node /opt/featherspress/tools/backup-control.js apply
+# A second oneshot step: the same unit serves both request files, so one
+# .path trigger covers a backup-config change and a restore.
+ExecStart=/opt/node/bin/node /opt/featherspress/tools/backup-control.js restore
 Environment=BACKUP_ENV=/etc/featherspress/backup.env
 Environment=BACKUP_REQUEST=/var/lib/featherspress/backup-request.json
 Environment=BACKUP_STATUS=/var/lib/featherspress/backup-status.json
 Environment=LAST_RUN_FILE=/var/lib/featherspress/backup-last-run.json
+Environment=RESTORE_REQUEST=/var/lib/featherspress/restore-request.json
+Environment=IMPORT_STAGING=/var/lib/featherspress/import-staging
+Environment=FP_ENV=/etc/featherspress/featherspress.env
+Environment=ENGINE_DIR=/opt/featherspress
 Environment=UPDATE_CONF=/etc/featherspress/update.conf

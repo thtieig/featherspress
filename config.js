@@ -117,4 +117,19 @@ config.BACKUP_STATUS_FILE = env(
   path.join(config.CONTENT_DIR, "..", "backup-status.json")
 );
 
+// Restore: the app stages an uploaded archive here and writes a request naming
+// it; the root agent validates, restores, and deletes both. Same request/status
+// split as backups — the app never unpacks into the live data dir itself.
+config.RESTORE_REQUEST_FILE = env(
+  "RESTORE_REQUEST_FILE",
+  path.join(config.CONTENT_DIR, "..", "restore-request.json")
+);
+config.IMPORT_STAGING_DIR = env(
+  "IMPORT_STAGING_DIR",
+  path.join(config.CONTENT_DIR, "..", "import-staging")
+);
+// Import uploads are whole sites, not single images: the 25MB media limit is far
+// too small (blog's own package is ~17MB and grows with its library).
+config.MAX_IMPORT_BYTES = parseInt(env("MAX_IMPORT_BYTES", String(2 * 1024 * 1024 * 1024)), 10);
+
 module.exports = config;

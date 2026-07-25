@@ -768,4 +768,104 @@ router.post("/api/upload", (req, res) => {
   });
 });
 
+// ---- restore (upload + request; the ROOT agent performs it) ---------------
+// The app stages the uploaded archive and decrypts it if needed, then writes a
+// request naming the staged file. The root agent validates, snapshots, imports,
+// restarts, health-checks and rolls back on failure. The app never unpacks into
+// the live data dir and never restarts the service.
+
+function stagingDir() {
+  fs.mkdirSync(config.IMPORT_STAGING_DIR, { recursive: true });
+  fs.chmodSync(config.IMPORT_STAGING_DIR, 0o700); // uploads may carry credentials
+  return config.IMPORT_STAGING_DIR;
+}
+
+// Separate multer instance from the 25MB media uploader: a site package is a
+// whole site, streamed to disk rather than held in memory.
+const importUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, stagingDir()),
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString("hex") + ".upload"),
+  }),
+  limits: { fileSize: config.MAX_IMPORT_BYTES, files: 1 },
+});
+
+router.post("/api/import-upload", (req, res) => {
+  importUpload.single("file")(req, res, async (err) => {
+    if (err) {
+      const tooBig = err.code === "LIMIT_FILE_SIZE";
+      return res.status(tooBig ? 413 : 400).json({
+        error: tooBig ? "Archive is too large for this server's limit" : "Upload failed",
+      });
+    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const staged = req.file.path;
+    try {
+      fs.chmodSync(staged, 0o600);
+      const identity = typeof req.body.identity === "string" ? req.body.identity.trim() : "";
+      const looksEncrypted = /\.age$/i.test(req.file.originalname || "") || identity.length > 0;
+
+      if (looksEncrypted) {
+        if (!identity) {
+          fs.rmSync(staged, { force: true });
+          return res.status(400).json({
+            error: "This archive looks encrypted. Paste the age private key that decrypts it.",
+          });
+        }
+        const plain = staged + ".tar.gz";
+        try {
+          // The identity is piped to age, never written to disk.
+          archive.decryptWithIdentity(staged, plain, identity);
+        } catch {
+          fs.rmSync(staged, { force: true });
+          fs.rmSync(plain, { force: true });
+          return res.status(400).json({
+            error: "Could not decrypt the archive with that key. Check you pasted the right one.",
+          });
+        }
+        fs.rmSync(staged, { force: true });
+        return res.json({ stagedName: path.basename(plain) });
+      }
+      res.json({ stagedName: path.basename(staged) });
+    } catch (e) {
+      fs.rmSync(staged, { force: true });
+      res.status(500).json({ error: "Could not stage the upload" });
+    }
+  });
+});
+
+function writeRestoreRequest(obj) {
+  const tmp = config.RESTORE_REQUEST_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, config.RESTORE_REQUEST_FILE);
+}
+
+router.post("/api/restore", (req, res) => {
+  const b = req.body || {};
+  // stagedName is a BARE FILENAME, never a path — the root agent re-checks this,
+  // but refuse obvious nonsense here so the operator gets a useful error.
+  const name = typeof b.stagedName === "string" ? b.stagedName : "";
+  if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) {
+    return res.status(400).json({ error: "Invalid upload reference" });
+  }
+  if (!fs.existsSync(path.join(config.IMPORT_STAGING_DIR, name))) {
+    return res.status(400).json({ error: "That upload is no longer staged. Upload the archive again." });
+  }
+  const sections = Array.isArray(b.sections) ? b.sections : [];
+  if (!sections.length) return res.status(400).json({ error: "Choose at least one section to restore" });
+  for (const s of sections) {
+    if (!SECTIONS.includes(s)) return res.status(400).json({ error: "unknown section" });
+  }
+  let requestId;
+  try {
+    const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+    requestId = ((s.restore && s.restore.appliedRequestId) || 0) + 1 + Math.floor(Math.random() * 1000);
+  } catch {
+    requestId = Date.now();
+  }
+  writeRestoreRequest({ requestId, stagedName: name, sections, restoreAuth: sections.includes("credentials") });
+  res.json({ requestId });
+});
+
 module.exports = router;
