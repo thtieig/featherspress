@@ -51,11 +51,20 @@ test("renderBackupEnv persists the schedule structurally", () => {
   assert.match(out, /^BACKUP_SCHEDULE_PRESET=weekly$/m);
   assert.match(out, /^BACKUP_SCHEDULE_TIME=03:00$/m);
   assert.match(out, /^BACKUP_SCHEDULE_WEEKDAY=Sun$/m);
-  // and it must round-trip through the env parser
-  const parsed = bc.parseEnvFile.__parseString
-    ? bc.parseEnvFile.__parseString(out)
-    : null;
-  assert.ok(out.includes("KEEP_LAST=14"));
+  assert.match(out, /^KEEP_LAST=14$/m);
+});
+
+test("the rendered env round-trips through parseEnvFile", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-env-"));
+  const file = path.join(dir, "backup.env");
+  fs.writeFileSync(file, bc.renderBackupEnv({
+    destType: "local", localDir: "/var/backups/featherspress", keepLast: 14,
+    schedule: { preset: "weekly", timeOfDay: "03:00", weekday: "Sun" },
+  }, {}));
+  const parsed = bc.parseEnvFile(file);
+  assert.strictEqual(parsed.BACKUP_SCHEDULE_PRESET, "weekly");
+  assert.strictEqual(parsed.BACKUP_SCHEDULE_TIME, "03:00");
+  assert.strictEqual(parsed.BACKUP_SCHEDULE_WEEKDAY, "Sun");
 });
 
 test("renderBackupEnv omits the weekday when the preset is not weekly", () => {
