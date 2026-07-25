@@ -5,8 +5,13 @@
 //
 // Encryption is KEY-BASED in both directions. `age -p` cannot be used: it opens
 // /dev/tty unconditionally and 1.1.1 has no --passphrase-file, so a web app
-// cannot drive it. Decryption pipes the identity to `age -d -i /dev/stdin`, so
-// the operator's private key is never written to disk.
+// cannot drive it. Decryption pipes the identity to `age -d -i -`, so the
+// operator's private key is never written to disk. Note: `-i -` (age's
+// "read the identity from stdin" flag), NOT `-i /dev/stdin` — the latter looks
+// equivalent from a bash pipeline, but when stdin is supplied via
+// execFileSync's `input:` option (as here) it is not an openable device node,
+// and age fails with "failed to open file: open /dev/stdin: no such device or
+// address". Confirmed empirically on a box with age 1.1.1.
 
 const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
@@ -20,7 +25,7 @@ function encryptToRecipient(inFile, outFile, recipient) {
 
 function decryptWithIdentity(inFile, outFile, identityText) {
   try {
-    execFileSync("age", ["-d", "-i", "/dev/stdin", "-o", outFile, inFile], {
+    execFileSync("age", ["-d", "-i", "-", "-o", outFile, inFile], {
       input: identityText,
       stdio: ["pipe", "pipe", "pipe"],
     });
