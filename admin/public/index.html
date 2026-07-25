@@ -185,7 +185,7 @@
   <div class="tab" data-tab="edit">Edit existing</div>
   <div class="tab" data-tab="media">Media</div>
   <div class="tab" data-tab="tags">Tags</div>
-  <div class="tab" data-tab="backups">Backups</div>
+  <div class="tab" data-tab="backups">Backup &amp; Restore</div>
 </div>
 
 <main>
@@ -293,6 +293,16 @@
       <label>Keep last</label>
       <div style="margin:4px 0 14px;"><input type="number" id="bk-keeplast" min="1" max="365" value="14" style="width:90px;"> backups</div>
 
+      <label>What to back up</label>
+      <div id="bk-scope" style="margin:4px 0 14px;">
+        <label style="font-weight:400;"><input type="checkbox" class="bk-sec" value="content" checked> Content</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="media" checked> Media</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="site" checked> Site &amp; skin</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="settings" checked> Settings</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="bk-sec" value="credentials" checked> Credentials</label>
+      </div>
+      <div id="bk-scope-warn" hidden class="hint" style="margin-bottom:14px;"></div>
+
       <label>Schedule</label>
       <div style="margin:4px 0 18px;">
         <select id="bk-preset">
@@ -315,6 +325,23 @@
         <button class="secondary" id="bk-run">Back up now</button>
       </div>
       <div id="bk-msg" style="margin-top:12px;"></div>
+
+      <hr style="margin:22px 0;">
+      <h3>Export</h3>
+      <div style="margin:4px 0 14px;">
+        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="migrate" checked> Migrate this site <span class="hint">(everything, encrypted)</span></label><br>
+        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="portable"> Portable site <span class="hint">(no secrets)</span></label><br>
+        <label style="font-weight:400;"><input type="radio" name="ex-preset" value="custom"> Custom…</label>
+      </div>
+      <div id="ex-custom" hidden style="margin:4px 0 14px;">
+        <label style="font-weight:400;"><input type="checkbox" class="ex-sec" value="content" checked> Content</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="media" checked> Media</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="site" checked> Site &amp; skin</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="settings"> Settings</label>
+        <label style="font-weight:400; margin-left:14px;"><input type="checkbox" class="ex-sec" value="credentials"> Credentials</label>
+      </div>
+      <div id="ex-note" class="hint" style="margin-bottom:10px;"></div>
+      <div class="actions"><button id="ex-download">Download archive</button></div>
     </div>
   </section>
 </main>
@@ -1016,6 +1043,12 @@
     document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.checked = r.value === dest; });
     if (c.localDir) el('bk-localdir').value = c.localDir;
     if (typeof c.keepLast === 'number') el('bk-keeplast').value = c.keepLast;
+    // c.sections is null on a box that has never set a scope — that means
+    // ALL FIVE sections, matching deploy/backup.sh's empty-means-all. Treat
+    // null/undefined as "everything checked", never as "nothing checked".
+    document.querySelectorAll('.bk-sec').forEach(function (cb) {
+      cb.checked = (c.sections == null) || c.sections.indexOf(cb.value) !== -1;
+    });
     if (sch.preset) {
       el('bk-preset').value = sch.preset;
       if (sch.timeOfDay) el('bk-time').value = sch.timeOfDay;
@@ -1043,7 +1076,21 @@
     } else { el('bk-rclone-note').hidden = true; }
     syncBackupDestRows();
     syncScheduleRows();
+    syncScopeWarning();
+    syncExportNote();
   }
+
+  function syncScopeWarning() {
+    var picked = [].slice.call(document.querySelectorAll('.bk-sec:checked')).map(function (c) { return c.value; });
+    var missing = ['content', 'credentials'].filter(function (s) { return picked.indexOf(s) === -1; });
+    var w = el('bk-scope-warn');
+    if (missing.length) {
+      w.hidden = false;
+      w.textContent = 'Heads up: without ' + missing.join(' and ') +
+        ', this scheduled backup will NOT be able to fully restore your site.';
+    } else { w.hidden = true; }
+  }
+  document.querySelectorAll('.bk-sec').forEach(function (c) { c.addEventListener('change', syncScopeWarning); });
 
   function syncBackupDestRows() {
     var dest = (document.querySelector('input[name=bk-dest]:checked') || {}).value || 'local';
@@ -1084,11 +1131,38 @@
     var preset = el('bk-preset').value;
     var schedule = { preset: preset, timeOfDay: el('bk-time').value || '00:24' };
     if (preset === 'weekly') schedule.weekday = el('bk-weekday').value;
-    return { destination: destination, keepLast: parseInt(el('bk-keeplast').value, 10), schedule: schedule };
+    var sections = [].slice.call(document.querySelectorAll('.bk-sec:checked')).map(function (c) { return c.value; });
+    return { destination: destination, keepLast: parseInt(el('bk-keeplast').value, 10), schedule: schedule, sections: sections };
   }
 
   document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.addEventListener('change', syncBackupDestRows); });
   el('bk-preset') && el('bk-preset').addEventListener('change', syncScheduleRows);
+
+  // ---- Export -------------------------------------------------------------
+  function exportSections() {
+    var preset = (document.querySelector('input[name=ex-preset]:checked') || {}).value || 'migrate';
+    if (preset === 'migrate') return ['content', 'media', 'site', 'settings', 'credentials'];
+    if (preset === 'portable') return ['content', 'media', 'site'];
+    return [].slice.call(document.querySelectorAll('.ex-sec:checked')).map(function (c) { return c.value; });
+  }
+  function syncExportNote() {
+    el('ex-custom').hidden = (document.querySelector('input[name=ex-preset]:checked') || {}).value !== 'custom';
+    var secs = exportSections();
+    var secrets = secs.indexOf('credentials') !== -1;
+    var haveKey = bkLastStatus && bkLastStatus.encrypted;
+    el('ex-note').textContent = !secrets
+      ? 'No credentials in this archive — safe to keep anywhere.'
+      : (haveKey
+          ? 'Contains your password hash and 2FA secret. It will be encrypted with your age key — you need that key to restore it.'
+          : 'This archive contains your credentials, so it must be encrypted. Set up encryption first.');
+    el('ex-download').disabled = secs.length === 0 || (secrets && !haveKey);
+  }
+  document.querySelectorAll('input[name=ex-preset], .ex-sec').forEach(function (c) {
+    c.addEventListener('change', syncExportNote);
+  });
+  el('ex-download') && el('ex-download').addEventListener('click', function () {
+    window.location = '/admin/api/export?sections=' + encodeURIComponent(exportSections().join(','));
+  });
 
   el('bk-save') && el('bk-save').addEventListener('click', function () {
     el('bk-save').disabled = true; el('bk-msg').textContent = 'Saving…';
