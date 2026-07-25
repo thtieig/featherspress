@@ -76,6 +76,9 @@ router.use(
       secure: "auto", // honors trust-proxy: secure behind Apache TLS, plain for local dev
       path: "/admin",
       maxAge: 30 * 24 * 60 * 60 * 1000,
+      // Every state-changing endpoint is a JSON POST with no CSRF token, so do
+      // not leave cross-site protection resting on the browser's Lax default.
+      sameSite: "strict",
     },
   })
 );
@@ -178,6 +181,7 @@ function nextBackupRequestId() {
 function writeBackupRequest(obj) {
   const tmp = config.BACKUP_REQUEST_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600); // mode is ignored when the tmp file already exists
   fs.renameSync(tmp, config.BACKUP_REQUEST_FILE);
 }
 

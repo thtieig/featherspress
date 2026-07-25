@@ -22,7 +22,10 @@ NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
 # Serialize with any other backup run — the /admin "back up now" button and the
 # scheduled timer can otherwise overlap and race the prune step. Second run bows
 # out cleanly rather than corrupting the destination.
-exec 9>"/run/featherspress-backup.lock" 2>/dev/null || true
+if ! exec 9>"/run/featherspress-backup.lock"; then
+  echo "[backup] refusing: cannot open the lock file /run/featherspress-backup.lock" >&2
+  exit 1
+fi
 if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
   echo "[backup] another backup is already running; skipping this run" >&2
   exit 0

@@ -23,12 +23,19 @@ process.env.AUTH_CONFIG = path.join(TMP, "auth-config.json");
 
 const PASSWORD = "testpassword123";
 const RECOVERY = "abcd-1234";
+// A second, independent code so the SameSite cookie test below does not
+// consume the recovery code the login-flow tests rely on (which would make
+// the suite order-dependent).
+const RECOVERY2 = "efgh-5678";
 fs.writeFileSync(
   process.env.AUTH_CONFIG,
   JSON.stringify({
     passwordHash: bcrypt.hashSync(PASSWORD, 8),
     totpSecret: "JBSWY3DPEHPK3PXP",
-    recoveryCodeHashes: [crypto.createHash("sha256").update(RECOVERY).digest("hex")],
+    recoveryCodeHashes: [
+      crypto.createHash("sha256").update(RECOVERY).digest("hex"),
+      crypto.createHash("sha256").update(RECOVERY2).digest("hex"),
+    ],
   })
 );
 
@@ -80,6 +87,16 @@ test("login with password + recovery code succeeds", async () => {
   const res = await api("POST", "/admin/api/login", { password: PASSWORD, code: RECOVERY });
   assert.strictEqual(res.status, 200, await res.text());
   assert.ok(cookie.includes("connect.sid"));
+});
+
+test("the session cookie declares SameSite", async () => {
+  const res = await fetch(base + "/admin/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: PASSWORD, code: RECOVERY2 }),
+  });
+  const set = (res.headers.getSetCookie ? res.headers.getSetCookie() : []).join(";");
+  assert.match(set, /SameSite=Strict/i);
 });
 
 test("wrong password is rejected", async () => {

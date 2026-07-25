@@ -14,7 +14,6 @@ UPDATE_CONF="${UPDATE_CONF:-/etc/featherspress/update.conf}"
 ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
 NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
 NPM_BIN="${NPM_BIN:-/opt/node/bin/npm}"
-FP_USER="${FP_USER:-featherspress}"
 SERVICE="${SERVICE:-featherspress}"
 
 [ -f "$FP_ENV" ] && { set -a; . "$FP_ENV"; set +a; }
@@ -39,6 +38,10 @@ cd "$ENGINE_DIR"
 # owner instead of teaching root to trust the path: it also keeps newly written
 # objects owned correctly, so no chown -R is needed to repair them afterwards.
 REPO_OWNER="$(stat -c %U "$ENGINE_DIR")"
+# Default to whoever actually owns the code dir: everything else runs as
+# REPO_OWNER, and a divergent FP_USER makes the chown below fail (or hand the
+# repo to the wrong user) on any box whose app user is not "featherspress".
+FP_USER="${FP_USER:-$REPO_OWNER}"
 run_as_owner() {
   if [ "$(id -u)" = "0" ] && [ "$REPO_OWNER" != "root" ]; then
     # `env PATH=…` rather than relying on --preserve-env=PATH alone: sudoers
