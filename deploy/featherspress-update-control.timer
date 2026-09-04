@@ -1,0 +1,14 @@
+[Unit]
+Description=Safety net for the Featherspress update control agent
+
+[Timer]
+# Backstop for any inotify event the .path unit misses: re-run the (idempotent)
+# agent every 5 minutes. Looser than the backup agent's 2-minute timer since
+# this only exists to catch a missed PathModified — there is no other
+# periodic field (nextRun, artifactCount, …) that needs refreshing here.
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=featherspress-update-control.service
+
+[Install]
+WantedBy=timers.target

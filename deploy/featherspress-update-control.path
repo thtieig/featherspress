@@ -1,0 +1,14 @@
+[Unit]
+Description=Watch the Featherspress update request file (/admin -> root agent)
+
+[Path]
+# Fires the control agent when /admin writes an update-apply request.
+# Responsive (inotify). A rename-into-place may not always emit PathModified,
+# so a 5-minute safety timer (featherspress-update-control.timer) backstops
+# any missed event; the agent is idempotent via requestId, so a double-trigger
+# is harmless (a second run just finds nothing new to apply).
+PathModified=/var/lib/featherspress/update-request.json
+Unit=featherspress-update-control.service
+
+[Install]
+WantedBy=multi-user.target

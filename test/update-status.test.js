@@ -21,6 +21,7 @@ process.env.CONTENT_DIR = path.join(TMP, "content");
 process.env.MEDIA_DIR = path.join(TMP, "media");
 process.env.AUTH_CONFIG = path.join(TMP, "auth-config.json");
 process.env.UPDATE_STATUS_FILE = path.join(TMP, "update-status.json");
+process.env.UPDATE_APPLY_STATUS_FILE = path.join(TMP, "update-apply-status.json");
 
 const PASSWORD = "testpassword123";
 const RECOVERY = "abcd-1234";
@@ -87,4 +88,53 @@ test("update-status is graceful when the file is absent", async () => {
   const body = await res.json();
   assert.strictEqual(res.status, 200);
   assert.strictEqual(body.available, false);
+});
+
+test("update-status omits apply fields when no GUI apply has ever happened", async () => {
+  // Fresh install: update.sh has run (UPDATE_STATUS_FILE exists) but
+  // update-control.js never has (UPDATE_APPLY_STATUS_FILE does not).
+  fs.writeFileSync(
+    process.env.UPDATE_STATUS_FILE,
+    JSON.stringify({ available: false, behind: 0, currentCommit: "aaaa", checkedAt: "2026-07-20T00:00:00Z" })
+  );
+  fs.rmSync(process.env.UPDATE_APPLY_STATUS_FILE, { force: true });
+  const res = await api("GET", "/admin/api/update-status");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(body.available, false);
+  assert.strictEqual(body.lastOk, undefined);
+  assert.strictEqual(body.lastErr, undefined);
+  assert.strictEqual(body.appliedAt, undefined);
+});
+
+test("update-status merges lastOk/lastErr/appliedAt once an apply status file exists", async () => {
+  fs.writeFileSync(
+    process.env.UPDATE_STATUS_FILE,
+    JSON.stringify({ available: true, behind: 1, currentCommit: "aaaa", availableCommit: "cccc", checkedAt: "2026-07-21T00:00:00Z" })
+  );
+  fs.writeFileSync(
+    process.env.UPDATE_APPLY_STATUS_FILE,
+    JSON.stringify({ appliedRequestId: 5, lastOk: false, lastErr: "npm ci failed", appliedAt: "2026-07-21T00:05:00Z" })
+  );
+  const res = await api("GET", "/admin/api/update-status");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  // Fields owned by update.sh (UPDATE_STATUS_FILE) survive the merge...
+  assert.strictEqual(body.available, true);
+  assert.strictEqual(body.behind, 1);
+  // ...alongside the fields owned by update-control.js (UPDATE_APPLY_STATUS_FILE).
+  assert.strictEqual(body.appliedRequestId, 5);
+  assert.strictEqual(body.lastOk, false);
+  assert.strictEqual(body.lastErr, "npm ci failed");
+  assert.strictEqual(body.appliedAt, "2026-07-21T00:05:00Z");
+});
+
+test("update-status apply fields survive even when the base status file is absent", async () => {
+  fs.rmSync(process.env.UPDATE_STATUS_FILE, { force: true });
+  const res = await api("GET", "/admin/api/update-status");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(body.available, false);
+  assert.strictEqual(body.lastOk, false);
+  assert.strictEqual(body.lastErr, "npm ci failed");
 });

@@ -181,6 +181,7 @@
 
 <div id="update-banner" hidden style="background:var(--accent-wash); border-bottom:1px solid var(--rule); padding:10px 28px; font-size:0.85rem; color:var(--ink);">
   <span id="update-banner-text"></span>
+  <button type="button" class="secondary" id="update-apply-btn" hidden style="margin-left:12px;">Apply now</button>
 </div>
 
 <div class="tabs">
@@ -1517,19 +1518,48 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
   });
 
-  // Show a banner when the root update timer reports a newer engine version.
-  // Read-only: applying the update is an operator action (see docs/DEPLOY.md).
+  // Show a banner when the root update timer reports a newer engine version,
+  // plus (if the /admin update-control agent is installed — see DEPLOY.md) an
+  // "Apply now" button, and the outcome of the last GUI-triggered apply.
   function checkUpdateStatus() {
     fetch('/admin/api/update-status').then(function (r) { return r.json(); }).then(function (s) {
-      if (!s || !s.available) return;
-      var msg = 'Engine update available';
-      if (s.behind) msg += ' (' + s.behind + ' commit' + (s.behind > 1 ? 's' : '') + ' behind)';
-      if (s.availableCommit) msg += ' — ' + String(s.availableCommit).slice(0, 7);
-      msg += '. Apply it from the server (see DEPLOY.md).';
-      el('update-banner-text').textContent = msg;
+      if (!s) return;
+      var parts = [];
+      if (s.available) {
+        var msg = 'Engine update available';
+        if (s.behind) msg += ' (' + s.behind + ' commit' + (s.behind > 1 ? 's' : '') + ' behind)';
+        if (s.availableCommit) msg += ' — ' + String(s.availableCommit).slice(0, 7);
+        parts.push(msg + '.');
+      }
+      // The last apply's outcome, visible on this next authenticated page
+      // load (no live polling through the session-wiping restart).
+      if (s.lastOk === false) {
+        parts.push('The last update attempt failed' + (s.lastErr ? ': ' + s.lastErr : '') + '.');
+      }
+      if (!parts.length) return;
+      el('update-banner-text').textContent = parts.join(' ');
       el('update-banner').hidden = false;
+      if (el('update-apply-btn')) {
+        el('update-apply-btn').hidden = !s.available;
+        el('update-apply-btn').disabled = false;
+      }
     }).catch(function () {});
   }
+
+  el('update-apply-btn') && el('update-apply-btn').addEventListener('click', function () {
+    el('update-apply-btn').disabled = true;
+    fetch('/admin/api/update-apply', { method: 'POST' }).then(function (r) {
+      if (!r.ok) throw new Error('request failed');
+      return r.json();
+    }).then(function () {
+      el('update-banner-text').textContent =
+        'Update queued. The server will restart shortly and you\'ll need to sign in again; this can take a minute or two.';
+      el('update-apply-btn').hidden = true;
+    }).catch(function (e) {
+      el('update-apply-btn').disabled = false;
+      el('update-banner-text').textContent = 'Could not queue the update: ' + e.message;
+    });
+  });
 
   loadMeta();
   checkUpdateStatus();

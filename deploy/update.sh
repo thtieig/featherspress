@@ -16,6 +16,32 @@ NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
 NPM_BIN="${NPM_BIN:-/opt/node/bin/npm}"
 SERVICE="${SERVICE:-featherspress}"
 
+# Serialize with any other update run — the GUI's "Apply now" button
+# (tools/update-control.js) and the routine daily check can otherwise overlap
+# and both step on the same rollback point / npm ci. This is the same guard
+# as deploy/backup.sh's, with ONE deliberate deviation: BLOCK up to 30s
+# (`flock -w 30`, not `flock -n`) and, on failure to acquire, `exit 1` (not
+# `exit 0`). A non-blocking skip is right for backup.sh — a missed scheduled
+# backup just retries next tick — but wrong here: if a GUI-triggered
+# forced-apply lost a non-blocking race against the routine daily check and
+# silently exited 0, tools/update-control.js would read that as success and
+# report "applied" when nothing was actually done. A routine check only takes
+# a few seconds, so the 30s wait is never felt in practice, and a genuine
+# second-apply-in-progress should fail loudly rather than lie about
+# succeeding.
+if ! exec 9>"/run/featherspress-update.lock"; then
+  echo "[update] refusing: cannot open the lock file /run/featherspress-update.lock" >&2
+  exit 1
+fi
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -w 30 9; then
+    echo "[update] could not acquire the update lock within 30s; another update run is in progress" >&2
+    exit 1
+  fi
+else
+  echo "[update] warning: flock not found; concurrent update runs will NOT be serialized" >&2
+fi
+
 [ -f "$FP_ENV" ] && { set -a; . "$FP_ENV"; set +a; }
 [ -f "$UPDATE_CONF" ] && { set -a; . "$UPDATE_CONF"; set +a; }
 

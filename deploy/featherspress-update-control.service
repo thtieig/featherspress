@@ -1,0 +1,20 @@
+[Unit]
+Description=Featherspress update control agent (applies /admin update-apply requests as root)
+# Runs the root-side agent that turns a GUI "Apply now" click into an actual
+# git pull + npm ci + restart, via deploy/update.sh. The unprivileged app can
+# only WRITE the request file; this, as root, decides whether to honour it.
+# See tools/update-control.js.
+
+[Service]
+Type=oneshot
+# NODE_BIN differs per box (/opt/node on gvm, /usr/bin on blog): the unit is
+# copied and the ExecStart node path adjusted at deploy time if needed.
+ExecStart=/opt/node/bin/node /opt/featherspress/tools/update-control.js apply
+# update.sh's own npm-ci/restart/health-check cycle can legitimately take a
+# few minutes on a small VPS; this bounds a genuine hang rather than leaving
+# it unbounded (tools/update-control.js itself calls it with no timeout).
+TimeoutStartSec=1800
+Environment=UPDATE_REQUEST=/var/lib/featherspress/update-request.json
+Environment=UPDATE_APPLY_STATUS=/var/lib/featherspress/update-apply-status.json
+Environment=FP_ENV=/etc/featherspress/featherspress.env
+Environment=ENGINE_DIR=/opt/featherspress

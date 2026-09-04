@@ -333,13 +333,54 @@ sudo cp deploy/featherspress-update.{service,timer} /etc/systemd/system/
 sudo systemctl enable --now featherspress-update.timer
 
 # apply an update by hand (the default, notify-only workflow):
-sudo /opt/featherspress/deploy/update.sh   # with AUTO_APPLY=1 to actually apply
+sudo /opt/featherspress/deploy/update.sh
+# to force-apply this run regardless of update.conf's own AUTO_APPLY setting
+# (plain `AUTO_APPLY=1 sudo update.sh` does NOT reliably do this: update.conf
+# is sourced AFTER the env var is read, so its own AUTO_APPLY=0 silently wins;
+# UPDATE_CONF=/dev/null skips sourcing it, so AUTO_APPLY=1 survives):
+sudo env UPDATE_CONF=/dev/null AUTO_APPLY=1 /opt/featherspress/deploy/update.sh
 ```
 
 Applying happens as root (the app can't write its own code dir or restart
 itself — by design). `AUTO_APPLY=1` trades that safety step for convenience:
 a compromised upstream commit would auto-run within a timer tick, so opt in
 per box, knowingly.
+
+### Apply from the GUI
+
+**Optional, separate install** from the daily checker above (the same
+relationship `featherspress-backup-control.*` has to `featherspress-backup.*`
+in step 10). Install these three units and an authenticated **Apply now**
+button appears in `/admin` next to the "update available" banner, so applying
+a routine update no longer needs SSH:
+
+```sh
+sudo cp /opt/featherspress/deploy/featherspress-update-control.{path,service,timer} \
+        /etc/systemd/system/
+# If your Node is not at /opt/node (e.g. a distro package at /usr/bin/node),
+# fix ExecStart first (same as step 10):
+#   sudo sed -i 's|/opt/node/bin/node|/usr/bin/node|' \
+#     /etc/systemd/system/featherspress-update-control.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now featherspress-update-control.path \
+                            featherspress-update-control.timer
+```
+
+Clicking **Apply now** writes a request the agent above picks up (inotify,
+backstopped by its own 5-minute safety timer): it runs `deploy/update.sh` as
+root with the same forced-apply override shown above
+(`UPDATE_CONF=/dev/null AUTO_APPLY=1`), regardless of what `update.conf` on
+disk says — the same pull → reinstall → restart → health-check → rollback
+sequence the daily timer's `AUTO_APPLY=1` path uses. The click only queues
+it: there is no live progress in the browser, since the restart tears down
+your own session along with everything else. Sign back in after a minute or
+two — the banner clears on success, or (if the apply failed and rolled back)
+shows the failure so it's visible without needing SSH.
+
+The SSH fallback above still works exactly as documented, and is now
+flock-protected, so it's safe to run by hand even with the GUI agent
+installed: a concurrent run waits up to 30s for the other to finish rather
+than racing it, and fails loudly (not silently) if that wait times out.
 
 ## Account recovery
 

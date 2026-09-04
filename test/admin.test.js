@@ -421,6 +421,35 @@ test("backup endpoints require auth", async () => {
   assert.strictEqual(res.status, 401);
 });
 
+// ---- update-apply (GUI-triggered apply; the ROOT agent applies) -----------
+
+test("update-apply requires auth", async () => {
+  const res = await fetch(base + "/admin/api/update-apply", { method: "POST" });
+  assert.strictEqual(res.status, 401);
+});
+
+test("update-apply writes an apply request with a monotonic requestId", async () => {
+  const res = await api("POST", "/admin/api/update-apply");
+  assert.strictEqual(res.status, 200);
+  const j = await res.json();
+  assert.ok(Number.isInteger(j.requestId));
+  const written = JSON.parse(fs.readFileSync(require("../config").UPDATE_REQUEST_FILE, "utf8"));
+  assert.strictEqual(written.action, "apply");
+  assert.strictEqual(written.requestId, j.requestId);
+});
+
+// Regression guard: the requestId must advance past whatever
+// UPDATE_APPLY_STATUS_FILE already recorded, or update-control.js would
+// reject the new click as stale.
+test("update-apply's requestId is greater than the last applied one", async () => {
+  const applyStatusFile = require("../config").UPDATE_APPLY_STATUS_FILE;
+  fs.writeFileSync(applyStatusFile, JSON.stringify({ appliedRequestId: 41 }));
+  const res = await api("POST", "/admin/api/update-apply");
+  const j = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.ok(j.requestId > 41, `expected requestId > 41, got ${j.requestId}`);
+});
+
 // ---- export (Site Package download) --------------------------------------
 
 test("export: content-only package downloads as a non-empty archive", async () => {

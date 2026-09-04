@@ -104,6 +104,28 @@ config.UPDATE_STATUS_FILE = env(
   path.join(config.CONTENT_DIR, "..", "update-status.json")
 );
 
+// GUI-triggered update apply, same request/status split as the backup files
+// below:
+//  - REQUEST: the app WRITES a desired action ({requestId, action:"apply"})
+//             here; the root agent (tools/update-control.js) reads it.
+//  - APPLY_STATUS: the root agent WRITES its outcome here — appliedRequestId/
+//             lastOk/lastErr/appliedAt.
+// Deliberately a SEPARATE file from UPDATE_STATUS_FILE above, not fields
+// merged into it: deploy/update.sh fully overwrites UPDATE_STATUS_FILE on
+// every single run, including the routine daily notify-only check that fires
+// unconditionally regardless of any GUI apply. If update-control.js wrote its
+// fields into that same file, the very next daily tick would silently wipe
+// them back out. The router (admin/router.js) merges the two files at read
+// time instead.
+config.UPDATE_REQUEST_FILE = env(
+  "UPDATE_REQUEST_FILE",
+  path.join(config.CONTENT_DIR, "..", "update-request.json")
+);
+config.UPDATE_APPLY_STATUS_FILE = env(
+  "UPDATE_APPLY_STATUS_FILE",
+  path.join(config.CONTENT_DIR, "..", "update-apply-status.json")
+);
+
 // Backup control files, both beside content/ in the writable data dir:
 //  - REQUEST: the app WRITES a desired-config here; the root agent reads it.
 //  - STATUS:  the root agent WRITES here; the app reads it (read-only) for the

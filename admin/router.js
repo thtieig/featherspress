@@ -51,6 +51,18 @@ const loginLimiter = rateLimit({
   message: { error: "Too many attempts. Try again in a few minutes." },
 });
 
+// Looser than loginLimiter: this isn't guarding a guessable secret, it's
+// bounding an already-authenticated action that triggers git/npm ci/a
+// restart, mainly against a stuck client retry loop or a leaked-cookie
+// availability-degradation attempt.
+const updateApplyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many update-apply attempts. Try again in a few minutes." },
+});
+
 // Use a stable secret from config when one is set (production), else a random
 // per-start secret (dev). Either way the session STORE is in-memory, so a
 // restart still requires signing in again, which is fine for a single-author tool.
@@ -133,16 +145,60 @@ router.use((req, res, next) => {
 
 router.use(express.static(PUBLIC_DIR));
 
-// ---- update status (read-only) -------------------------------------------
-// The root update timer writes UPDATE_STATUS_FILE into the data dir; we only
-// read it here to render the admin banner. The app never runs git or restarts.
+// ---- update status (read) + apply (request write; the ROOT agent applies) -
+// The root update timer writes UPDATE_STATUS_FILE into the data dir
+// (available/behind/currentCommit/etc, fully overwritten on every run). The
+// app can additionally WRITE an apply request into the data dir; a root
+// systemd unit (tools/update-control.js) validates and applies it, then
+// writes its OWN outcome (appliedRequestId/lastOk/lastErr/appliedAt) to a
+// SEPARATE file, UPDATE_APPLY_STATUS_FILE — never merged into
+// UPDATE_STATUS_FILE, since update.sh overwrites that file wholesale on
+// every run (including the routine daily notify-only check) and would
+// silently wipe out fields it doesn't know about. We merge the two here, at
+// read time, instead. The app never runs git, touches /etc, or restarts
+// itself directly.
 router.get("/api/update-status", (req, res) => {
+  let status;
   try {
-    res.json(JSON.parse(fs.readFileSync(config.UPDATE_STATUS_FILE, "utf8")));
+    status = JSON.parse(fs.readFileSync(config.UPDATE_STATUS_FILE, "utf8"));
   } catch (e) {
-    if (e.code === "ENOENT") return res.json({ available: false, checkedAt: null });
-    res.status(500).json({ error: "update status unreadable" });
+    if (e.code === "ENOENT") status = { available: false, checkedAt: null };
+    else return res.status(500).json({ error: "update status unreadable" });
   }
+  try {
+    const applyStatus = JSON.parse(fs.readFileSync(config.UPDATE_APPLY_STATUS_FILE, "utf8"));
+    status.appliedRequestId = applyStatus.appliedRequestId;
+    status.lastOk = applyStatus.lastOk;
+    status.lastErr = applyStatus.lastErr;
+    status.appliedAt = applyStatus.appliedAt;
+  } catch {
+    // No apply status file yet (fresh install, never GUI-applied): the merge
+    // fields are simply absent from the response.
+  }
+  res.json(status);
+});
+
+// Monotonic-ish request id, same scheme as nextBackupRequestId below.
+function nextUpdateRequestId() {
+  try {
+    const s = JSON.parse(fs.readFileSync(config.UPDATE_APPLY_STATUS_FILE, "utf8"));
+    return (s.appliedRequestId || 0) + 1 + Math.floor(Math.random() * 1000);
+  } catch {
+    return Date.now();
+  }
+}
+
+function writeUpdateRequest(obj) {
+  const tmp = config.UPDATE_REQUEST_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600); // mode is ignored when the tmp file already exists
+  fs.renameSync(tmp, config.UPDATE_REQUEST_FILE);
+}
+
+router.post("/api/update-apply", updateApplyLimiter, (req, res) => {
+  const requestId = nextUpdateRequestId();
+  writeUpdateRequest({ requestId, action: "apply" });
+  res.json({ requestId });
 });
 
 // ---- backups (status read + request write; the ROOT agent applies) --------

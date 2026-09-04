@@ -1,0 +1,202 @@
+"use strict";
+
+// update-control: the ROOT-side agent behind the /admin "Apply now" button.
+//
+// The unprivileged web app writes an untrusted `update-request.json` into the
+// data dir (the one place it can write). This script, run AS ROOT by a
+// systemd .path unit (plus a 5-minute safety timer), validates that request,
+// and — if it is fresh — runs deploy/update.sh with a forced apply, then
+// records the outcome in UPDATE_APPLY_STATUS_FILE. The app never gains a
+// privilege; it can only propose an apply.
+//
+// This is deliberately much smaller than tools/backup-control.js: there is no
+// destination/schedule whitelist to validate, just a single requestId/action
+// pair, and the actual pull/reinstall/restart/health-check/rollback sequence
+// lives entirely in deploy/update.sh (already root-only, already exercised by
+// the daily timer's AUTO_APPLY=1 path) — this script only decides whether to
+// invoke it and reports what happened.
+//
+// Two status files, on purpose: UPDATE_STATUS_FILE (owned by update.sh,
+// overwritten wholesale on every run including the routine daily check) is
+// never touched here. This script owns UPDATE_APPLY_STATUS_FILE exclusively;
+// admin/router.js merges the two at read time. See config.js's comment on
+// UPDATE_APPLY_STATUS_FILE for the bug this avoids.
+//
+//   node tools/update-control.js apply    # read+validate+apply a request
+//
+// The pure functions (validateRequest, readRequestNoFollow) are unit tested;
+// the IO (running update.sh, systemd-adjacent bits) is exercised on the test
+// VPS, same disclaimer as backup-control.js.
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+function fail(error) {
+  return { ok: false, error };
+}
+
+// Validate an untrusted request. Returns {ok:true} or {ok:false, error} where
+// error is a fixed, non-echoing string. ctx.appliedRequestId is the last id
+// this agent has already processed (0 if none yet).
+function validateRequest(req, ctx) {
+  if (!req || typeof req !== "object") return fail("malformed request");
+  if (!Number.isInteger(req.requestId) || req.requestId <= ctx.appliedRequestId) {
+    return fail("stale or invalid requestId");
+  }
+  if (req.action !== "apply") return fail("action must be apply");
+  return { ok: true };
+}
+
+// Read the request WITHOUT following a symlink (the file lives in an
+// app-writable dir), size-capped. Throws on symlink/oversize/parse error.
+function readRequestNoFollow(p) {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const st = fs.fstatSync(fd);
+    if (st.size > 64 * 1024) throw new Error("request too large");
+    const buf = Buffer.alloc(st.size);
+    fs.readSync(fd, buf, 0, st.size, 0);
+    return JSON.parse(buf.toString("utf8"));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readAppliedId(statusPath) {
+  try {
+    return JSON.parse(fs.readFileSync(statusPath, "utf8")).appliedRequestId || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStatusFile(statusPath, obj) {
+  const tmp = statusPath + ".tmp";
+  fs.rmSync(tmp, { force: true });
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o644 });
+  fs.chmodSync(tmp, 0o644);
+  fs.renameSync(tmp, statusPath);
+}
+
+// Delete a request we have finished with, exactly like backup-control.js's
+// consumeRequest and for the same two reasons: left behind, it is re-read by
+// the .path unit and every 5-minute safety tick, found stale, and recorded as
+// a rejected request forever; and a rename-into-place request that is never
+// deleted leaves the .path unit's inotify watch on a stale inode, so the next
+// real request waits for the safety timer instead of firing promptly.
+//
+// Only unlink when the file still holds the request we processed: a save
+// that landed while we were working is someone else's to apply, not ours.
+function consumeRequest(requestPath, requestId) {
+  try {
+    if (readRequestNoFollow(requestPath).requestId !== requestId) return;
+  } catch {
+    return; // unreadable or already gone: nothing safe to remove
+  }
+  try {
+    fs.unlinkSync(requestPath);
+  } catch {}
+}
+
+function writeResult(env, requestId, ok, err) {
+  writeStatusFile(env.UPDATE_APPLY_STATUS, {
+    schemaVersion: 1,
+    appliedRequestId: requestId,
+    lastOk: ok,
+    lastErr: err,
+    appliedAt: new Date().toISOString(),
+  });
+}
+
+function applyRequest(env) {
+  let request;
+  try {
+    request = readRequestNoFollow(env.UPDATE_REQUEST);
+  } catch {
+    // No/invalid/symlinked request: nothing to do. This is the common case
+    // for the 5-minute safety timer firing with nothing queued — must no-op
+    // cleanly, not error.
+    return;
+  }
+
+  const v = validateRequest(request, { appliedRequestId: readAppliedId(env.UPDATE_APPLY_STATUS) });
+  if (!v.ok) {
+    writeResult(env, request.requestId, false, v.error);
+    consumeRequest(env.UPDATE_REQUEST, request.requestId);
+    return;
+  }
+
+  // The reliable one-off forced-apply override: UPDATE_CONF=/dev/null makes
+  // update.sh's `[ -f "$UPDATE_CONF" ]` check fail, so the persisted
+  // /etc/featherspress/update.conf (which may itself set AUTO_APPLY=0) is
+  // never sourced and cannot clobber AUTO_APPLY after we set it. Plain
+  // `AUTO_APPLY=1 update.sh` does NOT reliably apply for this reason.
+  const childEnv = Object.assign({}, process.env, {
+    UPDATE_CONF: "/dev/null",
+    AUTO_APPLY: "1",
+    FP_ENV: env.FP_ENV,
+    ENGINE_DIR: env.ENGINE_DIR,
+    NODE_BIN: env.NODE_BIN,
+    NPM_BIN: env.NPM_BIN,
+    SERVICE: env.SERVICE,
+  });
+
+  let exitCode = 0;
+  let stderr = "";
+  try {
+    // No timeout here: `npm ci` on a small VPS can legitimately run minutes.
+    // A genuine hang is bounded at the systemd layer instead
+    // (TimeoutStartSec=1800 in featherspress-update-control.service).
+    execFileSync(path.join(env.ENGINE_DIR, "deploy", "update.sh"), [], {
+      env: childEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    exitCode = typeof e.status === "number" ? e.status : 1;
+    const raw = (e.stderr && e.stderr.toString("utf8")) || e.message || "";
+    stderr = raw.slice(-2048); // bounded — last ~2KB is plenty to see why
+  }
+
+  // Only ever read by an authenticated admin (no unauthenticated status
+  // endpoint in this design), so real stderr detail is fine here — there is
+  // no lower-trust reader to protect against.
+  writeResult(env, request.requestId, exitCode === 0, exitCode === 0 ? null : stderr);
+  consumeRequest(env.UPDATE_REQUEST, request.requestId);
+}
+
+function envFromProcess() {
+  return {
+    UPDATE_REQUEST: process.env.UPDATE_REQUEST || "/var/lib/featherspress/update-request.json",
+    UPDATE_APPLY_STATUS: process.env.UPDATE_APPLY_STATUS || "/var/lib/featherspress/update-apply-status.json",
+    FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
+    ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
+    NODE_BIN: process.env.NODE_BIN || "/opt/node/bin/node",
+    NPM_BIN: process.env.NPM_BIN || "/opt/node/bin/npm",
+    SERVICE: process.env.SERVICE || "featherspress",
+  };
+}
+
+if (require.main === module) {
+  const cmd = process.argv[2];
+  const env = envFromProcess();
+  try {
+    if (cmd === "apply") applyRequest(env);
+    else {
+      process.stderr.write("usage: update-control.js <apply>\n");
+      process.exit(2);
+    }
+  } catch (e) {
+    process.stderr.write(`update-control: ${e.message}\n`);
+    process.exit(1);
+  }
+}
+
+module.exports = {
+  validateRequest,
+  readRequestNoFollow,
+  readAppliedId,
+  writeStatusFile,
+  consumeRequest,
+  applyRequest,
+};
