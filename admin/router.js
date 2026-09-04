@@ -29,6 +29,7 @@ const render = require("../src/render");
 const contract = require("../src/contract");
 const manifest = require("../src/manifest");
 const skin = require("../src/skin");
+const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
@@ -49,17 +50,6 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many attempts. Try again in a few minutes." },
 });
-
-function writeAuthConfigAtomic(data) {
-  const tmpPath = AUTH_CONFIG_PATH + ".tmp";
-  // 0600 on the temp file, so the rename can never publish a world-readable
-  // copy of the TOTP secret even for an instant. writeFileSync's mode applies
-  // only when it CREATES the file, so a 0644 leftover from an earlier crash
-  // would otherwise keep its mode and be renamed into place — chmod explicitly.
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
-  fs.chmodSync(tmpPath, 0o600);
-  fs.renameSync(tmpPath, AUTH_CONFIG_PATH);
-}
 
 // Use a stable secret from config when one is set (production), else a random
 // per-start secret (dev). Either way the session STORE is in-memory, so a
@@ -120,7 +110,7 @@ router.post("/api/login", loginLimiter, async (req, res) => {
     return res.status(401).json({ error: "Wrong or expired code" });
   }
   const remaining = recoveryCodeHashes.filter((_, i) => i !== matchIndex);
-  writeAuthConfigAtomic({ ...authConfig, recoveryCodeHashes: remaining });
+  writeAuthConfigAtomic(AUTH_CONFIG_PATH, { ...authConfig, recoveryCodeHashes: remaining });
   req.session.authenticated = true;
   res.json({ ok: true });
 });

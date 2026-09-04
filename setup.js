@@ -16,6 +16,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const readline = require("readline");
 const config = require("./config");
+const { resetPassword } = require("./src/auth-config");
 
 const AUTH_CONFIG_PATH = config.AUTH_CONFIG;
 const RECOVERY_CODE_COUNT = 8;
@@ -43,7 +44,46 @@ function hashRecoveryCode(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
 }
 
+function printHelp() {
+  console.log("Usage: node setup.js [--password-only] [--help]\n");
+  console.log("  (no flags)         Full setup: choose a password, generate a new TOTP");
+  console.log("                     secret, and generate fresh recovery codes. Re-run");
+  console.log("                     with no flags any time to rotate all three at once.");
+  console.log("  --password-only    Reset just the password. Leaves the existing TOTP");
+  console.log("                     secret and recovery codes untouched.");
+  console.log("  --help             Show this help.");
+}
+
 async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.includes("--help")) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (args.includes("--password-only")) {
+    if (!fs.existsSync(AUTH_CONFIG_PATH)) {
+      console.error("No auth config found -- there is nothing to reset yet.");
+      console.error("Run `node setup.js` (no flags) to do the initial setup.");
+      process.exit(1);
+    }
+    const password = await askHidden("Choose a new password: ");
+    try {
+      resetPassword(AUTH_CONFIG_PATH, password);
+    } catch (err) {
+      console.error("\n" + err.message);
+      process.exit(1);
+    }
+    console.log("\nPassword updated. 2FA (TOTP secret and recovery codes) is unchanged.");
+    console.log(
+      "Restart the service NOW: this is not just a reminder -- sessions are kept in memory, so " +
+        "restarting is also what invalidates any currently-live login and forces the old password " +
+        "out of use immediately."
+    );
+    return;
+  }
+
   console.log("=== Featherspress setup (password + 2FA + recovery codes) ===\n");
 
   if (fs.existsSync(AUTH_CONFIG_PATH)) {

@@ -341,8 +341,13 @@ itself — by design). `AUTO_APPLY=1` trades that safety step for convenience:
 a compromised upstream commit would auto-run within a timer tick, so opt in
 per box, knowingly.
 
-## 2FA recovery
+## Account recovery
 
+- Forgot the password, still have 2FA: SSH in and run
+  `node setup.js --password-only`, then `sudo systemctl restart featherspress`
+  -- the restart is required, not optional: sessions are in-memory, so it's
+  also what invalidates any currently-live login. This rotates the password
+  only; TOTP secret and recovery codes are untouched.
 - Lost device but have a recovery code: use it in place of the 6-digit code
   (works once). Re-run `setup.js` to mint a fresh set when low.
 - Lost everything: SSH in and re-run step 6 (`node setup.js`), then
