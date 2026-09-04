@@ -204,7 +204,7 @@
     <input type="text" id="f-title">
 
     <div id="date-field">
-      <label for="f-date">Date <span class="hint">(leave blank to keep the existing date on update, or use today on create)</span></label>
+      <label for="f-date">Date <span class="hint">(leave untouched to keep the existing date on update, or use today on create)</span></label>
       <input type="datetime-local" id="f-date">
     </div>
 
@@ -406,6 +406,11 @@
   var currentEditSlug = null;
   var currentEditType = null;
   var currentEditStatus = 'published';
+  // True only once the admin has actually typed/picked a value into #f-date
+  // themselves. editPost()'s programmatic prefill and resetForm()'s clear
+  // both reset this to false, so an edit that never touches the date field
+  // sends no `date` key at all -- even though the field shows a value.
+  var dateFieldDirty = false;
 
   function el(id) { return document.getElementById(id); }
 
@@ -656,6 +661,11 @@
     r.addEventListener('change', syncDateFieldVisibility);
   });
 
+  // Only a genuine user-driven edit of the field marks it dirty -- never the
+  // programmatic prefill in editPost() or the clear in resetForm(), both of
+  // which explicitly reset the flag back to false after setting .value.
+  el('f-date').addEventListener('input', function () { dateFieldDirty = true; });
+
   function resetForm() {
     currentEditSlug = null;
     currentEditType = null;
@@ -667,6 +677,7 @@
     setEditorMode('wysiwyg');
     document.querySelector('input[name=type][value=post]').checked = true;
     syncDateFieldVisibility();
+    dateFieldDirty = false;
     el('btn-cancel-edit').hidden = true;
     el('btn-preview').hidden = true;
     el('status').textContent = '';
@@ -753,6 +764,7 @@
         currentEditStatus = p.status || 'published';
         el('f-title').value = p.title || '';
         el('f-date').value = toDatetimeLocalValue(p.date);
+        dateFieldDirty = false;
         tagInput.set((p.postTags || []).map(function (t) { return t.name; }));
         editor.setMarkdown(p.body || '');
         setEditorMode('markdown');
@@ -857,13 +869,17 @@
       body: editor.getMarkdown(),
       status: status,
     };
-    // Only send date when the field has a value: the browser resolves
-    // datetime-local against local time unambiguously here, so the server
-    // never has to guess a timezone. An empty field (new post left blank, or
-    // a date the field couldn't parse) omits the key entirely so the server's
-    // preserve-on-update / default-to-now behavior applies instead.
-    var dateVal = el('f-date').value;
-    if (dateVal) payload.date = new Date(dateVal).toISOString();
+    // Only send date when the admin actually edited the field themselves
+    // (dateFieldDirty), not merely because it happens to show a value --
+    // editPost() prefills it from the post being edited, and datetime-local
+    // truncates to the minute, so treating "non-empty" as "send it" would
+    // silently round-trip away seconds/milliseconds on every untouched edit.
+    // The browser resolves datetime-local against local time unambiguously
+    // here, so the server never has to guess a timezone once we do send it.
+    if (dateFieldDirty) {
+      var dateVal = el('f-date').value;
+      if (dateVal) payload.date = new Date(dateVal).toISOString();
+    }
     if (!payload.title.trim()) { setStatus('Title is required.', 'err'); return; }
 
     setStatus(status === 'draft' ? 'Saving draft…' : 'Saving…', 'pending');
