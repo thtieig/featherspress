@@ -69,6 +69,11 @@
       body: JSON.stringify({ password, code }),
     });
     if (res.ok) {
+      if (window.PasswordCredential) {
+        try {
+          await navigator.credentials.store(new PasswordCredential({ id: 'admin', password }));
+        } catch {}
+      }
       window.location.href = '/admin/';
       return;
     }
