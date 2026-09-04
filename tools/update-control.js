@@ -71,6 +71,25 @@ function readAppliedId(statusPath) {
   }
 }
 
+// Read-only parse of update.conf, same shape as backup-control.js's
+// parseEnvFile (used there for the identical purpose: lifting box-specific
+// overrides out of a shell-sourced env file without sourcing it). This is
+// how the box's REAL settings (REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER)
+// survive the AUTO_APPLY-forcing trick below, instead of being discarded
+// along with the persisted AUTO_APPLY=0.
+function parseEnvFile(p) {
+  const out = {};
+  if (!fs.existsSync(p)) return out;
+  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    let v = m[2];
+    if (v.length > 1 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
 function writeStatusFile(statusPath, obj) {
   const tmp = statusPath + ".tmp";
   fs.rmSync(tmp, { force: true });
@@ -120,27 +139,45 @@ function applyRequest(env) {
     return;
   }
 
-  const v = validateRequest(request, { appliedRequestId: readAppliedId(env.UPDATE_APPLY_STATUS) });
+  const appliedRequestId = readAppliedId(env.UPDATE_APPLY_STATUS);
+  const v = validateRequest(request, { appliedRequestId });
   if (!v.ok) {
-    writeResult(env, request.requestId, false, v.error);
+    // Record at most the higher of (what was already applied, this request's
+    // own id) — never lower the watermark. A rejected request with a
+    // lower/non-integer id (e.g. a replayed or hand-crafted one) must not be
+    // allowed to reset appliedRequestId backwards, which would let an
+    // earlier, already-superseded id validate again later.
+    const nextApplied = Math.max(appliedRequestId, Number.isInteger(request.requestId) ? request.requestId : 0);
+    writeResult(env, nextApplied, false, v.error);
     consumeRequest(env.UPDATE_REQUEST, request.requestId);
     return;
   }
 
+  // update.conf is the ONLY channel update.sh has for box-specific overrides
+  // (REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER — see update.conf.example).
+  // Read it read-only here and forward what it sets, so the AUTO_APPLY-forcing
+  // trick below doesn't also discard a box's real config (e.g. a non-main
+  // REPO_REF, or NODE_BIN pointed at /usr/bin rather than /opt/node).
+  const conf = parseEnvFile(env.UPDATE_CONF);
+
   // The reliable one-off forced-apply override: UPDATE_CONF=/dev/null makes
   // update.sh's `[ -f "$UPDATE_CONF" ]` check fail, so the persisted
   // /etc/featherspress/update.conf (which may itself set AUTO_APPLY=0) is
-  // never sourced and cannot clobber AUTO_APPLY after we set it. Plain
-  // `AUTO_APPLY=1 update.sh` does NOT reliably apply for this reason.
+  // never SOURCED and so cannot clobber AUTO_APPLY after we set it. Plain
+  // `AUTO_APPLY=1 update.sh` does NOT reliably apply for this reason. This
+  // only forces AUTO_APPLY — every other setting conf carried is still
+  // forwarded explicitly below, from the read above.
   const childEnv = Object.assign({}, process.env, {
     UPDATE_CONF: "/dev/null",
     AUTO_APPLY: "1",
     FP_ENV: env.FP_ENV,
     ENGINE_DIR: env.ENGINE_DIR,
-    NODE_BIN: env.NODE_BIN,
-    NPM_BIN: env.NPM_BIN,
-    SERVICE: env.SERVICE,
+    NODE_BIN: conf.NODE_BIN || env.NODE_BIN,
+    NPM_BIN: conf.NPM_BIN || env.NPM_BIN,
+    SERVICE: conf.SERVICE || env.SERVICE,
   });
+  if (conf.REPO_REF) childEnv.REPO_REF = conf.REPO_REF;
+  if (conf.FP_USER) childEnv.FP_USER = conf.FP_USER;
 
   let exitCode = 0;
   let stderr = "";
@@ -148,9 +185,16 @@ function applyRequest(env) {
     // No timeout here: `npm ci` on a small VPS can legitimately run minutes.
     // A genuine hang is bounded at the systemd layer instead
     // (TimeoutStartSec=1800 in featherspress-update-control.service).
+    // stdout is ignored (update.sh's stdout can be verbose, e.g. npm ci's
+    // install log) and stderr gets a generous maxBuffer: the default 1MB
+    // cap would SIGTERM the child mid-run on large output, which — unlike a
+    // normal nonzero exit — does NOT fire update.sh's own ERR trap, so a
+    // kill here could leave a half-applied update without update.sh's own
+    // rollback ever running.
     execFileSync(path.join(env.ENGINE_DIR, "deploy", "update.sh"), [], {
       env: childEnv,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "ignore", "pipe"],
+      maxBuffer: 10 * 1024 * 1024,
     });
   } catch (e) {
     exitCode = typeof e.status === "number" ? e.status : 1;
@@ -169,6 +213,7 @@ function envFromProcess() {
   return {
     UPDATE_REQUEST: process.env.UPDATE_REQUEST || "/var/lib/featherspress/update-request.json",
     UPDATE_APPLY_STATUS: process.env.UPDATE_APPLY_STATUS || "/var/lib/featherspress/update-apply-status.json",
+    UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
     FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
     ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
     NODE_BIN: process.env.NODE_BIN || "/opt/node/bin/node",
@@ -196,6 +241,7 @@ module.exports = {
   validateRequest,
   readRequestNoFollow,
   readAppliedId,
+  parseEnvFile,
   writeStatusFile,
   consumeRequest,
   applyRequest,

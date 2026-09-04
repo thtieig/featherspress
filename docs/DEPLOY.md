@@ -337,7 +337,11 @@ sudo /opt/featherspress/deploy/update.sh
 # to force-apply this run regardless of update.conf's own AUTO_APPLY setting
 # (plain `AUTO_APPLY=1 sudo update.sh` does NOT reliably do this: update.conf
 # is sourced AFTER the env var is read, so its own AUTO_APPLY=0 silently wins;
-# UPDATE_CONF=/dev/null skips sourcing it, so AUTO_APPLY=1 survives):
+# UPDATE_CONF=/dev/null skips sourcing it, so AUTO_APPLY=1 survives). Note
+# this raw one-liner skips ALL of update.conf, not just AUTO_APPLY — if your
+# box also overrides REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER there, pass
+# those explicitly too (the GUI's Apply now button, below, does this for you
+# automatically):
 sudo env UPDATE_CONF=/dev/null AUTO_APPLY=1 /opt/featherspress/deploy/update.sh
 ```
 
@@ -367,10 +371,12 @@ sudo systemctl enable --now featherspress-update-control.path \
 ```
 
 Clicking **Apply now** writes a request the agent above picks up (inotify,
-backstopped by its own 5-minute safety timer): it runs `deploy/update.sh` as
-root with the same forced-apply override shown above
-(`UPDATE_CONF=/dev/null AUTO_APPLY=1`), regardless of what `update.conf` on
-disk says — the same pull → reinstall → restart → health-check → rollback
+backstopped by its own 5-minute safety timer). The agent reads `update.conf`
+itself first — so your box's real `REPO_REF`/`NODE_BIN`/`NPM_BIN`/`SERVICE`/
+`FP_USER` are still honoured — and then runs `deploy/update.sh` as root,
+force-enabling `AUTO_APPLY=1` for this one run only, regardless of what
+`update.conf`'s own `AUTO_APPLY` says. Nothing else in `update.conf` is
+discarded: the same pull → reinstall → restart → health-check → rollback
 sequence the daily timer's `AUTO_APPLY=1` path uses. The click only queues
 it: there is no live progress in the browser, since the restart tears down
 your own session along with everything else. Sign back in after a minute or

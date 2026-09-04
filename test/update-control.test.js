@@ -164,6 +164,125 @@ test("applyRequest no-ops cleanly when there is no request file", () => {
   }
 });
 
+// ---- config.js parseEnvFile forwarding (review fix) ------------------------
+// update.conf is the ONLY channel update.sh has for box-specific overrides
+// (REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER). Pointing UPDATE_CONF at
+// /dev/null for the child process must force AUTO_APPLY without silently
+// discarding the rest of the box's real configuration.
+
+test("parseEnvFile reads REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER out of update.conf", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    const p = path.join(dir, "update.conf");
+    fs.writeFileSync(
+      p,
+      ["AUTO_APPLY=0", "REPO_REF=develop", "NODE_BIN=/usr/bin/node", "NPM_BIN=/usr/bin/npm",
+        "SERVICE=myservice", "FP_USER=someuser"].join("\n") + "\n"
+    );
+    const conf = uc.parseEnvFile(p);
+    assert.strictEqual(conf.REPO_REF, "develop");
+    assert.strictEqual(conf.NODE_BIN, "/usr/bin/node");
+    assert.strictEqual(conf.NPM_BIN, "/usr/bin/npm");
+    assert.strictEqual(conf.SERVICE, "myservice");
+    assert.strictEqual(conf.FP_USER, "someuser");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseEnvFile returns {} for a missing file, without throwing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    assert.deepStrictEqual(uc.parseEnvFile(path.join(dir, "nope.conf")), {});
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Full applyRequest exercise against a STUB update.sh (never touches real
+// git/npm/systemd) that just dumps its received environment, proving the
+// forwarding actually happens end to end and not just in parseEnvFile isolation.
+test("applyRequest forwards update.conf's overrides into update.sh's environment", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    fs.mkdirSync(path.join(dir, "deploy"), { recursive: true });
+    const stub = path.join(dir, "deploy", "update.sh");
+    fs.writeFileSync(stub, "#!/usr/bin/env bash\nenv > \"$ENGINE_DIR/env-dump.txt\"\nexit 0\n");
+    fs.chmodSync(stub, 0o755);
+
+    const confPath = path.join(dir, "update.conf");
+    fs.writeFileSync(
+      confPath,
+      ["AUTO_APPLY=0", "REPO_REF=develop", "NODE_BIN=/usr/bin/node", "NPM_BIN=/usr/bin/npm",
+        "SERVICE=myservice", "FP_USER=someuser"].join("\n") + "\n"
+    );
+
+    const env = {
+      UPDATE_REQUEST: path.join(dir, "update-request.json"),
+      UPDATE_APPLY_STATUS: path.join(dir, "update-apply-status.json"),
+      UPDATE_CONF: confPath,
+      FP_ENV: "/dev/null",
+      ENGINE_DIR: dir,
+      NODE_BIN: "/opt/node/bin/node", // must be overridden by conf.NODE_BIN below
+      NPM_BIN: "/opt/node/bin/npm",
+      SERVICE: "featherspress",
+    };
+    fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: 1, action: "apply" }));
+
+    uc.applyRequest(env);
+
+    const dump = fs.readFileSync(path.join(dir, "env-dump.txt"), "utf8");
+    assert.match(dump, /^REPO_REF=develop$/m);
+    assert.match(dump, /^NODE_BIN=\/usr\/bin\/node$/m);
+    assert.match(dump, /^NPM_BIN=\/usr\/bin\/npm$/m);
+    assert.match(dump, /^SERVICE=myservice$/m);
+    assert.match(dump, /^FP_USER=someuser$/m);
+    // The forcing trick itself must still be in effect for the child:
+    assert.match(dump, /^UPDATE_CONF=\/dev\/null$/m);
+    assert.match(dump, /^AUTO_APPLY=1$/m);
+
+    const status = JSON.parse(fs.readFileSync(env.UPDATE_APPLY_STATUS, "utf8"));
+    assert.strictEqual(status.lastOk, true);
+    assert.strictEqual(status.appliedRequestId, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression guard for the review fix: a rejected request must never LOWER
+// the recorded watermark, or a previously-superseded requestId could
+// validate again on a later run.
+test("applyRequest never lowers the recorded watermark on a rejected request", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    const env = {
+      UPDATE_REQUEST: path.join(dir, "update-request.json"),
+      UPDATE_APPLY_STATUS: path.join(dir, "update-apply-status.json"),
+      UPDATE_CONF: path.join(dir, "update.conf"), // absent — parseEnvFile returns {}
+      FP_ENV: "/dev/null",
+      ENGINE_DIR: dir, // no deploy/update.sh — a wrong code path here would throw
+      NODE_BIN: "/usr/bin/node",
+      NPM_BIN: "/usr/bin/npm",
+      SERVICE: "featherspress",
+    };
+    fs.writeFileSync(env.UPDATE_APPLY_STATUS, JSON.stringify({ appliedRequestId: 10 }));
+    // A stale, lower requestId — rejected by validateRequest.
+    fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: 2, action: "apply" }));
+    uc.applyRequest(env);
+    let status = JSON.parse(fs.readFileSync(env.UPDATE_APPLY_STATUS, "utf8"));
+    assert.strictEqual(status.appliedRequestId, 10, "watermark must not be lowered by a stale rejected id");
+    assert.strictEqual(status.lastOk, false);
+
+    // A malformed, non-integer requestId — also rejected.
+    fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: "not-a-number", action: "apply" }));
+    uc.applyRequest(env);
+    status = JSON.parse(fs.readFileSync(env.UPDATE_APPLY_STATUS, "utf8"));
+    assert.strictEqual(status.appliedRequestId, 10, "watermark must not be lowered by a non-integer rejected id");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("applyRequest rejects and records a stale request without invoking update.sh", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
   try {

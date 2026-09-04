@@ -131,6 +131,10 @@ test("update-status merges lastOk/lastErr/appliedAt once an apply status file ex
 
 test("update-status apply fields survive even when the base status file is absent", async () => {
   fs.rmSync(process.env.UPDATE_STATUS_FILE, { force: true });
+  fs.writeFileSync(
+    process.env.UPDATE_APPLY_STATUS_FILE,
+    JSON.stringify({ appliedRequestId: 6, lastOk: false, lastErr: "npm ci failed", appliedAt: "2026-07-22T00:00:00Z" })
+  );
   const res = await api("GET", "/admin/api/update-status");
   const body = await res.json();
   assert.strictEqual(res.status, 200);

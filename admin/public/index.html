@@ -1549,6 +1549,7 @@
   el('update-apply-btn') && el('update-apply-btn').addEventListener('click', function () {
     el('update-apply-btn').disabled = true;
     fetch('/admin/api/update-apply', { method: 'POST' }).then(function (r) {
+      if (r.status === 429) throw new Error('too many attempts — wait a few minutes and try again');
       if (!r.ok) throw new Error('request failed');
       return r.json();
     }).then(function () {
