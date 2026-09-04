@@ -24,7 +24,7 @@
   [hidden] { display: none !important; }
   label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); margin: 18px 0 6px; }
   label:first-child { margin-top: 0; }
-  input[type=text], select {
+  input[type=text], input[type=datetime-local], select {
     width: 100%; padding: 9px 11px; border: 1px solid var(--rule); border-radius: 6px;
     background: var(--bg-2); color: var(--ink); font-family: var(--sans); font-size: 0.92rem;
   }
@@ -202,6 +202,11 @@
 
     <label for="f-title">Title</label>
     <input type="text" id="f-title">
+
+    <div id="date-field">
+      <label for="f-date">Date <span class="hint">(leave blank to keep the existing date on update, or use today on create)</span></label>
+      <input type="datetime-local" id="f-date">
+    </div>
 
     <label>Tags <span class="hint">(type to search existing tags, or type a new one and press Enter)</span></label>
     <div class="tag-input-wrap">
@@ -641,15 +646,27 @@
     label: 'tag', getVocab: function () { return vocab.tags; },
   });
 
+  // Pages aren't dated or sorted by date anywhere in the render path, so hide
+  // the date field for them rather than invite writing a meaningless value.
+  function syncDateFieldVisibility() {
+    var type = document.querySelector('input[name=type]:checked').value;
+    el('date-field').hidden = type === 'page';
+  }
+  document.querySelectorAll('input[name=type]').forEach(function (r) {
+    r.addEventListener('change', syncDateFieldVisibility);
+  });
+
   function resetForm() {
     currentEditSlug = null;
     currentEditType = null;
     currentEditStatus = 'published';
     el('f-title').value = '';
+    el('f-date').value = '';
     tagInput.clear();
     editor.setMarkdown('');
     setEditorMode('wysiwyg');
     document.querySelector('input[name=type][value=post]').checked = true;
+    syncDateFieldVisibility();
     el('btn-cancel-edit').hidden = true;
     el('btn-preview').hidden = true;
     el('status').textContent = '';
@@ -735,10 +752,12 @@
         currentEditType = p.type;
         currentEditStatus = p.status || 'published';
         el('f-title').value = p.title || '';
+        el('f-date').value = toDatetimeLocalValue(p.date);
         tagInput.set((p.postTags || []).map(function (t) { return t.name; }));
         editor.setMarkdown(p.body || '');
         setEditorMode('markdown');
         document.querySelector('input[name=type][value=' + (p.type === 'page' ? 'page' : 'post') + ']').checked = true;
+        syncDateFieldVisibility();
         el('btn-cancel-edit').hidden = false;
         showPreviewButton(p.type, p.slug);
         activateTab('new');
@@ -838,6 +857,13 @@
       body: editor.getMarkdown(),
       status: status,
     };
+    // Only send date when the field has a value: the browser resolves
+    // datetime-local against local time unambiguously here, so the server
+    // never has to guess a timezone. An empty field (new post left blank, or
+    // a date the field couldn't parse) omits the key entirely so the server's
+    // preserve-on-update / default-to-now behavior applies instead.
+    var dateVal = el('f-date').value;
+    if (dateVal) payload.date = new Date(dateVal).toISOString();
     if (!payload.title.trim()) { setStatus('Title is required.', 'err'); return; }
 
     setStatus(status === 'draft' ? 'Saving draft…' : 'Saving…', 'pending');
@@ -1062,6 +1088,20 @@
     if (!iso) return '—';
     var d = new Date(iso);
     return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+
+  // Local-time, zero-padded "YYYY-MM-DDTHH:mm" for the editor's
+  // <input type="datetime-local">. Distinct from fmtTime() above: that
+  // produces a locale display string for the Backups panel, not a value a
+  // datetime-local input can parse back in. Returns '' (leaving the input
+  // blank) when iso is missing or doesn't parse into a valid date.
+  function toDatetimeLocalValue(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
   function renderBackupStatus(s) {

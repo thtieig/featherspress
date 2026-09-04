@@ -598,6 +598,12 @@ router.post("/api/post", (req, res) => {
   const { title, tags, body, type, status } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: "Title is required" });
 
+  // req.body.date, when present, is an ISO string already resolved against the
+  // browser's local timezone by the editor (see admin/public/index.html save()),
+  // so the server only has to parse + validate it, never guess a timezone.
+  const parsedDate = req.body.date ? new Date(req.body.date) : new Date();
+  if (isNaN(parsedDate.getTime())) return res.status(400).json({ error: "Invalid date" });
+
   const contentType = type === "page" ? "page" : "post";
   // A title made only of non-ASCII/symbol characters slugifies to "", which
   // would write ".md" and be unreachable at /:slug. Fall back to a safe,
@@ -617,7 +623,7 @@ router.post("/api/post", (req, res) => {
   const data = applyStatus(
     {
       title: title.trim(),
-      date: new Date(), // a real Date -> unquoted YAML timestamp
+      date: parsedDate, // a real Date -> unquoted YAML timestamp
       slug,
       postTags: termList(tags),
     },
@@ -642,6 +648,14 @@ router.put("/api/post/:type/:slug", (req, res) => {
     title: typeof title === "string" ? title.trim() : existing.data.title,
     postTags: tags !== undefined ? termList(tags) : existing.data.postTags,
   };
+  // Only touch date when the client actually sent one (the editor omits the
+  // key entirely when its date field was left blank/unparseable) — otherwise
+  // data.date stays whatever the `...existing.data` spread above preserved.
+  if (typeof req.body.date === "string" && req.body.date) {
+    const parsedDate = new Date(req.body.date);
+    if (isNaN(parsedDate.getTime())) return res.status(400).json({ error: "Invalid date" });
+    data.date = parsedDate;
+  }
   if (status !== undefined) applyStatus(data, status);
   const newBody = body !== undefined ? normalizeBody(body) : existing.content.trim();
   fs.writeFileSync(filePath, matter.stringify(newBody, data));
