@@ -171,9 +171,19 @@ router.get("/api/update-status", (req, res) => {
     status.lastOk = applyStatus.lastOk;
     status.lastErr = applyStatus.lastErr;
     status.appliedAt = applyStatus.appliedAt;
+    // Whether the OPTIONAL update-control agent (tools/update-control.js,
+    // driven by the separately-installed featherspress-update-control.*
+    // units — see docs/DEPLOY.md's Updates section) has ever checked in on
+    // this box, as opposed to the always-installed daily checker above.
+    // update-control.js heartbeats this field on every trigger, including
+    // ones with nothing queued, so its mere presence means the agent is
+    // installed and alive. Without this, the GUI has no way to tell "agent
+    // installed, idle" apart from "agent never installed" and would show an
+    // Apply now button that silently does nothing on every box lacking it.
+    status.agentSeenAt = applyStatus.agentSeenAt || null;
   } catch {
-    // No apply status file yet (fresh install, never GUI-applied): the merge
-    // fields are simply absent from the response.
+    // No apply status file yet (fresh install, agent never installed/run):
+    // the merge fields — including agentSeenAt — are simply absent.
   }
   res.json(status);
 });

@@ -98,3 +98,53 @@ test("writeAuthConfigAtomic: writes JSON at 0600 and leaves no .tmp file behind"
   assert.strictEqual(fs.statSync(configPath).mode & 0o777, 0o600);
   assert.ok(!fs.existsSync(configPath + ".tmp"));
 });
+
+// ---- ownership preservation (review fix) --------------------------------
+// Recovery (docs/DEPLOY.md "Account recovery": setup.js --password-only run
+// over SSH as root, or by an operator who gets the invoked user wrong) can
+// rewrite auth-config.json as a different OS user than the one that owns it.
+// Without preserving ownership, the rename would publish a file the
+// unprivileged app user can no longer read -- turning a password lockout
+// into a full outage. This can't be tested end-to-end without root (the test
+// process cannot chown an arbitrary file to an arbitrary uid/gid), so these
+// tests verify the CODE PATH instead: writeAuthConfigAtomic must attempt
+// fs.chownSync(tmpPath, <original owner's uid>, <original owner's gid>)
+// before the rename when the target already exists, and a chownSync failure
+// (the normal case: the app itself calls this as its own unprivileged user,
+// which cannot chown to anyone) must not throw or block the write.
+
+test("writeAuthConfigAtomic: attempts to chown the tmp file to the existing file's owner before renaming", (t) => {
+  const { configPath } = makeConfig(TMP);
+  const st = fs.statSync(configPath);
+  const calls = [];
+  t.mock.method(fs, "chownSync", (p, uid, gid) => {
+    calls.push({ p, uid, gid });
+  });
+  writeAuthConfigAtomic(configPath, { hello: "world" });
+  assert.strictEqual(calls.length, 1, "chownSync must be attempted exactly once");
+  assert.strictEqual(calls[0].p, configPath + ".tmp", "chown must happen on the tmp file, before the rename");
+  assert.strictEqual(calls[0].uid, st.uid);
+  assert.strictEqual(calls[0].gid, st.gid);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), { hello: "world" });
+});
+
+test("writeAuthConfigAtomic: a chownSync failure is swallowed -- the write still succeeds", (t) => {
+  const { configPath } = makeConfig(TMP);
+  t.mock.method(fs, "chownSync", () => {
+    throw new Error("EPERM: operation not permitted, chown");
+  });
+  assert.doesNotThrow(() => writeAuthConfigAtomic(configPath, { hello: "world2" }));
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), { hello: "world2" });
+  assert.ok(!fs.existsSync(configPath + ".tmp"));
+});
+
+test("writeAuthConfigAtomic: does not attempt to chown when the target file does not exist yet (first write)", (t) => {
+  const configPath = path.join(TMP, "brand-new-auth-config.json");
+  let called = false;
+  t.mock.method(fs, "chownSync", () => {
+    called = true;
+  });
+  writeAuthConfigAtomic(configPath, { hello: "world3" });
+  assert.strictEqual(called, false, "there is no prior owner to preserve on a first write");
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), { hello: "world3" });
+});

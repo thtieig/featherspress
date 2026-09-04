@@ -24,6 +24,11 @@
   [hidden] { display: none !important; }
   label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); margin: 18px 0 6px; }
   label:first-child { margin-top: 0; }
+  /* #date-field's <label for="f-date"> is that div's own first child, so the
+     rule above zeroes its top margin too, leaving it flush against the Title
+     input above. It isn't actually first in the form -- restore the normal
+     spacing here. */
+  #date-field label:first-child { margin-top: 18px; }
   input[type=text], input[type=datetime-local], select {
     width: 100%; padding: 9px 11px; border: 1px solid var(--rule); border-radius: 6px;
     background: var(--bg-2); color: var(--ink); font-family: var(--sans); font-size: 0.92rem;
@@ -1521,6 +1526,15 @@
   // Show a banner when the root update timer reports a newer engine version,
   // plus (if the /admin update-control agent is installed — see DEPLOY.md) an
   // "Apply now" button, and the outcome of the last GUI-triggered apply.
+  //
+  // The daily update-checker units (which write s.available) are installed on
+  // every box; the update-control agent behind Apply now is a SEPARATE,
+  // optional install. s.agentSeenAt is only ever set by that agent (a
+  // heartbeat on every trigger, even ones with nothing queued — see
+  // tools/update-control.js), so its absence means the agent has never run
+  // here, most likely because it isn't installed. Gate the button on it, not
+  // just on s.available, or it appears and silently does nothing on every box
+  // lacking the optional agent.
   function checkUpdateStatus() {
     fetch('/admin/api/update-status').then(function (r) { return r.json(); }).then(function (s) {
       if (!s) return;
@@ -1536,11 +1550,15 @@
       if (s.lastOk === false) {
         parts.push('The last update attempt failed' + (s.lastErr ? ': ' + s.lastErr : '') + '.');
       }
+      var agentSeen = !!s.agentSeenAt;
+      if (s.available && !agentSeen) {
+        parts.push('Install the update-control agent to enable one-click apply — see DEPLOY.md.');
+      }
       if (!parts.length) return;
       el('update-banner-text').textContent = parts.join(' ');
       el('update-banner').hidden = false;
       if (el('update-apply-btn')) {
-        el('update-apply-btn').hidden = !s.available;
+        el('update-apply-btn').hidden = !(s.available && agentSeen);
         el('update-apply-btn').disabled = false;
       }
     }).catch(function () {});

@@ -354,9 +354,13 @@ per box, knowingly.
 
 **Optional, separate install** from the daily checker above (the same
 relationship `featherspress-backup-control.*` has to `featherspress-backup.*`
-in step 10). Install these three units and an authenticated **Apply now**
-button appears in `/admin` next to the "update available" banner, so applying
-a routine update no longer needs SSH:
+in step 10). Install these three units and, once the agent has checked in for
+the first time (its `.path` unit fires immediately on a queued request; its
+5-minute safety timer is the backstop otherwise), an authenticated **Apply
+now** button appears in `/admin` next to the "update available" banner, so
+applying a routine update no longer needs SSH. Before this agent has ever
+run, `/admin` shows a hint to install it instead of a button that would
+silently do nothing.
 
 ```sh
 sudo cp /opt/featherspress/deploy/featherspress-update-control.{path,service,timer} \
@@ -390,11 +394,21 @@ than racing it, and fails loudly (not silently) if that wait times out.
 
 ## Account recovery
 
-- Forgot the password, still have 2FA: SSH in and run
-  `node setup.js --password-only`, then `sudo systemctl restart featherspress`
-  -- the restart is required, not optional: sessions are in-memory, so it's
-  also what invalidates any currently-live login. This rotates the password
-  only; TOTP secret and recovery codes are untouched.
+- Forgot the password, still have 2FA: SSH in and run it exactly as step 6
+  does (same user, same preserved env var — running this as root, or without
+  `--preserve-env=AUTH_CONFIG`, either fails outright or leaves
+  `auth-config.json` owned `root:root` and unreadable by the app, turning a
+  password lockout into a full outage):
+  ```sh
+  cd /opt/featherspress
+  sudo -i                                            # the env file is root-readable only
+  set -a; . /etc/featherspress/featherspress.env; set +a
+  sudo -u featherspress --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js --password-only
+  ```
+  Then `sudo systemctl restart featherspress` -- the restart is required, not
+  optional: sessions are in-memory, so it's also what invalidates any
+  currently-live login. This rotates the password only; TOTP secret and
+  recovery codes are untouched.
 - Lost device but have a recovery code: use it in place of the 6-digit code
   (works once). Re-run `setup.js` to mint a fresh set when low.
 - Lost everything: SSH in and re-run step 6 (`node setup.js`), then

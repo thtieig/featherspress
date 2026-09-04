@@ -125,6 +125,40 @@ function writeResult(env, requestId, ok, err) {
     lastOk: ok,
     lastErr: err,
     appliedAt: new Date().toISOString(),
+    agentSeenAt: new Date().toISOString(),
+  });
+}
+
+// Record that this agent is alive and has checked in, WITHOUT touching the
+// outcome of the last real apply (if any) — appliedRequestId/lastOk/lastErr/
+// appliedAt are carried forward unchanged; only agentSeenAt moves.
+//
+// This exists because the three featherspress-update-control.* units are an
+// optional, separately-installed agent (see docs/DEPLOY.md's Updates
+// section) layered on top of the daily update-checker units that are
+// installed everywhere already. Without some signal that THIS agent has ever
+// run, admin/router.js's /api/update-status has no way to tell "the agent is
+// installed and idle" apart from "the agent was never installed at all" —
+// and the GUI's Apply now button used to key its visibility purely off
+// UPDATE_STATUS_FILE's `available` (written by the daily checker, which IS
+// always installed), so it appeared and silently no-op'd on every box
+// lacking this optional agent. Called both when the .path unit fires with
+// nothing queued and by the periodic safety-timer trigger — both are the
+// same "no request, just heartbeat" case.
+function heartbeat(statusPath) {
+  let existing = {};
+  try {
+    existing = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+  } catch {
+    // Absent or unreadable: first time this agent has ever run here.
+  }
+  writeStatusFile(statusPath, {
+    schemaVersion: 1,
+    appliedRequestId: existing.appliedRequestId || 0,
+    lastOk: existing.lastOk ?? null,
+    lastErr: existing.lastErr ?? null,
+    appliedAt: existing.appliedAt ?? null,
+    agentSeenAt: new Date().toISOString(),
   });
 }
 
@@ -133,9 +167,12 @@ function applyRequest(env) {
   try {
     request = readRequestNoFollow(env.UPDATE_REQUEST);
   } catch {
-    // No/invalid/symlinked request: nothing to do. This is the common case
-    // for the 5-minute safety timer firing with nothing queued — must no-op
-    // cleanly, not error.
+    // No/invalid/symlinked request: nothing to apply. This is the common
+    // case for both the .path unit firing with nothing queued and the
+    // 5-minute safety timer — must no-op cleanly, not error — but the app
+    // still needs to know this agent exists at all, so heartbeat before
+    // returning. See heartbeat()'s comment for why.
+    heartbeat(env.UPDATE_APPLY_STATUS);
     return;
   }
 
@@ -171,6 +208,12 @@ function applyRequest(env) {
     UPDATE_CONF: "/dev/null",
     AUTO_APPLY: "1",
     FP_ENV: env.FP_ENV,
+    // Deliberately NOT conf.ENGINE_DIR, unlike REPO_REF/NODE_BIN/NPM_BIN/
+    // SERVICE/FP_USER below, which ARE lifted from update.conf: this agent
+    // needs its own correct ENGINE_DIR just to locate update.conf and
+    // deploy/update.sh in the first place, so a value living inside a file
+    // that is only found BY that same setting can't be the source of truth
+    // for it. env.ENGINE_DIR (this process's own env/default) is used as-is.
     ENGINE_DIR: env.ENGINE_DIR,
     NODE_BIN: conf.NODE_BIN || env.NODE_BIN,
     NPM_BIN: conf.NPM_BIN || env.NPM_BIN,
@@ -216,7 +259,13 @@ function envFromProcess() {
     UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
     FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
     ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
-    NODE_BIN: process.env.NODE_BIN || "/opt/node/bin/node",
+    // process.execPath (the currently-running node binary), not a hardcoded
+    // /opt/node/bin/node: on a box whose node lives elsewhere — which
+    // docs/DEPLOY.md already tells operators to fix via a `sed` on this
+    // unit's own ExecStart — this default is then automatically the SAME
+    // node that is actually running this file, no second manual fix in
+    // update.conf required.
+    NODE_BIN: process.env.NODE_BIN || process.execPath,
     NPM_BIN: process.env.NPM_BIN || "/opt/node/bin/npm",
     SERVICE: process.env.SERVICE || "featherspress",
   };
@@ -245,4 +294,5 @@ module.exports = {
   writeStatusFile,
   consumeRequest,
   applyRequest,
+  heartbeat,
 };

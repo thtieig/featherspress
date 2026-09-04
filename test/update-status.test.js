@@ -129,6 +129,50 @@ test("update-status merges lastOk/lastErr/appliedAt once an apply status file ex
   assert.strictEqual(body.appliedAt, "2026-07-21T00:05:00Z");
 });
 
+// ---- agentSeenAt (review fix) ------------------------------------------
+// The update-control agent (tools/update-control.js) is an optional,
+// separately-installed piece (docs/DEPLOY.md) layered on top of the
+// always-installed daily checker that writes UPDATE_STATUS_FILE. Before
+// this fix, the GUI's Apply now button keyed its visibility purely off
+// `available`, so it appeared and silently did nothing on any box lacking
+// the optional agent. agentSeenAt — heartbeated by update-control.js on
+// every trigger, including ones with nothing queued — is how the API tells
+// "agent installed and alive" apart from "agent never installed".
+
+const uc = require("../tools/update-control");
+
+test("update-status: agentSeenAt is absent before the update-control agent has ever run", async () => {
+  fs.rmSync(process.env.UPDATE_APPLY_STATUS_FILE, { force: true });
+  fs.writeFileSync(
+    process.env.UPDATE_STATUS_FILE,
+    JSON.stringify({ available: true, behind: 1, currentCommit: "aaaa", availableCommit: "bbbb", checkedAt: "2026-08-01T00:00:00Z" })
+  );
+  const res = await api("GET", "/admin/api/update-status");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(body.available, true);
+  assert.strictEqual(body.agentSeenAt, undefined);
+});
+
+test("update-status: agentSeenAt appears once update-control.js processes even a no-request trigger", async () => {
+  fs.rmSync(process.env.UPDATE_APPLY_STATUS_FILE, { force: true });
+  // Simulate the .path unit or safety timer firing with nothing queued --
+  // exactly applyRequest's no-request-file path.
+  uc.applyRequest({
+    UPDATE_REQUEST: path.join(TMP, "update-request-does-not-exist.json"),
+    UPDATE_APPLY_STATUS: process.env.UPDATE_APPLY_STATUS_FILE,
+    FP_ENV: "/dev/null",
+    ENGINE_DIR: TMP,
+    NODE_BIN: "/usr/bin/node",
+    NPM_BIN: "/usr/bin/npm",
+    SERVICE: "featherspress",
+  });
+  const res = await api("GET", "/admin/api/update-status");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.ok(body.agentSeenAt, "agentSeenAt must be present once the agent has checked in");
+});
+
 test("update-status apply fields survive even when the base status file is absent", async () => {
   fs.rmSync(process.env.UPDATE_STATUS_FILE, { force: true });
   fs.writeFileSync(

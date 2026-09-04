@@ -145,7 +145,16 @@ test("consumeRequest is a no-op when the request file is already gone", () => {
   }
 });
 
-test("applyRequest no-ops cleanly when there is no request file", () => {
+// ---- heartbeat (review fix) -------------------------------------------
+// The three featherspress-update-control.* units are an optional, separately
+// -installed agent (docs/DEPLOY.md). Without some signal that this agent has
+// actually run, the admin UI cannot tell "installed, idle" apart from "never
+// installed", and used to show an Apply now button that silently did nothing
+// on every box lacking the agent. applyRequest's no-request path — hit by
+// both the .path unit firing empty and the periodic safety timer — must now
+// heartbeat UPDATE_APPLY_STATUS_FILE instead of no-op'ing entirely.
+
+test("applyRequest heartbeats UPDATE_APPLY_STATUS when there is no request file", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
   try {
     const env = {
@@ -157,8 +166,55 @@ test("applyRequest no-ops cleanly when there is no request file", () => {
       NPM_BIN: "/usr/bin/npm",
       SERVICE: "featherspress",
     };
-    assert.doesNotThrow(() => uc.applyRequest(env));
     assert.strictEqual(fs.existsSync(env.UPDATE_APPLY_STATUS), false);
+    assert.doesNotThrow(() => uc.applyRequest(env));
+    assert.strictEqual(fs.existsSync(env.UPDATE_APPLY_STATUS), true);
+    const status = JSON.parse(fs.readFileSync(env.UPDATE_APPLY_STATUS, "utf8"));
+    assert.ok(status.agentSeenAt, "agentSeenAt must be stamped");
+    assert.strictEqual(status.appliedRequestId, 0);
+    assert.strictEqual(status.lastOk, null);
+    assert.strictEqual(status.lastErr, null);
+    assert.strictEqual(status.appliedAt, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat preserves an existing appliedRequestId/lastOk/lastErr/appliedAt, only moving agentSeenAt", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    const p = path.join(dir, "update-apply-status.json");
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        schemaVersion: 1,
+        appliedRequestId: 42,
+        lastOk: true,
+        lastErr: null,
+        appliedAt: "2026-01-01T00:00:00Z",
+      })
+    );
+    uc.heartbeat(p);
+    const status = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(status.appliedRequestId, 42);
+    assert.strictEqual(status.lastOk, true);
+    assert.strictEqual(status.appliedAt, "2026-01-01T00:00:00Z");
+    assert.ok(status.agentSeenAt, "agentSeenAt must be stamped");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat on a fresh (absent) status file still produces a readable status with agentSeenAt", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    const p = path.join(dir, "update-apply-status.json");
+    assert.strictEqual(fs.existsSync(p), false);
+    uc.heartbeat(p);
+    const status = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(status.appliedRequestId, 0);
+    assert.strictEqual(status.lastOk, null);
+    assert.ok(status.agentSeenAt);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
