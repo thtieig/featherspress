@@ -39,4 +39,4 @@ curl -fsSL "$BASE/$FILE" -o "$TMP/$FILE"
 # --no-same-owner: as root, don't hand the files to the tarball's build uid.
 tar -xJf "$TMP/$FILE" -C "$TMP" --no-same-owner
 rm -rf "$TARGET" && mv "$TMP/${FILE%.tar.xz}" "$TARGET"
-echo "Node $("$TARGET/bin/node" -v), npm $("$TARGET/bin/npm" -v) in $TARGET"
+echo "Node $("$TARGET/bin/node" -v), npm $(PATH="$TARGET/bin:$PATH" "$TARGET/bin/npm" -v) in $TARGET"

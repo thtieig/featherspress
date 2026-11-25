@@ -28,7 +28,10 @@ function publish(version, { badSum = false } = {}) {
   const build = path.join(TMP, "build", name);
   fs.mkdirSync(path.join(build, "bin"), { recursive: true });
   fs.writeFileSync(path.join(build, "bin", "node"), `#!/bin/sh\necho ${version}\n`, { mode: 0o755 });
-  fs.writeFileSync(path.join(build, "bin", "npm"), "#!/bin/sh\necho 10.0.0\n", { mode: 0o755 });
+  // Like the real npm (`#!/usr/bin/env node`), it only runs with ITS node on PATH.
+  fs.writeFileSync(path.join(build, "bin", "npm"),
+    '#!/bin/sh\n[ "$(command -v node)" = "$(dirname "$0")/node" ] || { echo "env: node: not found" >&2; exit 127; }\necho 10.0.0\n',
+    { mode: 0o755 });
   const file = `${name}.tar.xz`;
   execFileSync("tar", ["-cJf", path.join(rel, file), "-C", path.dirname(build), name]);
   let sum = crypto.createHash("sha256").update(fs.readFileSync(path.join(rel, file))).digest("hex");
@@ -55,6 +58,8 @@ test("installs the listed release into an absolute target", () => {
   const r = run(target);
   assert.strictEqual(r.status, 0, r.stderr + r.stdout);
   assert.strictEqual(execFileSync(path.join(target, "bin", "node"), { encoding: "utf8" }).trim(), `v${MAJOR}.1.0`);
+  assert.match(r.stdout, /npm 10\.0\.0 in /, "the report must not depend on a node already being on PATH");
+  assert.doesNotMatch(r.stderr, /not found/);
 });
 
 test("is a no-op when that version is already installed", () => {
