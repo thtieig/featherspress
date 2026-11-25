@@ -2,6 +2,8 @@
 # Install to /etc/featherspress/update.conf  (root:root, chmod 600).
 # Read ONLY by root's deploy/update.sh — NOT by the app (the unprivileged app
 # cannot apply updates), so this operator toggle stays out of the app's env.
+# A value set in update.sh's environment wins over this file, e.g.
+#   sudo env AUTO_APPLY=1 /opt/featherspress/deploy/update.sh
 
 # Auto-apply updates?
 #   0 = notify only (default): the timer checks and writes update-status.json;

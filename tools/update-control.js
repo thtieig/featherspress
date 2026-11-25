@@ -31,7 +31,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
+const { fail, readRequestNoFollow, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 // Validate an untrusted request. Returns {ok:true} or {ok:false, error} where
 // error is a fixed, non-echoing string. ctx.appliedRequestId is the last id
@@ -117,37 +117,17 @@ function applyRequest(env) {
     return;
   }
 
-  // update.conf is the ONLY channel update.sh has for box-specific overrides
-  // (REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER — see update.conf.example).
-  // Read it read-only here and forward what it sets, so the AUTO_APPLY-forcing
-  // trick below doesn't also discard a box's real config (e.g. a non-main
-  // REPO_REF, or NODE_BIN pointed at /usr/bin rather than /opt/node).
-  const conf = parseEnvFile(env.UPDATE_CONF);
-
-  // The reliable one-off forced-apply override: UPDATE_CONF=/dev/null makes
-  // update.sh's `[ -f "$UPDATE_CONF" ]` check fail, so the persisted
-  // /etc/featherspress/update.conf (which may itself set AUTO_APPLY=0) is
-  // never SOURCED and so cannot clobber AUTO_APPLY after we set it. Plain
-  // `AUTO_APPLY=1 update.sh` does NOT reliably apply for this reason. This
-  // only forces AUTO_APPLY — every other setting conf carried is still
-  // forwarded explicitly below, from the read above.
-  const childEnv = Object.assign({}, process.env, {
-    UPDATE_CONF: "/dev/null",
+  // update.sh lets the environment win over update.conf, so forcing
+  // AUTO_APPLY here applies this once even when update.conf says 0, and every
+  // other setting (REPO_REF, NODE_BIN, NPM_BIN, SERVICE, FP_USER) still comes
+  // from update.conf. Nothing else is set here, so nothing else overrides it.
+  const childEnv = {
+    ...process.env,
     AUTO_APPLY: "1",
+    UPDATE_CONF: env.UPDATE_CONF,
     FP_ENV: env.FP_ENV,
-    // Deliberately NOT conf.ENGINE_DIR, unlike REPO_REF/NODE_BIN/NPM_BIN/
-    // SERVICE/FP_USER below, which ARE lifted from update.conf: this agent
-    // needs its own correct ENGINE_DIR just to locate update.conf and
-    // deploy/update.sh in the first place, so a value living inside a file
-    // that is only found BY that same setting can't be the source of truth
-    // for it. env.ENGINE_DIR (this process's own env/default) is used as-is.
     ENGINE_DIR: env.ENGINE_DIR,
-    NODE_BIN: conf.NODE_BIN || env.NODE_BIN,
-    NPM_BIN: conf.NPM_BIN || env.NPM_BIN,
-    SERVICE: conf.SERVICE || env.SERVICE,
-  });
-  if (conf.REPO_REF) childEnv.REPO_REF = conf.REPO_REF;
-  if (conf.FP_USER) childEnv.FP_USER = conf.FP_USER;
+  };
 
   let exitCode = 0;
   let stderr = "";
@@ -186,15 +166,6 @@ function envFromProcess() {
     UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
     FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
     ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
-    // process.execPath (the currently-running node binary), not a hardcoded
-    // /opt/node/bin/node: on a box whose node lives elsewhere — which
-    // docs/DEPLOY.md already tells operators to fix via a `sed` on this
-    // unit's own ExecStart — this default is then automatically the SAME
-    // node that is actually running this file, no second manual fix in
-    // update.conf required.
-    NODE_BIN: process.env.NODE_BIN || process.execPath,
-    NPM_BIN: process.env.NPM_BIN || "/opt/node/bin/npm",
-    SERVICE: process.env.SERVICE || "featherspress",
   };
 }
 

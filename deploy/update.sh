@@ -11,10 +11,7 @@ set -euo pipefail
 
 FP_ENV="${FP_ENV:-/etc/featherspress/featherspress.env}"
 UPDATE_CONF="${UPDATE_CONF:-/etc/featherspress/update.conf}"
-ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
-NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
-NPM_BIN="${NPM_BIN:-/opt/node/bin/npm}"
-SERVICE="${SERVICE:-featherspress}"
+UPDATE_LOCK="${UPDATE_LOCK:-/run/featherspress-update.lock}"
 
 # Serialize with any other update run — the GUI's "Apply now" button
 # (tools/update-control.js) and the routine daily check can otherwise overlap
@@ -29,8 +26,8 @@ SERVICE="${SERVICE:-featherspress}"
 # a few seconds, so the 30s wait is never felt in practice, and a genuine
 # second-apply-in-progress should fail loudly rather than lie about
 # succeeding.
-if ! exec 9>"/run/featherspress-update.lock"; then
-  echo "[update] refusing: cannot open the lock file /run/featherspress-update.lock" >&2
+if ! exec 9>"$UPDATE_LOCK"; then
+  echo "[update] refusing: cannot open the lock file $UPDATE_LOCK" >&2
   exit 1
 fi
 if command -v flock >/dev/null 2>&1; then
@@ -42,9 +39,22 @@ else
   echo "[update] warning: flock not found; concurrent update runs will NOT be serialized" >&2
 fi
 
+# update.conf holds this box's settings, but a value already set in the
+# environment wins over it. That is how "Apply now" (tools/update-control.js)
+# or an operator (`AUTO_APPLY=1 update.sh`) forces one apply on a box whose
+# update.conf says AUTO_APPLY=0, while REPO_REF, NODE_BIN and the rest still
+# come from update.conf.
+OVERRIDABLE="AUTO_APPLY REPO_REF ENGINE_DIR NODE_BIN NPM_BIN SERVICE FP_USER"
+declare -A FROM_ENV=()
+for v in $OVERRIDABLE; do [ -n "${!v:-}" ] && FROM_ENV[$v]="${!v}"; done
 [ -f "$FP_ENV" ] && { set -a; . "$FP_ENV"; set +a; }
 [ -f "$UPDATE_CONF" ] && { set -a; . "$UPDATE_CONF"; set +a; }
+for v in "${!FROM_ENV[@]}"; do printf -v "$v" '%s' "${FROM_ENV[$v]}"; done
 
+ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
+NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
+NPM_BIN="${NPM_BIN:-/opt/node/bin/npm}"
+SERVICE="${SERVICE:-featherspress}"
 AUTO_APPLY="${AUTO_APPLY:-0}"
 REPO_REF="${REPO_REF:-main}"
 PORT="${PORT:-8787}"

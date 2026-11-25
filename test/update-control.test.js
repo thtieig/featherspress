@@ -69,9 +69,6 @@ test("applyRequest heartbeats UPDATE_APPLY_STATUS when there is no request file"
       UPDATE_APPLY_STATUS: path.join(dir, "update-apply-status.json"),
       FP_ENV: "/dev/null",
       ENGINE_DIR: dir,
-      NODE_BIN: "/usr/bin/node",
-      NPM_BIN: "/usr/bin/npm",
-      SERVICE: "featherspress",
     };
     assert.strictEqual(fs.existsSync(env.UPDATE_APPLY_STATUS), false);
     assert.doesNotThrow(() => uc.applyRequest(env));
@@ -127,23 +124,19 @@ test("heartbeat on a fresh (absent) status file still produces a readable status
   }
 });
 
-// Full applyRequest exercise against a STUB update.sh (never touches real
-// git/npm/systemd) that just dumps its received environment, proving the
-// forwarding actually happens end to end and not just in parseEnvFile isolation.
-test("applyRequest forwards update.conf's overrides into update.sh's environment", () => {
+// applyRequest against a STUB update.sh that just dumps the environment it
+// was given. update.sh itself lets the environment win over update.conf (see
+// test/update-sh.test.js), so the agent must force AUTO_APPLY and nothing
+// else: anything more would override the box's own update.conf.
+test("applyRequest runs update.sh with AUTO_APPLY=1, the real update.conf and no other overrides", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
   try {
     fs.mkdirSync(path.join(dir, "deploy"), { recursive: true });
     const stub = path.join(dir, "deploy", "update.sh");
     fs.writeFileSync(stub, "#!/usr/bin/env bash\nenv > \"$ENGINE_DIR/env-dump.txt\"\nexit 0\n");
     fs.chmodSync(stub, 0o755);
-
     const confPath = path.join(dir, "update.conf");
-    fs.writeFileSync(
-      confPath,
-      ["AUTO_APPLY=0", "REPO_REF=develop", "NODE_BIN=/usr/bin/node", "NPM_BIN=/usr/bin/npm",
-        "SERVICE=myservice", "FP_USER=someuser"].join("\n") + "\n"
-    );
+    fs.writeFileSync(confPath, "AUTO_APPLY=0\nREPO_REF=develop\nNODE_BIN=/usr/bin/node\n");
 
     const env = {
       UPDATE_REQUEST: path.join(dir, "update-request.json"),
@@ -151,27 +144,22 @@ test("applyRequest forwards update.conf's overrides into update.sh's environment
       UPDATE_CONF: confPath,
       FP_ENV: "/dev/null",
       ENGINE_DIR: dir,
-      NODE_BIN: "/opt/node/bin/node", // must be overridden by conf.NODE_BIN below
-      NPM_BIN: "/opt/node/bin/npm",
-      SERVICE: "featherspress",
     };
     fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: 1, action: "apply" }));
 
     uc.applyRequest(env);
 
     const dump = fs.readFileSync(path.join(dir, "env-dump.txt"), "utf8");
-    assert.match(dump, /^REPO_REF=develop$/m);
-    assert.match(dump, /^NODE_BIN=\/usr\/bin\/node$/m);
-    assert.match(dump, /^NPM_BIN=\/usr\/bin\/npm$/m);
-    assert.match(dump, /^SERVICE=myservice$/m);
-    assert.match(dump, /^FP_USER=someuser$/m);
-    // The forcing trick itself must still be in effect for the child:
-    assert.match(dump, /^UPDATE_CONF=\/dev\/null$/m);
     assert.match(dump, /^AUTO_APPLY=1$/m);
+    assert.ok(dump.includes(`\nUPDATE_CONF=${confPath}\n`), "update.sh must read the real update.conf");
+    for (const k of ["REPO_REF", "NODE_BIN", "NPM_BIN", "SERVICE", "FP_USER"]) {
+      if (process.env[k] === undefined) assert.doesNotMatch(dump, new RegExp(`^${k}=`, "m"), k);
+    }
 
     const status = JSON.parse(fs.readFileSync(env.UPDATE_APPLY_STATUS, "utf8"));
     assert.strictEqual(status.lastOk, true);
     assert.strictEqual(status.appliedRequestId, 1);
+    assert.strictEqual(fs.existsSync(env.UPDATE_REQUEST), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -186,12 +174,8 @@ test("applyRequest never lowers the recorded watermark on a rejected request", (
     const env = {
       UPDATE_REQUEST: path.join(dir, "update-request.json"),
       UPDATE_APPLY_STATUS: path.join(dir, "update-apply-status.json"),
-      UPDATE_CONF: path.join(dir, "update.conf"), // absent — parseEnvFile returns {}
       FP_ENV: "/dev/null",
       ENGINE_DIR: dir, // no deploy/update.sh — a wrong code path here would throw
-      NODE_BIN: "/usr/bin/node",
-      NPM_BIN: "/usr/bin/npm",
-      SERVICE: "featherspress",
     };
     fs.writeFileSync(env.UPDATE_APPLY_STATUS, JSON.stringify({ appliedRequestId: 10 }));
     // A stale, lower requestId — rejected by validateRequest.
@@ -220,9 +204,6 @@ test("applyRequest rejects and records a stale request without invoking update.s
       FP_ENV: "/dev/null",
       ENGINE_DIR: dir, // no deploy/update.sh here — if applyRequest tried to
       // run it, this test would throw instead of recording a clean rejection
-      NODE_BIN: "/usr/bin/node",
-      NPM_BIN: "/usr/bin/npm",
-      SERVICE: "featherspress",
     };
     fs.writeFileSync(env.UPDATE_APPLY_STATUS, JSON.stringify({ appliedRequestId: 5 }));
     fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: 5, action: "apply" }));

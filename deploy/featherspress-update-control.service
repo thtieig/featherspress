@@ -16,9 +16,7 @@ ExecStart=/opt/node/bin/node /opt/featherspress/tools/update-control.js apply
 TimeoutStartSec=1800
 Environment=UPDATE_REQUEST=/var/lib/featherspress/update-request.json
 Environment=UPDATE_APPLY_STATUS=/var/lib/featherspress/update-apply-status.json
-# Read (never written) here to lift REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER
-# out of it before forcing AUTO_APPLY — see tools/update-control.js. Same
-# path as featherspress-backup-control.service's identical line.
+# Passed on to deploy/update.sh, which reads the box's settings from it.
 Environment=UPDATE_CONF=/etc/featherspress/update.conf
 Environment=FP_ENV=/etc/featherspress/featherspress.env
 Environment=ENGINE_DIR=/opt/featherspress
