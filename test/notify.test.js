@@ -1,0 +1,305 @@
+"use strict";
+
+// tools/notify.js, the one failure-email sender, and the root-side scripts
+// that call it. A tiny SMTP sink runs in this process, so every "email" here
+// is a real SMTP conversation; the scripts run as child processes (async, so
+// the sink can answer them).
+
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+const { execFile } = require("node:child_process");
+
+const ROOT = path.join(__dirname, "..");
+const NOTIFY = path.join(ROOT, "tools", "notify.js");
+const notify = require("../tools/notify");
+
+// ---- an SMTP sink ------------------------------------------------------------
+// Speaks just enough SMTP for nodemailer: EHLO, AUTH (always accepted), MAIL,
+// RCPT, DATA. No STARTTLS, so "STARTTLS required" is a real failure against it.
+function smtpSink() {
+  const messages = [];
+  const server = net.createServer((sock) => {
+    sock.setEncoding("utf8");
+    let buf = "";
+    let inData = false;
+    let msg = { from: null, to: [], auth: null, data: "" };
+    sock.write("220 sink ESMTP\r\n");
+    sock.on("error", () => {});
+    sock.on("data", (chunk) => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf("\r\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (inData) {
+          if (line === ".") {
+            inData = false;
+            messages.push(msg);
+            msg = { from: null, to: [], auth: null, data: "" };
+            sock.write("250 queued\r\n");
+          } else msg.data += (line.startsWith("..") ? line.slice(1) : line) + "\n";
+          continue;
+        }
+        const cmd = line.slice(0, 4).toUpperCase();
+        if (cmd === "EHLO") sock.write("250-sink\r\n250 AUTH PLAIN LOGIN\r\n");
+        else if (cmd === "HELO") sock.write("250 sink\r\n");
+        else if (cmd === "AUTH") {
+          msg.auth = Buffer.from(line.split(" ")[2] || "", "base64").toString("utf8").split("\0").slice(1);
+          sock.write("235 ok\r\n");
+        } else if (cmd === "MAIL") {
+          msg.from = line;
+          sock.write("250 ok\r\n");
+        } else if (cmd === "RCPT") {
+          msg.to.push(line);
+          sock.write("250 ok\r\n");
+        } else if (cmd === "DATA") {
+          inData = true;
+          sock.write("354 go on\r\n");
+        } else if (cmd === "STAR") sock.write("502 no TLS here\r\n");
+        else if (cmd === "QUIT") sock.end("221 bye\r\n");
+        else sock.write("250 ok\r\n");
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ port: server.address().port, messages, close: () => server.close() }));
+  });
+}
+
+// The message as a reader sees it: quoted-printable soft breaks and escapes undone.
+function readable(data) {
+  return data.replace(/=\n/g, "").replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+function tmp() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "fp-notify-"));
+}
+
+function smtpConfig(port, over = {}) {
+  return {
+    to: "owner@example.com",
+    from: "alerts@example.com",
+    method: "smtp",
+    smtp: { host: "127.0.0.1", port, security: "none", user: "", pass: "", ...over },
+  };
+}
+
+function writeConfig(dir, cfg) {
+  const p = path.join(dir, "notify.json");
+  fs.writeFileSync(p, JSON.stringify(cfg), { mode: 0o600 });
+  return p;
+}
+
+// Run a command with stdin, async, so the sink in this process can answer it.
+function runAsync(cmd, args, { input = "", env = {} } = {}) {
+  return new Promise((resolve) => {
+    const child = execFile(cmd, args, { env: { ...process.env, ...env }, encoding: "utf8", timeout: 60000 },
+      (err, stdout, stderr) => resolve({ status: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr }));
+    child.stdin.end(input);
+  });
+}
+
+const cli = (args, opts) => runAsync(process.execPath, [NOTIFY, ...args], opts);
+
+// ---- validating the config -----------------------------------------------------
+
+test("validateConfig accepts an SMTP account and keeps only known fields", () => {
+  const v = notify.validateConfig({
+    to: "owner@example.com", from: "", method: "smtp", extra: "dropped",
+    smtp: { host: "smtp.example.com", port: 587, security: "starttls", user: "alerts@example.com", pass: "PLACEHOLDER-APP-PASSWORD", tls: { x: 1 } },
+  }, { sendmailExists: false });
+  assert.strictEqual(v.ok, true, v.error);
+  assert.deepStrictEqual(v.config, {
+    to: "owner@example.com", from: null, method: "smtp",
+    smtp: { host: "smtp.example.com", port: 587, security: "starttls", user: "alerts@example.com", pass: "PLACEHOLDER-APP-PASSWORD" },
+  });
+});
+
+test("validateConfig refuses what it cannot safely hand to a mailer", () => {
+  const good = smtpConfig(587);
+  const bad = [
+    [{ ...good, to: "" }, /address alerts go to/],
+    [{ ...good, to: "-oQ/tmp/x@example.com" }, /address alerts go to/],
+    [{ ...good, to: "a@b.com, c@d.com" }, /address alerts go to/],
+    [{ ...good, from: "not an address" }, /From address/],
+    [{ ...good, method: "pigeon" }, /how to send/],
+    [{ ...good, smtp: { ...good.smtp, host: "" } }, /mail server/],
+    [{ ...good, smtp: { ...good.smtp, host: "evil.com\r\nRCPT" } }, /mail server/],
+    [{ ...good, smtp: { ...good.smtp, port: 0 } }, /port/],
+    [{ ...good, smtp: { ...good.smtp, port: "587" } }, /port/],
+    [{ ...good, smtp: { ...good.smtp, security: "maybe" } }, /security/],
+    [{ ...good, smtp: { ...good.smtp, user: "me\nRCPT" } }, /username/],
+    [{ ...good, smtp: { ...good.smtp, user: "", pass: "PLACEHOLDER-PASS-3" } }, /username/],
+    [null, /settings/],
+  ];
+  for (const [cfg, re] of bad) {
+    const v = notify.validateConfig(cfg, { sendmailExists: true });
+    assert.strictEqual(v.ok, false, JSON.stringify(cfg));
+    assert.match(v.error, re, JSON.stringify(cfg));
+  }
+});
+
+test("validateConfig offers sendmail only where /usr/sbin/sendmail exists", () => {
+  const cfg = { to: "owner@example.com", method: "sendmail" };
+  assert.match(notify.validateConfig(cfg, { sendmailExists: false }).error, /sendmail/);
+  const v = notify.validateConfig(cfg, { sendmailExists: true });
+  assert.strictEqual(v.ok, true);
+  assert.deepStrictEqual(v.config, { to: "owner@example.com", from: null, method: "sendmail" });
+});
+
+test("transportOptions maps the security choice and always sets short timeouts", () => {
+  const base = { to: "o@example.com", from: null, method: "smtp" };
+  const t = (security, user = "u", pass = "p") =>
+    notify.transportOptions({ ...base, smtp: { host: "h.example", port: 25, security, user, pass } }, 20000);
+  assert.strictEqual(t("tls").secure, true);
+  assert.strictEqual(t("starttls").secure, false);
+  assert.strictEqual(t("starttls").requireTLS, true);
+  assert.strictEqual(t("none").ignoreTLS, true);
+  assert.deepStrictEqual(t("tls").auth, { user: "u", pass: "p" });
+  assert.strictEqual(t("none", "", "").auth, undefined, "no username: no login");
+  for (const k of ["connectionTimeout", "greetingTimeout", "socketTimeout", "dnsTimeout"]) assert.strictEqual(t("tls")[k], 20000);
+  const sm = notify.transportOptions({ ...base, method: "sendmail" }, 20000);
+  assert.deepStrictEqual(sm, { sendmail: true, path: "/usr/sbin/sendmail", newline: "unix" });
+});
+
+test("message: the subject names the site and the server, the body says when and where to look", () => {
+  const m = notify.composeMessage(
+    { subject: "Backup failed", text: "the off-box copy failed\n" },
+    { instance: "alpha", host: "box1", adminUrl: "https://blog.example.com/admin/", at: new Date("2026-11-25T10:00:00Z") }
+  );
+  assert.strictEqual(m.subject, "[featherspress alpha] Backup failed on box1");
+  assert.match(m.text, /^the off-box copy failed\n/);
+  assert.match(m.text, /When: .*25 Nov 2026 10:00:00/);
+  assert.match(m.text, /Server: box1/);
+  assert.match(m.text, /https:\/\/blog\.example\.com\/admin\//);
+  const one = notify.composeMessage({ subject: "x\r\nBcc: evil@example.com", text: "" }, { instance: "a", host: "h" });
+  assert.doesNotMatch(one.subject, /[\r\n]/);
+});
+
+test("loadConfig: missing is null, a symlink or junk is refused", () => {
+  const dir = tmp();
+  try {
+    assert.strictEqual(notify.loadConfig(path.join(dir, "notify.json")), null);
+    const real = writeConfig(dir, smtpConfig(25));
+    const link = path.join(dir, "link.json");
+    fs.symlinkSync(real, link);
+    assert.match(notify.loadConfig(link).error, /cannot be read/);
+    fs.writeFileSync(path.join(dir, "junk.json"), "{nope");
+    assert.match(notify.loadConfig(path.join(dir, "junk.json")).error, /cannot be read/);
+    assert.strictEqual(notify.loadConfig(real).config.smtp.port, 25);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- sending ---------------------------------------------------------------------
+
+test("sendMail delivers over SMTP, logging in when a username is set", async () => {
+  const sink = await smtpSink();
+  try {
+    const cfg = notify.validateConfig(smtpConfig(sink.port, { user: "me", pass: "PLACEHOLDER-PASS-1" })).config;
+    await notify.sendMail(cfg, { subject: "Hello", text: "body text" });
+    assert.strictEqual(sink.messages.length, 1);
+    const [m] = sink.messages;
+    assert.deepStrictEqual(m.auth, ["me", "PLACEHOLDER-PASS-1"]);
+    assert.match(m.from, /alerts@example\.com/);
+    assert.match(m.to[0], /owner@example\.com/);
+    assert.match(m.data, /^Subject: Hello$/m);
+    assert.match(readable(m.data), /body text/);
+  } finally {
+    sink.close();
+  }
+});
+
+test("sendMail reports the server's refusal as an error the test button can show", async () => {
+  const sink = await smtpSink();
+  try {
+    const cfg = notify.validateConfig(smtpConfig(sink.port, { security: "starttls" })).config;
+    await assert.rejects(notify.sendMail(cfg, { subject: "x", text: "y" }), /STARTTLS/i);
+    assert.strictEqual(sink.messages.length, 0);
+  } finally {
+    sink.close();
+  }
+});
+
+test("sendMail gives up on a server that never answers", async () => {
+  const silent = net.createServer(() => {});
+  await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+  try {
+    const cfg = notify.validateConfig(smtpConfig(silent.address().port)).config;
+    const t0 = Date.now();
+    await assert.rejects(notify.sendMail(cfg, { subject: "x", text: "y" }, { timeoutMs: 1000 }), /time|never received/i);
+    assert.ok(Date.now() - t0 < 8000, "must not hang");
+  } finally {
+    silent.close();
+  }
+});
+
+// ---- the CLI the root scripts call -----------------------------------------
+
+test("CLI: sends one email with the subject, the body from stdin and the admin link", async () => {
+  const sink = await smtpSink();
+  const dir = tmp();
+  try {
+    const cfgPath = writeConfig(dir, smtpConfig(sink.port));
+    fs.writeFileSync(path.join(dir, "site.json"), JSON.stringify({ url: "https://blog.example.com" }));
+    const r = await cli(["--subject", "Backup failed"], {
+      input: "The backup failed: the off-box copy failed.\n",
+      env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: cfgPath },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(sink.messages.length, 1);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, new RegExp(`^Subject: \\[featherspress alpha\\] Backup failed on ${os.hostname()}$`, "m"));
+    assert.match(text, /the off-box copy failed/);
+    assert.match(text, /https:\/\/blog\.example\.com\/admin\//);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI: not set up means nothing is sent and the caller carries on", async () => {
+  const dir = tmp();
+  try {
+    const r = await cli(["--subject", "Backup failed"], { input: "x", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: "" } });
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stderr + r.stdout, /not set up/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI: a mail server that refuses still exits 0, and says why in the log", async () => {
+  const dir = tmp();
+  const closed = net.createServer();
+  await new Promise((r) => closed.listen(0, "127.0.0.1", r));
+  const port = closed.address().port;
+  closed.close();
+  try {
+    const cfgPath = writeConfig(dir, smtpConfig(port, { user: "me", pass: "PLACEHOLDER-DO-NOT-LOG" }));
+    const r = await cli(["--subject", "Backup failed"], { input: "x", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: cfgPath } });
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stderr, /could not send/);
+    assert.match(r.stderr, /ECONNREFUSED/);
+    assert.doesNotMatch(r.stderr + r.stdout, /PLACEHOLDER-DO-NOT-LOG/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI: an invalid notify.json is logged, not sent, and still exits 0", async () => {
+  const dir = tmp();
+  try {
+    const cfgPath = writeConfig(dir, { to: "-x@example.com", method: "smtp" });
+    const r = await cli(["--subject", "Backup failed"], { input: "x", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: cfgPath } });
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stderr, /not valid/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
