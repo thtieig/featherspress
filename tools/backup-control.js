@@ -21,14 +21,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const LOCAL_ROOT = "/var/backups";
-
-function fail(error) {
-  return { ok: false, error };
-}
 
 function validTimeOfDay(t) {
   if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
@@ -163,21 +160,6 @@ function buildStatus(i) {
   };
 }
 
-// Read the request WITHOUT following a symlink (the file lives in an app-writable
-// dir), size-capped. Throws on symlink/oversize/parse error.
-function readRequestNoFollow(p) {
-  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const st = fs.fstatSync(fd);
-    if (st.size > 64 * 1024) throw new Error("request too large");
-    const buf = Buffer.alloc(st.size);
-    fs.readSync(fd, buf, 0, st.size, 0);
-    return JSON.parse(buf.toString("utf8"));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 // backup.env is sourced by bash (deploy/backup.sh). A value carrying a
 // newline would inject an arbitrary extra variable into a root-read file,
 // so refuse rather than write one — validateRequest should have caught it.
@@ -244,19 +226,6 @@ function renderBackupEnv(config, prev) {
   return lines.join("\n") + "\n";
 }
 
-function parseEnvFile(p) {
-  const out = {};
-  if (!fs.existsSync(p)) return out;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m) continue;
-    let v = m[2];
-    if (v.length > 1 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) v = v.slice(1, -1);
-    out[m[1]] = v;
-  }
-  return out;
-}
-
 function listRemotes() {
   try {
     return execFileSync("rclone", ["listremotes"], { encoding: "utf8" })
@@ -266,14 +235,6 @@ function listRemotes() {
   } catch {
     return [];
   }
-}
-
-function writeStatusFile(statusPath, obj) {
-  const tmp = statusPath + ".tmp";
-  fs.rmSync(tmp, { force: true });
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o644 });
-  fs.chmodSync(tmp, 0o644);
-  fs.renameSync(tmp, statusPath);
 }
 
 // systemd's NextElapse value; best-effort. Null on any trouble → UI shows
@@ -348,14 +309,6 @@ function readRestoreState(statusPath) {
   }
 }
 
-function readAppliedId(statusPath) {
-  try {
-    return JSON.parse(fs.readFileSync(statusPath, "utf8")).appliedRequestId || 0;
-  } catch {
-    return 0;
-  }
-}
-
 function readScheduleDropIn(p) {
   try {
     const m = fs.readFileSync(p, "utf8").match(/OnCalendar=(.+)/);
@@ -426,35 +379,6 @@ function refreshStatus(env) {
     process.stderr.write(`backup-control: failed to write status file: ${e.message}\n`);
     return false;
   }
-}
-
-// Delete a request we have finished with — exactly what the restore path's
-// cleanup() already does, and for the same two reasons.
-//
-// Left behind, an applied request is re-read by the .path unit and by every
-// 2-minute safety tick, found stale, and recorded as
-// lastRequestError:"stale or invalid requestId" — so the panel reports a
-// successful save as rejected, forever. (Both production boxes were doing
-// exactly this when the bare-box drill went looking.) A REJECTED request must
-// go too, or it is retried until the end of time.
-//
-// It also breaks the trigger: writeBackupRequest renames into place, so when
-// the target already exists systemd's inotify watch is on the old inode and
-// PathModified never fires. The first save on a box is prompt and every one
-// after it waits for the 2-minute backstop.
-//
-// Only unlink when the file still holds the request we processed: a save that
-// landed while we were working is someone else's to apply, not ours to drop.
-function consumeRequest(requestPath, requestId) {
-  try {
-    if (readRequestNoFollow(requestPath).requestId !== requestId) return;
-  } catch {
-    // Unreadable or already gone: nothing safe to remove.
-    return;
-  }
-  try {
-    fs.unlinkSync(requestPath);
-  } catch {}
 }
 
 // Set one variable in backup.env, leaving every other line exactly as it was.
@@ -908,9 +832,7 @@ module.exports = {
   validateRequest,
   buildOnCalendar,
   buildStatus,
-  readRequestNoFollow,
   renderBackupEnv,
-  parseEnvFile,
   applyRequest,
   parseTimersCalendar,
   validateRestoreRequest,

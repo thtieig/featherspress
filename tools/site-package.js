@@ -26,6 +26,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { buildSettings } = require("../src/settings");
+const { parseEnv } = require("./agent-lib");
 
 // The five sections are the shared unit of export, selective import, and the
 // scheduled backup's scope. site.json travels WITH the skin and favicon: the
@@ -452,16 +453,9 @@ function parseFlags(argv) {
 // example-site — see the --env-file note in docs/BACKUP-IMPORT-EXPORT.md.
 // Already-set vars win, so an explicit `env FOO=…` still overrides the file.
 function loadEnvFile(file) {
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m) continue;
-    let v = m[2];
-    if (v.length > 1 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) {
-      v = v.slice(1, -1);
-    }
+  for (const [k, v] of Object.entries(parseEnv(fs.readFileSync(file, "utf8")))) {
     // Empty counts as unset, matching config.js's env() semantics.
-    const cur = process.env[m[1]];
-    if (cur === undefined || cur === "") process.env[m[1]] = v;
+    if (process.env[k] === undefined || process.env[k] === "") process.env[k] = v;
   }
 }
 

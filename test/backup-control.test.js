@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const bc = require("../tools/backup-control");
+const { parseEnvFile } = require("../tools/agent-lib");
 
 const CTX = { availableRemotes: ["mys3", "bbz"], ageRecipientSet: true, appliedRequestId: 3 };
 const base = {
@@ -230,27 +231,6 @@ test("parseTimersCalendar returns null for malformed or empty values", () => {
 
 // ---- Task 3: IO helpers ---------------------------------------------------
 
-test("readRequestNoFollow refuses a symlink", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bc-"));
-  try {
-    fs.writeFileSync(path.join(dir, "real"), "{}");
-    fs.symlinkSync(path.join(dir, "real"), path.join(dir, "req"));
-    assert.throws(() => bc.readRequestNoFollow(path.join(dir, "req")), /symlink|ELOOP|NOFOLLOW/i);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("readRequestNoFollow reads a plain request file", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bc-"));
-  try {
-    fs.writeFileSync(path.join(dir, "req"), JSON.stringify({ requestId: 1 }));
-    assert.strictEqual(bc.readRequestNoFollow(path.join(dir, "req")).requestId, 1);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("renderBackupEnv writes the validated config and preserves NODE_BIN/AGE_RECIPIENT", () => {
   const env = bc.renderBackupEnv(
     { destType: "rclone", remote: "mys3", remotePath: "fp", keepLast: 9, localDir: null },
@@ -292,7 +272,7 @@ test("the rendered env round-trips through parseEnvFile", () => {
     destType: "local", localDir: "/var/backups/featherspress", keepLast: 14,
     schedule: { preset: "weekly", timeOfDay: "03:00", weekday: "Sun" },
   }, {}));
-  const parsed = bc.parseEnvFile(file);
+  const parsed = parseEnvFile(file);
   assert.strictEqual(parsed.BACKUP_SCHEDULE_PRESET, "weekly");
   assert.strictEqual(parsed.BACKUP_SCHEDULE_TIME, "03:00");
   assert.strictEqual(parsed.BACKUP_SCHEDULE_WEEKDAY, "Sun");

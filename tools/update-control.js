@@ -31,10 +31,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-
-function fail(error) {
-  return { ok: false, error };
-}
+const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 // Validate an untrusted request. Returns {ok:true} or {ok:false, error} where
 // error is a fixed, non-echoing string. ctx.appliedRequestId is the last id
@@ -46,76 +43,6 @@ function validateRequest(req, ctx) {
   }
   if (req.action !== "apply") return fail("action must be apply");
   return { ok: true };
-}
-
-// Read the request WITHOUT following a symlink (the file lives in an
-// app-writable dir), size-capped. Throws on symlink/oversize/parse error.
-function readRequestNoFollow(p) {
-  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const st = fs.fstatSync(fd);
-    if (st.size > 64 * 1024) throw new Error("request too large");
-    const buf = Buffer.alloc(st.size);
-    fs.readSync(fd, buf, 0, st.size, 0);
-    return JSON.parse(buf.toString("utf8"));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function readAppliedId(statusPath) {
-  try {
-    return JSON.parse(fs.readFileSync(statusPath, "utf8")).appliedRequestId || 0;
-  } catch {
-    return 0;
-  }
-}
-
-// Read-only parse of update.conf, same shape as backup-control.js's
-// parseEnvFile (used there for the identical purpose: lifting box-specific
-// overrides out of a shell-sourced env file without sourcing it). This is
-// how the box's REAL settings (REPO_REF/NODE_BIN/NPM_BIN/SERVICE/FP_USER)
-// survive the AUTO_APPLY-forcing trick below, instead of being discarded
-// along with the persisted AUTO_APPLY=0.
-function parseEnvFile(p) {
-  const out = {};
-  if (!fs.existsSync(p)) return out;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m) continue;
-    let v = m[2];
-    if (v.length > 1 && ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'")))) v = v.slice(1, -1);
-    out[m[1]] = v;
-  }
-  return out;
-}
-
-function writeStatusFile(statusPath, obj) {
-  const tmp = statusPath + ".tmp";
-  fs.rmSync(tmp, { force: true });
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o644 });
-  fs.chmodSync(tmp, 0o644);
-  fs.renameSync(tmp, statusPath);
-}
-
-// Delete a request we have finished with, exactly like backup-control.js's
-// consumeRequest and for the same two reasons: left behind, it is re-read by
-// the .path unit and every 5-minute safety tick, found stale, and recorded as
-// a rejected request forever; and a rename-into-place request that is never
-// deleted leaves the .path unit's inotify watch on a stale inode, so the next
-// real request waits for the safety timer instead of firing promptly.
-//
-// Only unlink when the file still holds the request we processed: a save
-// that landed while we were working is someone else's to apply, not ours.
-function consumeRequest(requestPath, requestId) {
-  try {
-    if (readRequestNoFollow(requestPath).requestId !== requestId) return;
-  } catch {
-    return; // unreadable or already gone: nothing safe to remove
-  }
-  try {
-    fs.unlinkSync(requestPath);
-  } catch {}
 }
 
 function writeResult(env, requestId, ok, err) {
@@ -288,11 +215,6 @@ if (require.main === module) {
 
 module.exports = {
   validateRequest,
-  readRequestNoFollow,
-  readAppliedId,
-  parseEnvFile,
-  writeStatusFile,
-  consumeRequest,
   applyRequest,
   heartbeat,
 };
