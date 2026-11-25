@@ -31,7 +31,7 @@ const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
-const { backupDir, listBackups, backupFile, parseBackupName } = require("../tools/agent-lib");
+const { backupDir, listBackups, backupFile, parseBackupName, engineInfo } = require("../tools/agent-lib");
 const { buildSettings, DEFAULT_BACKUP_TIME } = require("../src/settings");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
@@ -345,15 +345,18 @@ function backupFolder() {
   }
 }
 
+// `engine` is the engine this site runs, so the panel can say when a backup
+// was taken by another one (the commit is in each backup's name).
 router.get("/api/backups", (req, res) => {
+  const engine = engineInfo(path.join(__dirname, ".."));
   const dir = backupFolder();
-  if (!dir) return res.json({ backups: [], readable: false });
+  if (!dir) return res.json({ backups: [], readable: false, engine });
   try {
-    res.json({ backups: listBackups(dir), readable: true });
+    res.json({ backups: listBackups(dir), readable: true, engine });
   } catch {
     // The folder exists but this user cannot read it: a box set up before the
     // list existed. DEPLOY.md says how to open it to the site user.
-    res.json({ backups: [], readable: false });
+    res.json({ backups: [], readable: false, engine });
   }
 });
 

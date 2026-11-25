@@ -112,6 +112,30 @@ test("export honours a sections subset", () => {
   }
 });
 
+// Which engine made a package: a tiny engine.json at the root, in every
+// export whatever its sections. The importer has never looked at unknown
+// root files, so old engines ignore it and old packages (without it) import.
+test("every export records the engine that made it in engine.json", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "eng.tar.gz");
+  try {
+    sp.exportPackage({ ...paths(dir), profile: "site", sections: ["content"], outFile: out });
+    const engine = JSON.parse(execFileSync("tar", ["-xzOf", out, "./engine.json"], { encoding: "utf8" }));
+    assert.deepStrictEqual(engine, require("../tools/agent-lib").engineInfo(path.join(__dirname, "..")));
+    assert.match(engine.commit, /^[0-9a-f]{7}$/);
+    // ...and a package carrying it imports as before.
+    const target = makeDataDir();
+    try {
+      sp.importPackage({ src: out, ...paths(target), sections: ["content"], force: true });
+      assert.ok(!fs.existsSync(path.join(target, "engine.json")), "engine.json is information, never installed");
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("export with no sections option still packs everything (back-compat)", () => {
   const dir = makeDataDir();
   const out = path.join(dir, "all.tar.gz");

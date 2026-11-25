@@ -520,3 +520,54 @@ test("the agent will not restore through a symlink planted in the backup folder"
     fs.rmSync(path.join(BACKUPS, name));
   }
 });
+
+// ---- which engine made the backup: shown, never a reason to refuse ---------
+test("a restore reports the engine that made the backup next to the running one", async () => {
+  healthFails(0);
+  const { engineInfo } = require("../tools/agent-lib");
+  const src = buildSourceArchive("other-engine.tar.gz", { title: "Other Engine" });
+  // Re-pack it as if an older engine had made it.
+  const unpacked = fs.mkdtempSync(path.join(TMP, "other-engine-"));
+  const { execFileSync } = require("node:child_process");
+  execFileSync("tar", ["-xzf", src, "-C", unpacked]);
+  fs.writeFileSync(path.join(unpacked, "engine.json"), JSON.stringify({ commit: "0000000", version: "0.0.9" }));
+  const name = "featherspress-full-20261118-002000-0000000.tar.gz";
+  execFileSync("tar", ["-czf", path.join(BACKUPS, name), "-C", unpacked, "."]);
+
+  const rq = await api("POST", "/admin/api/restore", { backupName: name, sections: ["content", "site"] });
+  assert.strictEqual(rq.status, 200);
+  bc.restoreRequest(backupEnv());
+
+  const st = restoreState();
+  assert.strictEqual(st.state, "done", "a different engine is information, not a refusal");
+  assert.deepStrictEqual(st.engine, {
+    backup: { commit: "0000000", version: "0.0.9" },
+    running: engineInfo(ROOT),
+  });
+  assert.strictEqual(liveTitle(), "Other Engine");
+});
+
+test("a backup without engine.json (made before it existed) restores, engine unknown", async () => {
+  healthFails(0);
+  const src = buildSourceArchive("no-engine.tar.gz", { title: "No Engine Info" });
+  const unpacked = fs.mkdtempSync(path.join(TMP, "no-engine-"));
+  const { execFileSync } = require("node:child_process");
+  execFileSync("tar", ["-xzf", src, "-C", unpacked]);
+  fs.rmSync(path.join(unpacked, "engine.json"), { force: true });
+  const name = "featherspress-full-20261117-002000.tar.gz";
+  execFileSync("tar", ["-czf", path.join(BACKUPS, name), "-C", unpacked, "."]);
+
+  const rq = await api("POST", "/admin/api/restore", { backupName: name, sections: ["content", "site"] });
+  assert.strictEqual(rq.status, 200);
+  bc.restoreRequest(backupEnv());
+
+  const st = restoreState();
+  assert.strictEqual(st.state, "done", st.error);
+  assert.strictEqual(st.engine.backup, null);
+  assert.strictEqual(liveTitle(), "No Engine Info");
+});
+
+test("the backups list tells the panel which engine this site runs", async () => {
+  const body = await (await api("GET", "/admin/api/backups")).json();
+  assert.deepStrictEqual(body.engine, require("../tools/agent-lib").engineInfo(ROOT));
+});

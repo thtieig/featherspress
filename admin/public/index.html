@@ -410,7 +410,8 @@
     </div>
     <div id="rs-noagent" hidden class="hint" style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
     <div id="rs-source" class="rs-source" hidden>
-      <span id="rs-source-text"></span>
+      <div style="flex:1; min-width:0;"><span id="rs-source-text"></span>
+        <span id="rs-source-engine" class="hint" style="display:block; margin-top:2px;"></span></div>
       <button type="button" class="secondary" id="rs-source-clear">Upload a file instead</button>
     </div>
     <div id="rs-file-wrap" style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
@@ -1325,7 +1326,9 @@
       .then(renderBackupList)
       .catch(function () { el('bk-list-note').textContent = 'Could not load the list of backups.'; });
   }
+  var bkEngine = null; // the engine this site runs: {commit, version}
   function renderBackupList(res) {
+    bkEngine = (res && res.engine) || null;
     var list = el('bk-list');
     list.innerHTML = '';
     var rows = (res && res.backups) || [];
@@ -1358,7 +1361,7 @@
       when.textContent = fmtWhen(b.at);
       var meta = document.createElement('span');
       meta.className = 'bk-meta';
-      meta.textContent = fmtSize(b.size);
+      meta.textContent = fmtSize(b.size) + (b.engine ? ' · engine ' + b.engine : '');
       when.appendChild(meta);
       row.appendChild(when);
       var badge = document.createElement('span');
@@ -1381,6 +1384,12 @@
       list.appendChild(row);
     });
     rsSync();
+  }
+  // Information only: content restores the same whichever engine took it.
+  function engineNote(made) {
+    var running = bkEngine && bkEngine.commit;
+    if (!made || !running || made === running) return '';
+    return 'Taken by engine ' + made + '; this site now runs ' + running + '. That is fine: it restores the same.';
   }
   function rsChooseBackup(b) {
     rsBackup = b;
@@ -1468,6 +1477,7 @@
     if (b) {
       el('rs-source-text').textContent = 'Restoring the backup from ' + fmtWhen(b.at) +
         (b.encrypted ? ' (encrypted)' : '') + '.';
+      el('rs-source-engine').textContent = engineNote(b.engine);
     }
     el('rs-key-wrap').hidden = !enc;
     var secs = rsSections();
@@ -1575,6 +1585,10 @@
           el('rs-go').disabled = false;
           if (st.state === 'done') {
             var extra = st.skipped && st.skipped.length ? ' (skipped: ' + st.skipped.join('; ') + ')' : '';
+            var eng = st.engine && st.engine.backup && st.engine.running;
+            if (eng && st.engine.backup.commit && st.engine.running.commit && st.engine.backup.commit !== st.engine.running.commit) {
+              extra += ' The archive was made by engine ' + st.engine.backup.commit + '; this site runs ' + st.engine.running.commit + '.';
+            }
             el('rs-msg').textContent = 'Restore complete.' + extra +
               (rsSections().indexOf('credentials') !== -1
                 ? ' Your login is now the one from the restored site — sign in again with those credentials.'

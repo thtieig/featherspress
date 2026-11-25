@@ -11,6 +11,7 @@
 //   skins/<name>/         the active CUSTOM skin (bundled skins ship with the engine)
 //   favicon/              per-site icons (optional)
 //   auth-config.json      credentials/2FA — ONLY in the "full" profile
+//   engine.json           which engine made it ({commit, version}); information only
 //
 // export  packs the live data into a .tar.gz (profile "site" = no credentials,
 //         portable/shareable; profile "full" = + auth-config.json, disaster
@@ -26,7 +27,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { buildSettings } = require("../src/settings");
-const { parseEnv } = require("./agent-lib");
+const { parseEnv, engineInfo } = require("./agent-lib");
 
 // The five sections are the shared unit of export, selective import, and the
 // scheduled backup's scope. site.json travels WITH the skin and favicon: the
@@ -68,6 +69,13 @@ function exportPackage(opts) {
         JSON.stringify(opts.settings, null, 2) + "\n"
       );
     }
+    // Which engine made this package: information for whoever restores it
+    // (the /admin restore shows it), never acted on. The importer ignores
+    // unknown root files, so older engines read packages carrying it.
+    fs.writeFileSync(
+      path.join(stage, "engine.json"),
+      JSON.stringify(opts.engine || engineInfo(path.join(__dirname, "..")), null, 2) + "\n"
+    );
     // Belt-and-braces: `profile === "full"` stays as a hard gate alongside the
     // section check, so a "site" profile can NEVER emit credentials even if a
     // caller passes sections:["credentials"] by mistake or by malice.

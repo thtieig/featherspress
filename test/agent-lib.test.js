@@ -256,3 +256,37 @@ test("backupDir is the configured folder when it is inside the site's own, else 
   assert.strictEqual(lib.backupDir(null, "/var/backups/featherspress/alpha"), "/var/backups/featherspress/alpha");
   assert.strictEqual(lib.backupDir("/x", null), null);
 });
+
+// ---- which engine made a package ------------------------------------------
+
+test("engineInfo reports this checkout's commit and package version", () => {
+  const repo = path.join(__dirname, "..");
+  const { execFileSync } = require("node:child_process");
+  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  assert.deepStrictEqual(lib.engineInfo(repo), {
+    commit: head.slice(0, 7),
+    version: require("../package.json").version,
+  });
+});
+
+test("engineInfo follows packed refs and a detached HEAD, and survives no git at all", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "al-eng-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ version: "9.9.9" }));
+    assert.deepStrictEqual(lib.engineInfo(dir), { commit: null, version: "9.9.9" });
+    fs.mkdirSync(path.join(dir, ".git"));
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(dir, ".git", "packed-refs"),
+      "# pack-refs with: peeled fully-peeled sorted\n" + "a".repeat(40) + " refs/heads/other\n" + "b".repeat(40) + " refs/heads/main\n");
+    assert.strictEqual(lib.engineInfo(dir).commit, "bbbbbbb");
+    fs.mkdirSync(path.join(dir, ".git", "refs", "heads"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "refs", "heads", "main"), "c".repeat(40) + "\n");
+    assert.strictEqual(lib.engineInfo(dir).commit, "ccccccc", "a loose ref wins over a packed one");
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "d".repeat(40) + "\n");
+    assert.strictEqual(lib.engineInfo(dir).commit, "ddddddd", "detached HEAD");
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: ../../etc/passwd\n");
+    assert.strictEqual(lib.engineInfo(dir).commit, null, "a ref outside refs/ is not followed");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

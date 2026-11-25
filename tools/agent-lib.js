@@ -176,7 +176,62 @@ function backupFile(dir, name) {
   }
 }
 
+// ---- which engine this is -----------------------------------------------------
+// The engine's short commit and package.json version, recorded in every Site
+// Package (engine.json) and in a backup's name. Read straight from .git rather
+// than by running git: the checkout belongs to the site user, and git refuses
+// to work in it as root ("dubious ownership"). Any trouble gives commit null.
+function gitDir(engineDir) {
+  const dotGit = path.join(engineDir, ".git");
+  const st = fs.statSync(dotGit);
+  if (st.isDirectory()) return { dir: dotGit, common: dotGit };
+  // A worktree: ".git" is a file naming the real git dir, whose refs live in
+  // the common dir.
+  const m = fs.readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)$/m);
+  const dir = path.resolve(engineDir, m[1].trim());
+  let common = dir;
+  try {
+    common = path.resolve(dir, fs.readFileSync(path.join(dir, "commondir"), "utf8").trim());
+  } catch {}
+  return { dir, common };
+}
+
+function headCommit(engineDir) {
+  const { dir, common } = gitDir(engineDir);
+  const head = fs.readFileSync(path.join(dir, "HEAD"), "utf8").trim();
+  if (/^[0-9a-f]{40}$/.test(head)) return head; // detached
+  const ref = (head.match(/^ref:\s*(refs\/[A-Za-z0-9._\/-]+)$/) || [])[1];
+  if (!ref || ref.split("/").includes("..")) return null;
+  for (const base of [dir, common]) {
+    try {
+      const v = fs.readFileSync(path.join(base, ref), "utf8").trim();
+      if (/^[0-9a-f]{40}$/.test(v)) return v;
+    } catch {}
+  }
+  const packed = fs.readFileSync(path.join(common, "packed-refs"), "utf8");
+  for (const line of packed.split("\n")) {
+    const [sha, name] = line.trim().split(" ");
+    if (name === ref && /^[0-9a-f]{40}$/.test(sha)) return sha;
+  }
+  return null;
+}
+
+function engineInfo(engineDir) {
+  let commit = null;
+  let version = null;
+  try {
+    const c = headCommit(engineDir);
+    commit = c ? c.slice(0, 7) : null;
+  } catch {}
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(engineDir, "package.json"), "utf8")).version;
+    version = typeof v === "string" ? v : null;
+  } catch {}
+  return { commit, version };
+}
+
 module.exports = {
+  engineInfo,
   BACKUP_NAME_RE,
   parseBackupName,
   backupDir,

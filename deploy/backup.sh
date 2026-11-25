@@ -99,8 +99,14 @@ if [ -n "$BACKUP_SECTIONS" ]; then
   SECTION_ARGS=(--sections "$BACKUP_SECTIONS")
 fi
 
+# The name carries the engine's short commit, so the /admin backups list can
+# show which engine took a backup without opening it (engine.json inside says
+# the same). Left out when the checkout has no readable git metadata.
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
-BASENAME="featherspress-full-${STAMP}.tar.gz"
+ENGINE_COMMIT="$("$NODE_BIN" -e 'process.stdout.write(require(process.argv[1]).engineInfo(process.argv[2]).commit || "")' \
+  "$ENGINE_DIR/tools/agent-lib.js" "$ENGINE_DIR" 2>/dev/null || true)"
+[[ "$ENGINE_COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || ENGINE_COMMIT=""
+BASENAME="featherspress-full-${STAMP}${ENGINE_COMMIT:+-$ENGINE_COMMIT}.tar.gz"
 
 WORK="$(mktemp -d)"
 ARTIFACT="$WORK/$BASENAME"

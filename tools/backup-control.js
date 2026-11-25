@@ -25,7 +25,7 @@ const { SECTIONS } = require("./site-package");
 const { DEFAULT_BACKUP_TIME } = require("../src/settings");
 const {
   instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest,
-  parseBackupName, backupDir, backupFile,
+  parseBackupName, backupDir, backupFile, engineInfo,
 } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
@@ -697,6 +697,22 @@ function applyRestoredSettings(env, settings) {
   return skipped;
 }
 
+// The engine.json an archive carries, or null (made before it existed, or
+// unreadable). Untrusted content bound for the status file, so only a commit
+// and a version that look like one are kept. Information only: a backup made
+// by another engine restores the same.
+function archiveEngine(file) {
+  try {
+    const raw = execFileSync("tar", ["-xzOf", file, "./engine.json"], { encoding: "utf8", stdio: "pipe" });
+    const e = JSON.parse(raw);
+    const commit = typeof e.commit === "string" && /^[0-9a-f]{7,40}$/.test(e.commit) ? e.commit : null;
+    const version = typeof e.version === "string" && /^[0-9A-Za-z.+-]{1,40}$/.test(e.version) ? e.version : null;
+    return commit || version ? { commit, version } : null;
+  } catch {
+    return null;
+  }
+}
+
 function restoreRequest(env) {
   let request;
   try {
@@ -737,6 +753,7 @@ function restoreRequest(env) {
   }
   // Carried in every state from here on, so the panel can say which backup.
   env._restoreSource = cfg.backupName ? { backupName: cfg.backupName } : {};
+  if (staged) env._restoreSource.engine = { backup: archiveEngine(staged), running: engineInfo(env.ENGINE_DIR) };
   if (!staged) {
     restoreStatus(env, "failed", {
       error: cfg.backupName ? "backup not found" : "staged archive not found",

@@ -119,6 +119,23 @@ test("backup.sh records a good run as ok", () => {
   }
 });
 
+// The backups list shows which engine took each backup without opening it,
+// so the engine's commit goes in the name.
+test("backup.sh names a backup after the engine commit that took it", () => {
+  const dir = setup(null);
+  try {
+    const dest = path.join(dir, "dest");
+    fs.writeFileSync(path.join(dir, "backup.env"), `DEST_TYPE=local\nLOCAL_DIR=${dest}\nKEEP_LAST=3\n`);
+    const r = run(dir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const commit = require("../tools/agent-lib").engineInfo(ROOT).commit;
+    const [name] = fs.readdirSync(dest);
+    assert.match(name, new RegExp(`^featherspress-full-\\d{8}-\\d{6}-${commit}\\.tar\\.gz$`));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The site user lists, downloads and decrypts its own backups from /admin, so
 // a backup takes the folder's group (fp-<name> on a real box: the folder is
 // 0750 root:fp-<name>) and is 0640: readable by the site, writable by root only.
