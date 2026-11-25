@@ -20,6 +20,7 @@ For an instance called `<name>`:
 /var/lib/featherspress/<name>/         its DATA, treat it like a database:
     site.json  content/  media/  skins/  favicon/
     auth-config.json                   password hash + 2FA secret
+    notify.json                        email alert settings (SMTP password)
     *-status.json, *-request.json      how /admin talks to the root agents
 /etc/featherspress/<name>/
     featherspress.env                  PORT, SESSION_SECRET, SITE_PACKAGE
@@ -264,5 +265,7 @@ backups and `fp-blog` user stay until you delete them yourself.
   checked by content; SVG is refused (it can carry scripts).
 - **The code is not backed up**: it comes back from git. `featherspress.env`
   is not precious either: a new `SESSION_SECRET` only signs everyone out.
-- **Failure alerts** are not set up by default; see "Failure notifications" in
-  [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
+- **Failure emails**: set them up per site in **/admin → Email alerts** (an
+  SMTP account such as Gmail, or this server's sendmail if it has one), and
+  press Send test email. A failed backup, update or restore then emails you;
+  see "Email alerts" in [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).

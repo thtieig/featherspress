@@ -1,16 +1,14 @@
 [Unit]
 Description=Featherspress data backup for %i (Site Package, full profile)
-# A silent backup failure means no backup when you need one — so wire up a
-# notifier. Left COMMENTED OUT on purpose: with no such unit installed, systemd
-# just logs "Failed to enqueue OnFailure= job" and every failure passes in
-# silence. An OnFailure= pointing at nothing reads like failures are covered.
-#
-# Once you have a handler (email/ntfy/…), add this line through a drop-in, so
-# re-installing the templates does not drop it (docs/BACKUP-IMPORT-EXPORT.md,
-# "Failure notifications"), and TEST it by forcing a failure.
+# A failed run emails the owner itself (deploy/backup.sh → tools/notify.js)
+# once /admin → Email alerts is set up. OnFailure= is only for a notifier of
+# your own, and is left COMMENTED OUT on purpose: with no such unit installed,
+# systemd just logs "Failed to enqueue OnFailure= job" and nothing happens. Add
+# one through a drop-in (docs/BACKUP-IMPORT-EXPORT.md, "Email alerts"), and
+# TEST it by forcing a failure.
 #OnFailure=status-email@%n.service
 #
-# Until then, check on it yourself:
+# Check on it yourself:
 #   systemctl is-failed featherspress-backup@<name>.service
 #   systemctl list-timers 'featherspress-backup@*'
 #   journalctl -u featherspress-backup@<name>.service --since -7d

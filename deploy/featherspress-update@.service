@@ -1,7 +1,9 @@
 [Unit]
 Description=Featherspress engine update check for %i (and apply if AUTO_APPLY=1)
-# Commented out deliberately — see the note in featherspress-backup@.service:
-# an OnFailure= naming a unit you have not installed is silently ignored.
+# A failed check or apply emails the owner itself (deploy/update.sh) once
+# /admin → Email alerts is set up. Commented out deliberately — see the note
+# in featherspress-backup@.service: an OnFailure= naming a unit you have not
+# installed is silently ignored.
 #OnFailure=status-email@%n.service
 
 [Service]

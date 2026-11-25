@@ -22,6 +22,8 @@ media/…               uploads
 skins/<name>/         your active CUSTOM skin (bundled skins ship with the engine)
 favicon/              your per-site icons
 auth-config.json      credentials/2FA — ONLY in the "full" profile
+notify.json           email alert settings, SMTP password included — travels
+                      with auth-config.json (see "Email alerts" below)
 engine.json           which engine made it: {"commit": "3dc6ab2", "version": "0.1.0"}
 ```
 
@@ -34,7 +36,7 @@ it restore as before.
 | Profile | Includes | Use it for |
 |---------|----------|------------|
 | `site` (default) | everything **except** `auth-config.json` | a portable, shareable, movable copy of the blog |
-| `full` | `site` + `auth-config.json` (password hash + TOTP secret) | disaster recovery / backups |
+| `full` | `site` + `auth-config.json` (password hash + TOTP secret) and `notify.json` (email alert settings) | disaster recovery / backups |
 
 There are deliberately no finer "sections" — the only meaningful split on a
 single-author blog is *with or without credentials*. The engine code is **not**
@@ -246,18 +248,86 @@ sudo stat -c '%a %U:%G' /var/lib/featherspress/blog/auth-config.json   # 600 fp-
 `KEEP_LAST` (default 14) newest backups are kept on this server and, with an
 off-box copy, in the site's remote folder; older ones are pruned automatically.
 
-## Failure notifications
+## Email alerts
 
-**You have none until you set one up.** Both units ship with
-`OnFailure=status-email@%n.service` **commented out**, deliberately: systemd
-silently ignores an `OnFailure=` naming a unit that is not installed (it logs
-`Failed to enqueue OnFailure= job, ignoring`), which is worse than nothing —
-the config reads as though failures are covered when they are not.
+**/admin → Email alerts** sends you an email when something fails, so a
+broken backup is not discovered on the day you need it. Nothing is sent while
+all is well, and nothing at all until you set it up.
 
-A silent backup failure means no backup on the day you need one, so wire this
-up for every site at once with a drop-in (the unit files themselves are
-rewritten by `add-instance.sh`), pointed at your own notifier — email, ntfy,
-whatever you already use for systemd alerts:
+### What sends an email
+
+One email per failure, from the site that failed:
+
+| What failed | Subject (`[featherspress <name>] … on <server>`) |
+|---|---|
+| a nightly or "Back up now" backup | Backup failed |
+| the off-box copy (the local backup was still made) | Backup failed, "kept on this server only" |
+| the nightly update check | Update check failed |
+| Apply now, or an automatic apply | Update failed / Update failed and was rolled back / … and the site did not come back |
+| a restore | Restore failed / Restore failed and was rolled back |
+
+The body says what failed and when, the last lines the job logged, and the
+site's /admin address (from `url` in `site.json`).
+
+### Setting it up
+
+Fill in where alerts go and how to send them, then press **Send test email**:
+it saves, sends one straight away, and shows either success or the mail
+server's own error. The password is never shown again; the field says one is
+saved, and leaving it empty keeps it. **Turn off alerts** removes the settings.
+
+- **An email account (SMTP)** works everywhere, including a server with no
+  mail software. For **Gmail**: mail server `smtp.gmail.com`, port `587`,
+  security **STARTTLS**, your Gmail address as username, and a Google **app
+  password** as the password (Google Account → Security → 2-Step Verification
+  → App passwords; it needs 2-Step Verification on). Your normal Gmail
+  password will not work. Other providers: their SMTP server, usually port 587
+  with STARTTLS or 465 with SSL/TLS. "None" is only for a mail server on the
+  same machine; it sends the password unencrypted.
+- **This server's own mail (sendmail)** is offered only when
+  `/usr/sbin/sendmail` exists (postfix, exim, msmtp-mta, ...), and uses
+  whatever that is set up to do. Its test email is sent by the root backup
+  agent rather than the site itself: postfix and exim need privileges the
+  site's sandbox does not give it.
+
+The settings live in `/var/lib/featherspress/<name>/notify.json` (0600, the
+site user's). A **full** backup carries them in its Credentials section, so a
+restore that includes Credentials brings alerts back; older backups without
+them restore as before and leave the current settings alone.
+
+### How it works
+
+`tools/notify.js` is the one sender. The app uses it for the test email; the
+root jobs (`deploy/backup.sh`, `deploy/update.sh`, the restore agent) pipe the
+details into it when they fail:
+
+```sh
+echo "what went wrong" | sudo /opt/node/bin/node /opt/featherspress/blog/tools/notify.js --subject "Backup failed"
+```
+
+It reads only that site's own `notify.json` (never through a symlink, every
+field checked), gives up after 20 seconds, and always exits 0: an alert that
+cannot be sent is logged in the job's journal (`[notify] could not send ...`)
+and the failure is recorded exactly as before. Check what it did with:
+
+```sh
+journalctl -u 'featherspress-backup@blog' -u 'featherspress-update@blog' --since -7d | grep notify
+```
+
+### Without email
+
+Everything above also shows in /admin, and in systemd:
+
+```sh
+systemctl is-failed 'featherspress-backup@*'
+systemctl list-timers 'featherspress-backup@*'
+journalctl -u 'featherspress-backup@*' --since -7d | grep -iE 'refus|error'
+```
+
+If you already have a systemd notifier, `OnFailure=` still works alongside
+(the unit files ship with it commented out, because systemd silently ignores
+one naming a unit that is not installed). Add it with a drop-in so
+re-installing the templates keeps it:
 
 ```sh
 for u in featherspress-backup@ featherspress-update@; do
@@ -266,22 +336,6 @@ for u in featherspress-backup@ featherspress-update@; do
     sudo tee /etc/systemd/system/$u.service.d/notify.conf
 done
 sudo systemctl daemon-reload
-```
-
-Then **prove it fires** by forcing a failure:
-
-```sh
-# point RCLONE_REMOTE in /etc/featherspress/blog/backup.env at a bad name, then:
-sudo systemctl start featherspress-backup@blog.service
-systemctl is-failed featherspress-backup@blog.service     # expect: failed
-```
-
-Until then, check on it by hand:
-
-```sh
-systemctl is-failed 'featherspress-backup@*'
-systemctl list-timers 'featherspress-backup@*'
-journalctl -u 'featherspress-backup@*' --since -7d | grep -iE 'refus|error'
 ```
 
 ## If your media ever gets large
