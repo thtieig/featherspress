@@ -541,3 +541,96 @@ test("update.sh: a check that finds an update, or a good apply, sends nothing", 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- the restore agent: one email when a restore fails or is rolled back ---------
+
+// The agent run as root runs it: `backup-control.js restore`, every path
+// moved into a temp dir, systemctl/curl/sleep stubbed. CURL_FAILS names a file
+// holding how many health checks still fail: 10 fails the restored site's
+// check and lets the rollback's pass.
+function restoreSite() {
+  const dir = tmp();
+  const live = path.join(dir, "live");
+  fs.mkdirSync(path.join(live, "content", "posts"), { recursive: true });
+  fs.mkdirSync(path.join(live, "media"), { recursive: true });
+  fs.mkdirSync(path.join(live, "import-staging"));
+  fs.writeFileSync(path.join(live, "content", "posts", "a.md"), "---\ntitle: A\n---\nA\n");
+  fs.writeFileSync(path.join(live, "site.json"), JSON.stringify({ title: "Live", skin: "notepad" }));
+  fs.writeFileSync(path.join(dir, "featherspress.env"),
+    `CONTENT_DIR=${live}/content\nMEDIA_DIR=${live}/media\nSITE_MANIFEST=${live}/site.json\nAUTH_CONFIG=${live}/auth-config.json\nPORT=1\n`);
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "curl"),
+    '#!/bin/sh\nn=$(cat "$CURL_FAILS" 2>/dev/null || echo 0)\n[ "$n" -gt 0 ] && { echo $((n - 1)) > "$CURL_FAILS"; exit 22; }\nexit 0\n',
+    { mode: 0o755 });
+  return { dir, live };
+}
+
+function runRestore({ dir, live }, port, request, env = {}) {
+  fs.writeFileSync(path.join(live, "restore-request.json"), JSON.stringify(request), { mode: 0o600 });
+  return runAsync(process.execPath, [path.join(ROOT, "tools", "backup-control.js"), "restore"], {
+    env: {
+      PATH: path.join(dir, "bin") + path.delimiter + process.env.PATH,
+      TMPDIR: dir,
+      INSTANCE: "alpha",
+      DATA_DIR: live,
+      BACKUP_ROOT: path.join(dir, "backups"),
+      BACKUP_ENV: path.join(dir, "backup.env"),
+      FP_ENV: path.join(dir, "featherspress.env"),
+      SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+      UPDATE_CONF: path.join(dir, "update.conf"),
+      NOTIFY_CONFIG: writeConfig(dir, smtpConfig(port)),
+      ...env,
+    },
+  });
+}
+
+const restoreOutcome = (live) => JSON.parse(fs.readFileSync(path.join(live, "backup-status.json"), "utf8")).restore;
+
+test("restore: a restore that fails sends one email with the reason", async () => {
+  const sink = await smtpSink();
+  const site = restoreSite();
+  try {
+    const r = await runRestore(site, sink.port, { requestId: 5, stagedName: "gone.tar.gz", sections: ["content"] });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(restoreOutcome(site.live).state, "failed");
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /^Subject: \[featherspress alpha\] Restore failed on /m);
+    assert.match(text, /staged archive not found/);
+  } finally {
+    sink.close();
+    fs.rmSync(site.dir, { recursive: true, force: true });
+  }
+});
+
+test("restore: a restore that is rolled back sends one email saying the old site was put back", async () => {
+  const sink = await smtpSink();
+  const site = restoreSite();
+  try {
+    const src = path.join(site.dir, "src");
+    fs.mkdirSync(path.join(src, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(src, "content", "posts", "b.md"), "---\ntitle: B\n---\nB\n");
+    fs.writeFileSync(path.join(src, "site.json"), JSON.stringify({ title: "Other", skin: "notepad" }));
+    require("../tools/site-package").exportPackage({
+      contentDir: path.join(src, "content"), manifestPath: path.join(src, "site.json"),
+      profile: "site", sections: ["content", "site"], outFile: path.join(site.live, "import-staging", "up.tar.gz"),
+    });
+    const fails = path.join(site.dir, "curl-fails");
+    fs.writeFileSync(fails, "10");
+    const r = await runRestore(site, sink.port, { requestId: 6, stagedName: "up.tar.gz", sections: ["content", "site"] },
+      { CURL_FAILS: fails });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(restoreOutcome(site.live).state, "rolled-back");
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /^Subject: \[featherspress alpha\] Restore failed and was rolled back on /m);
+    assert.match(text, /previous site was put back/);
+    assert.match(text, /content, site/);
+  } finally {
+    sink.close();
+    fs.rmSync(site.dir, { recursive: true, force: true });
+  }
+});

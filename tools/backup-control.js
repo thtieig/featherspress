@@ -626,9 +626,41 @@ function siteHealthy(port, tries = 10) {
   return false;
 }
 
-function restoreStatus(env, state, extra) {
+function restoreStatus(env, state, extra, detail) {
   env._restore = Object.assign({ state, at: new Date().toISOString() }, env._restoreSource || {}, extra || {});
   refreshStatus(env);
+  if (state === "failed" || state === "rolled-back") alertRestore(env, env._restore, detail);
+}
+
+// One email when a restore fails or is rolled back, through tools/notify.js
+// (which sends nothing until /admin → Email alerts is set up, and always
+// exits 0). Bounded, and never allowed to change the restore's own outcome.
+function alertRestore(env, r, detail) {
+  if (!env.NOTIFY_CONFIG) return;
+  const subject =
+    r.state === "failed" ? "Restore failed"
+      : /did not recover/.test(r.error || "") ? "Restore failed and the site did not come back"
+        : "Restore failed and was rolled back";
+  const lines = [
+    `Restoring ${r.backupName ? `the backup ${r.backupName}` : "an uploaded archive"} did not work: ${r.error || "unknown error"}.`,
+  ];
+  if (Array.isArray(r.sections)) lines.push("", `Sections: ${r.sections.join(", ")}`);
+  if (detail) lines.push("", "What the import said:", String(detail).slice(-2048));
+  const childEnv = { ...process.env, NOTIFY_CONFIG: env.NOTIFY_CONFIG };
+  if (env.INSTANCE) childEnv.INSTANCE = env.INSTANCE;
+  try {
+    execFileSync(process.execPath, [path.join(__dirname, "notify.js"), "--subject", subject], {
+      input: lines.join("\n") + "\n",
+      env: childEnv,
+      stdio: ["pipe", "ignore", "inherit"],
+      timeout: 40000,
+    });
+  } catch {}
+}
+
+// The last part of a failed command's stderr, for the alert email.
+function stderrTail(e) {
+  return ((e && e.stderr && e.stderr.toString("utf8")) || "").trim().slice(-2048) || null;
 }
 
 // Apply an archive's settings.json through the SAME validator the /admin backup
@@ -782,11 +814,11 @@ function restoreRequest(env) {
     execFileSync(node, [pkgTool, "export", "--profile", "full", "--env-file", env.FP_ENV, "--out", snapshot], {
       stdio: "pipe",
     });
-  } catch {
+  } catch (e) {
     restoreStatus(env, "failed", {
       error: "could not snapshot the current site; nothing was changed",
       appliedRequestId: cfg.requestId,
-    });
+    }, stderrTail(e));
     fs.rmSync(snapDir, { recursive: true, force: true });
     cleanup();
     return;
@@ -802,11 +834,11 @@ function restoreRequest(env) {
   let skipped = [];
   try {
     execFileSync(node, importArgs, { stdio: "pipe" });
-  } catch {
+  } catch (e) {
     restoreStatus(env, "failed", {
       error: "the archive could not be restored; nothing was changed",
       appliedRequestId: cfg.requestId,
-    });
+    }, stderrTail(e));
     fs.rmSync(snapDir, { recursive: true, force: true });
     cleanup();
     return;
@@ -880,6 +912,7 @@ function envFromProcess() {
     LAST_RUN_FILE: e("LAST_RUN_FILE", data("backup-last-run.json")),
     SCHEDULE_DROPIN: e("SCHEDULE_DROPIN", `/etc/systemd/system/${i.backupUnit}.timer.d/schedule.conf`),
     UPDATE_CONF: e("UPDATE_CONF", path.join(i.confDir, "update.conf")),
+    NOTIFY_CONFIG: e("NOTIFY_CONFIG", data("notify.json")),
   };
 }
 
