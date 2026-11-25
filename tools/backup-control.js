@@ -25,7 +25,7 @@ const { SECTIONS } = require("./site-package");
 const { DEFAULT_BACKUP_TIME } = require("../src/settings");
 const {
   instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest,
-  parseBackupName, backupDir, backupFile, engineInfo,
+  parseBackupName, backupDir, backupFile, listBackups, engineInfo,
 } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
@@ -166,6 +166,8 @@ function buildStatus(i) {
     artifactCount: i.artifactCount ?? 0,
     ageRecipient: i.ageRecipient ?? null,
     localRoot: i.localRoot ?? null,
+    // The site's name: off-box copies go to <remote>:<remotePath>/<instance>.
+    instance: i.instance ?? null,
     update: i.update ?? null,
     restore: i.restore ?? null,
   };
@@ -341,12 +343,11 @@ function refreshStatus(env) {
   try {
     lastRun = JSON.parse(fs.readFileSync(env.LAST_RUN_FILE, "utf8"));
   } catch {}
+  // Every backup is kept on this server, off-box copy or not (deploy/backup.sh).
   let artifactCount = 0;
-  if (conf.DEST_TYPE === "local" && conf.LOCAL_DIR) {
-    try {
-      artifactCount = fs.readdirSync(conf.LOCAL_DIR).filter((f) => f.startsWith("featherspress-full-")).length;
-    } catch {}
-  }
+  try {
+    artifactCount = listBackups(backupDir(conf.LOCAL_DIR, env.BACKUP_ROOT) || conf.LOCAL_DIR).length;
+  } catch {}
   const cfg = {
     destType: conf.DEST_TYPE || "local",
     localDir: conf.LOCAL_DIR || null,
@@ -375,6 +376,7 @@ function refreshStatus(env) {
     writtenAt: new Date().toISOString(),
     ageRecipient: conf.AGE_RECIPIENT || null,
     localRoot: env.BACKUP_ROOT || null,
+    instance: env.INSTANCE || null,
     update: { autoApply: upd.AUTO_APPLY === "1", repoRef: upd.REPO_REF || "main" },
     restore: env._restore ?? readRestoreState(env.BACKUP_STATUS),
   });

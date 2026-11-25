@@ -945,3 +945,38 @@ test("a restored backup folder already inside this site's folder is kept", () =>
     bc.applyRestoredSettings(env, migrateSettings({ localDir: "/var/backups/featherspress/alpha/old" })));
   assert.match(fs.readFileSync(env.BACKUP_ENV, "utf8"), /^LOCAL_DIR=\/var\/backups\/featherspress\/alpha\/old$/m);
 });
+
+// ---- off-box: the panel shows where this site's copies actually go --------
+test("the status names the instance, so the panel can show its off-box folder", () => {
+  assert.strictEqual(bc.buildStatus({ writtenAt: "x", instance: "alpha" }).instance, "alpha");
+  assert.strictEqual(bc.buildStatus({ writtenAt: "x" }).instance, null);
+});
+
+test("the backups kept count is this site's local backups, off-box or not", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-count-"));
+  try {
+    const root = path.join(dir, "backups");
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, "featherspress-full-20261125-002000.tar.gz.age"), "x");
+    fs.writeFileSync(path.join(root, ".featherspress-full-20261126-002000.tar.gz.age.partial"), "x");
+    fs.writeFileSync(path.join(dir, "backup.env"), "DEST_TYPE=rclone\nRCLONE_REMOTE=s3:bucket/fp\nKEEP_LAST=3\n");
+    const env = {
+      INSTANCE: "alpha",
+      BACKUP_ENV: path.join(dir, "backup.env"),
+      BACKUP_STATUS: path.join(dir, "status.json"),
+      BACKUP_REQUEST: path.join(dir, "none.json"),
+      LAST_RUN_FILE: path.join(dir, "none-run.json"),
+      SCHEDULE_DROPIN: path.join(dir, "none.conf"),
+      UPDATE_CONF: path.join(dir, "none-update.conf"),
+      BACKUP_UNIT: "featherspress-backup@alpha",
+      BACKUP_ROOT: root,
+    };
+    bc.applyRequest(env);
+    const st = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+    assert.strictEqual(st.artifactCount, 1);
+    assert.strictEqual(st.instance, "alpha");
+    assert.strictEqual(st.config.remotePath, "bucket/fp");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

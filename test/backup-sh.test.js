@@ -29,11 +29,12 @@ function setup(backupEnv) {
   return dir;
 }
 
-function run(dir) {
+function run(dir, extraEnv = {}) {
   const r = spawnSync("bash", [BACKUP_SH], {
     encoding: "utf8",
     env: {
       ...process.env,
+      ...extraEnv,
       FP_ENV: path.join(dir, "featherspress.env"),
       BACKUP_ENV: path.join(dir, "backup.env"),
       BACKUP_LOCK: path.join(dir, "backup.lock"),
@@ -95,8 +96,8 @@ test("backup.sh records a failed run for an unknown destination type", () => {
   }
 });
 
-test("backup.sh records a generic failed run when a required setting is missing", () => {
-  const dir = setup(["DEST_TYPE=local", "KEEP_LAST=3"]); // no LOCAL_DIR
+test("backup.sh records a generic failed run when something unforeseen stops it", () => {
+  const dir = setup(["DEST_TYPE=local", "LOCAL_DIR=/proc/fp-cannot-exist", "KEEP_LAST=3"]); // mkdir fails
   try {
     assertFailedRun(run(dir), /backup run failed/);
   } finally {
@@ -203,6 +204,102 @@ test("backup.sh finds its instance's config and reports into its data dir by def
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(data, "backup-last-run.json"), "utf8")).ok, true);
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(data, "backup-status.json"), "utf8")).lastRun.ok, true);
     assert.strictEqual(fs.readdirSync(dest).filter((f) => f.startsWith("featherspress-full-")).length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- off-box (rclone): a copy goes off the box, the local one stays --------
+// A stub rclone maps "remote:path" onto a folder, so uploads and remote
+// pruning are real file operations the test can look at. RCLONE_FAIL makes
+// every call fail, like wrong credentials or an unreachable host.
+function offbox() {
+  const dir = setup(null);
+  const bin = path.join(dir, "bin");
+  const remote = path.join(dir, "remote");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(remote);
+  fs.writeFileSync(path.join(bin, "rclone"), `#!/bin/bash
+echo "$*" >> "${path.join(dir, "rclone.log")}"
+[ -n "$RCLONE_FAIL" ] && { echo "Failed to copy: access denied" >&2; exit 1; }
+args=(); while [ $# -gt 0 ]; do case "$1" in --include) shift 2;; --*) shift;; *) args+=("$1"); shift;; esac; done
+map() { echo "${remote}/\${1#*:}"; }
+case "\${args[0]}" in
+  copyto) mkdir -p "$(dirname "$(map "\${args[2]}")")" && cp "\${args[1]}" "$(map "\${args[2]}")" ;;
+  lsf) ls -1 "$(map "\${args[1]}")" ;;
+  deletefile) rm "$(map "\${args[1]}")" ;;
+esac
+`, { mode: 0o755 });
+  const key = require("node:child_process").execFileSync("age-keygen", [], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const recipient = key.match(/public key:\s*(age1[0-9a-z]+)/)[1];
+  const backups = path.join(dir, "backups");
+  fs.writeFileSync(path.join(dir, "backup.env"),
+    `DEST_TYPE=rclone\nRCLONE_REMOTE=offsite:bucket/featherspress\nKEEP_LAST=2\nAGE_RECIPIENT=${recipient}\n`);
+  const env = { PATH: bin + path.delimiter + process.env.PATH, INSTANCE: "alpha", BACKUP_ROOT: backups };
+  return { dir, remote, backups, env };
+}
+
+test("off-box: each site uploads under its own name, and keeps its local copy", () => {
+  const { dir, remote, backups, env } = offbox();
+  try {
+    const r = run(dir, env);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.lastRun.ok, true);
+    const here = fs.readdirSync(path.join(remote, "bucket", "featherspress", "alpha"));
+    assert.strictEqual(here.length, 1);
+    assert.match(here[0], /^featherspress-full-\d{8}-\d{6}(-[0-9a-f]{7})?\.tar\.gz\.age$/, "always encrypted off-box");
+    assert.deepStrictEqual(fs.readdirSync(backups), here, "the same backup is kept on this server for the list");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("off-box: retention prunes this site's remote folder and nobody else's", () => {
+  const { dir, remote, backups, env } = offbox();
+  try {
+    const mine = path.join(remote, "bucket", "featherspress", "alpha");
+    const theirs = path.join(remote, "bucket", "featherspress", "beta");
+    fs.mkdirSync(mine, { recursive: true });
+    fs.mkdirSync(theirs, { recursive: true });
+    for (const d of ["20200101", "20200102", "20200103"]) {
+      fs.writeFileSync(path.join(mine, `featherspress-full-${d}-000000.tar.gz.age`), "old");
+      fs.writeFileSync(path.join(theirs, `featherspress-full-${d}-000000.tar.gz.age`), "beta's");
+    }
+    const r = run(dir, env);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const left = fs.readdirSync(mine).sort();
+    assert.strictEqual(left.length, 2, "KEEP_LAST=2 at the remote");
+    assert.strictEqual(left[0], "featherspress-full-20200103-000000.tar.gz.age");
+    assert.strictEqual(fs.readdirSync(theirs).length, 3, "another site's backups are never pruned");
+    assert.strictEqual(fs.readdirSync(backups).length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("off-box: a failed upload is a failed run, and the local copy is kept", () => {
+  const { dir, backups, env } = offbox();
+  try {
+    const r = run(dir, { ...env, RCLONE_FAIL: "1" });
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(r.lastRun.ok, false);
+    assert.match(r.lastRun.error, /off-box copy failed/);
+    assert.match(r.lastRun.error, /kept on this server/);
+    assert.deepStrictEqual(r.panel, r.lastRun);
+    assert.strictEqual(fs.readdirSync(backups).length, 1, "the backup itself still happened");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("off-box: no remote configured is refused before any work", () => {
+  const { dir, env } = offbox();
+  try {
+    fs.writeFileSync(path.join(dir, "backup.env"),
+      fs.readFileSync(path.join(dir, "backup.env"), "utf8").replace(/^RCLONE_REMOTE=.*\n/m, ""));
+    const r = run(dir, env);
+    assert.strictEqual(r.status, 1);
+    assert.match(r.lastRun.error, /RCLONE_REMOTE/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

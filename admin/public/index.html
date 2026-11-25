@@ -306,8 +306,8 @@
     <div id="bk-form" hidden>
       <label>Destination</label>
       <div style="margin:4px 0 14px; display:flex; flex-wrap:wrap; align-items:center; gap:18px;">
-        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="local"> Local (this server)</label>
-        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="rclone"> Off-box (rclone)</label>
+        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="local"> This server</label>
+        <label style="font-weight:400; margin:0;"><input type="radio" name="bk-dest" value="rclone"> This server + an off-box copy (rclone)</label>
       </div>
 
       <div id="bk-local-row" style="margin-bottom:14px;">
@@ -320,6 +320,7 @@
         <select id="bk-remote"></select>
         <label style="margin-top:8px;">Path in remote</label>
         <input type="text" id="bk-remotepath" placeholder="featherspress">
+        <div id="bk-remote-hint" class="hint" style="margin-top:6px;"></div>
       </div>
 
       <div id="bk-rclone-note" hidden class="hint" style="margin-bottom:14px;"></div>
@@ -1193,7 +1194,8 @@
     if (s.lastRun) parts.push((s.lastRun.ok ? '✓' : '✗') + ' last run ' + fmtTime(s.lastRun.at) + (s.lastRun.ok ? '' : ' — ' + (s.lastRun.error || 'failed')));
     else parts.push('no run yet');
     if (s.nextRun) parts.push('next ' + fmtTime(s.nextRun));
-    parts.push(s.artifactCount + ' kept');
+    parts.push(s.artifactCount + ' kept on this server' +
+      ((s.config || {}).destType === 'rclone' && s.config.remote ? ' + off-box copies' : ''));
     parts.push(s.encrypted ? 'encrypted (age)' : 'NOT encrypted');
     var sch = (s.config || {}).schedule || {};
     if (sch.preset) {
@@ -1294,7 +1296,18 @@
     var dest = (document.querySelector('input[name=bk-dest]:checked') || {}).value || 'local';
     el('bk-local-row').hidden = dest !== 'local';
     el('bk-rclone-row').hidden = dest !== 'rclone';
+    // Say plainly where the copies go: backup.sh puts this site's under its
+    // own name, and always keeps the local one too.
+    var name = (bkLastStatus && bkLastStatus.instance) || '<this site>';
+    var where = (el('bk-remote').value || '<remote>') + ':' +
+      ((el('bk-remotepath').value || '').trim().replace(/\/+$/, '') || '<path>') + '/' + name;
+    el('bk-remote-hint').textContent = 'Each backup is kept on this server, where the list below restores from, ' +
+      'and a copy is uploaded to ' + where + '. Keep last applies to both.';
   }
+  ['bk-remote', 'bk-remotepath'].forEach(function (id) {
+    el(id) && el(id).addEventListener('input', syncBackupDestRows);
+    el(id) && el(id).addEventListener('change', syncBackupDestRows);
+  });
   function syncScheduleRows() {
     var p = el('bk-preset').value;
     el('bk-time-wrap').hidden = p === 'hourly';

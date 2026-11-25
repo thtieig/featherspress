@@ -26,10 +26,10 @@ ETC="${FP_ETC:-/etc}"   # where existing instances and vhosts are looked up (tes
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Paths for this name, the same way the scripts and agents derive them.
-unset CONF_DIR DATA_DIR
+unset CONF_DIR DATA_DIR BACKUP_ROOT
 INSTANCE="$NAME" ENGINE_DIR="/opt/featherspress/$NAME"
 . "$HERE/instance.sh"
-CODE="$ENGINE_DIR" BACKUPS="/var/backups/featherspress/$NAME" FP_USER="fp-$NAME"
+CODE="$ENGINE_DIR" BACKUPS="$BACKUP_ROOT" FP_USER="fp-$NAME"
 
 [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] ||
   die "'$DOMAIN' is not a domain name (lowercase, like blog.example.org)"

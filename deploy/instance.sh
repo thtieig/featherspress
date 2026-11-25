@@ -13,5 +13,6 @@ if ! [[ "$INSTANCE" =~ ^[a-z][a-z0-9-]{0,23}$ ]]; then
 fi
 CONF_DIR="${CONF_DIR:-/etc/featherspress/$INSTANCE}"
 DATA_DIR="${DATA_DIR:-/var/lib/featherspress/$INSTANCE}"
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/featherspress/$INSTANCE}"
 # Exported so the Node agents these scripts call agree on the same instance.
-export ENGINE_DIR INSTANCE CONF_DIR DATA_DIR
+export ENGINE_DIR INSTANCE CONF_DIR DATA_DIR BACKUP_ROOT

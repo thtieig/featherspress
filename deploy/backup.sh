@@ -89,6 +89,24 @@ if [ "$DEST_TYPE" != "local" ] && [ -z "${AGE_RECIPIENT:-}" ]; then
   refuse "an off-box destination needs encryption; set up an encryption key first" "DEST_TYPE=$DEST_TYPE, no AGE_RECIPIENT"
 fi
 
+# Every backup is kept on this server: that copy is what the /admin backups
+# list restores from. DEST_TYPE=rclone ALSO uploads it, as the safety copy for
+# a lost box. Same KEEP_LAST in both places.
+LOCAL_DIR="${LOCAL_DIR:-$BACKUP_ROOT}"
+
+# Off-box, each site gets its own folder under the configured remote path
+# (RCLONE_REMOTE=s3:bucket/featherspress -> s3:bucket/featherspress/<name>), so
+# sites sharing a remote never prune each other's backups.
+if [ "$DEST_TYPE" = "rclone" ]; then
+  [ -n "${RCLONE_REMOTE:-}" ] ||
+    refuse "off-box is chosen but no remote is set (RCLONE_REMOTE in backup.env)"
+  REMOTE_DIR="${RCLONE_REMOTE%/}/$INSTANCE"
+  # Fail in about a minute, not after rclone's default retries, when the
+  # remote is unreachable or refuses the credentials.
+  export RCLONE_CONTIMEOUT="${RCLONE_CONTIMEOUT:-20s}" RCLONE_TIMEOUT="${RCLONE_TIMEOUT:-60s}"
+  export RCLONE_RETRIES="${RCLONE_RETRIES:-2}" RCLONE_LOW_LEVEL_RETRIES="${RCLONE_LOW_LEVEL_RETRIES:-2}"
+fi
+
 # Which sections the scheduled backup captures (set from /admin). Empty = all.
 # A bash array is used so that an empty BACKUP_SECTIONS passes NO --sections
 # argument at all — an empty string argument would be parsed by site-package.js
@@ -124,64 +142,62 @@ if [ -n "${AGE_RECIPIENT:-}" ]; then
   BASENAME="$BASENAME.age"
 fi
 
-case "$DEST_TYPE" in
-  local)
-    : "${LOCAL_DIR:?set LOCAL_DIR for DEST_TYPE=local}"
-    # Every artifact here is a "full" export: password hash + TOTP secret. When
-    # no AGE_RECIPIENT is set it is PLAINTEXT. The folder is root's, readable by
-    # its group only: deploy/add-instance.sh makes this site's folder 0750
-    # root:fp-<name>, so /admin can list, download and restore these backups
-    # while only root can write or delete them. The site user can already read
-    # the live login these carry, so this shows it nothing new. A folder we
-    # create takes its parent's group. If an existing one is wider than that,
-    # say so rather than silently re-permissioning a path the operator may
-    # share with other jobs.
-    if [ -d "$LOCAL_DIR" ]; then
-      MODE="$(stat -c %a "$LOCAL_DIR")"
-      case "$MODE" in
-        *0) : ;; # nothing for "other"
-        *)
-          echo "[backup] warning: $LOCAL_DIR is mode $MODE — readable beyond its owner and group." >&2
-          echo "[backup]          Backups contain your password hash and TOTP secret." >&2
-          echo "[backup]          Run: chmod 750 $LOCAL_DIR   (or set AGE_RECIPIENT to encrypt)" >&2
-          ;;
-      esac
-    else
-      mkdir -p "$LOCAL_DIR"
-      chgrp --reference="$(dirname "$LOCAL_DIR")" "$LOCAL_DIR"
-      chmod 0750 "$LOCAL_DIR"
-    fi
-    # Sweep any truncated leftovers from a run that died mid-copy (see below).
-    rm -f "$LOCAL_DIR"/.featherspress-full-*.partial
-    # Copy to a temp name in the SAME dir, then rename. A plain `cp` to the final
-    # name leaves a truncated file behind if the run is killed mid-copy (a full
-    # disk, a reboot, systemd timing it out) — and that stub then looks like a
-    # backup, counts against KEEP_LAST, and can push a real backup out.
-    cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
-    chmod 0600 "$LOCAL_DIR/.$BASENAME.partial"
-    mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
-    # Open this backup, and any from before the list existed (0600 root:root),
-    # to the folder's group.
-    for f in "$LOCAL_DIR"/featherspress-full-*.tar.gz*; do
-      [ -f "$f" ] && [ ! -L "$f" ] || continue
-      chgrp --reference="$LOCAL_DIR" "$f" && chmod 0640 "$f"
-    done
-    STORED_BYTES="$(stat -c%s "$LOCAL_DIR/$BASENAME" 2>/dev/null || echo 0)"
-    echo "[backup] stored $LOCAL_DIR/$BASENAME"
-    # Prune: keep newest N (names sort chronologically by timestamp).
-    mapfile -t OLD < <(ls -1 "$LOCAL_DIR"/featherspress-full-*.tar.gz* 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
-    for f in "${OLD[@]:-}"; do [ -n "$f" ] && rm -f "$f" && echo "[backup] pruned $(basename "$f")"; done
-    ;;
-  rclone)
-    : "${RCLONE_REMOTE:?set RCLONE_REMOTE for DEST_TYPE=rclone, e.g. s3:bucket/path or dropbox:featherspress}"
-    rclone copyto "$ARTIFACT" "$RCLONE_REMOTE/$BASENAME"
-    STORED_BYTES="$(stat -c%s "$ARTIFACT" 2>/dev/null || echo 0)"
-    echo "[backup] uploaded $RCLONE_REMOTE/$BASENAME"
-    # Prune: keep newest N at the remote.
-    mapfile -t OLD < <(rclone lsf "$RCLONE_REMOTE" --include 'featherspress-full-*' 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
-    for f in "${OLD[@]:-}"; do [ -n "$f" ] && rclone deletefile "$RCLONE_REMOTE/$f" && echo "[backup] pruned $f"; done
-    ;;
-esac
+# --- On this server ---------------------------------------------------------
+# Every artifact here is a "full" export: password hash + TOTP secret. When
+# no AGE_RECIPIENT is set it is PLAINTEXT. The folder is root's, readable by
+# its group only: deploy/add-instance.sh makes this site's folder 0750
+# root:fp-<name>, so /admin can list, download and restore these backups
+# while only root can write or delete them. The site user can already read
+# the live login these carry, so this shows it nothing new. A folder we
+# create takes its parent's group. If an existing one is wider than that,
+# say so rather than silently re-permissioning a path the operator may
+# share with other jobs.
+if [ -d "$LOCAL_DIR" ]; then
+  MODE="$(stat -c %a "$LOCAL_DIR")"
+  case "$MODE" in
+    *0) : ;; # nothing for "other"
+    *)
+      echo "[backup] warning: $LOCAL_DIR is mode $MODE — readable beyond its owner and group." >&2
+      echo "[backup]          Backups contain your password hash and TOTP secret." >&2
+      echo "[backup]          Run: chmod 750 $LOCAL_DIR   (or set AGE_RECIPIENT to encrypt)" >&2
+      ;;
+  esac
+else
+  mkdir -p "$LOCAL_DIR"
+  chgrp --reference="$(dirname "$LOCAL_DIR")" "$LOCAL_DIR"
+  chmod 0750 "$LOCAL_DIR"
+fi
+# Sweep any truncated leftovers from a run that died mid-copy (see below).
+rm -f "$LOCAL_DIR"/.featherspress-full-*.partial
+# Copy to a temp name in the SAME dir, then rename. A plain `cp` to the final
+# name leaves a truncated file behind if the run is killed mid-copy (a full
+# disk, a reboot, systemd timing it out) — and that stub then looks like a
+# backup, counts against KEEP_LAST, and can push a real backup out.
+cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
+chmod 0600 "$LOCAL_DIR/.$BASENAME.partial"
+mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
+# Open this backup, and any from before the list existed (0600 root:root),
+# to the folder's group.
+for f in "$LOCAL_DIR"/featherspress-full-*.tar.gz*; do
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  chgrp --reference="$LOCAL_DIR" "$f" && chmod 0640 "$f"
+done
+STORED_BYTES="$(stat -c%s "$LOCAL_DIR/$BASENAME" 2>/dev/null || echo 0)"
+echo "[backup] stored $LOCAL_DIR/$BASENAME"
+# Prune: keep newest N (names sort chronologically by timestamp).
+mapfile -t OLD < <(ls -1 "$LOCAL_DIR"/featherspress-full-*.tar.gz* 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
+for f in "${OLD[@]:-}"; do [ -n "$f" ] && rm -f "$f" && echo "[backup] pruned $(basename "$f")"; done
+
+# --- Off the box ------------------------------------------------------------
+if [ "$DEST_TYPE" = "rclone" ]; then
+  if ! rclone copyto "$ARTIFACT" "$REMOTE_DIR/$BASENAME"; then
+    refuse "the off-box copy failed; this backup is kept on this server only" "$REMOTE_DIR"
+  fi
+  echo "[backup] uploaded $REMOTE_DIR/$BASENAME"
+  # Prune: keep newest N in this site's remote folder.
+  mapfile -t OLD < <(rclone lsf "$REMOTE_DIR" --include 'featherspress-full-*' 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
+  for f in "${OLD[@]:-}"; do [ -n "$f" ] && rclone deletefile "$REMOTE_DIR/$f" && echo "[backup] pruned off-box $f"; done
+fi
 
 record_run true null "${STORED_BYTES:-0}"
 echo "[backup] done."
