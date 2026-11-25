@@ -162,6 +162,12 @@ function loadConfig(file, opts) {
   return v.ok ? { config: v.config } : { error: `notify.json is not valid: ${v.error}` };
 }
 
+// A site URL's /admin address, or null when it does not look like a URL.
+function adminUrl(siteUrl) {
+  if (typeof siteUrl !== "string" || !/^https?:\/\/[^\s"'<>]+$/.test(siteUrl)) return null;
+  return siteUrl.replace(/\/+$/, "") + "/admin/";
+}
+
 // The site's /admin address, for the email: site.json's url, else SITE_URL.
 function adminUrlFor(dataDir, confDir) {
   let url = null;
@@ -173,8 +179,7 @@ function adminUrlFor(dataDir, confDir) {
       url = parseEnvFile(path.join(confDir, "featherspress.env")).SITE_URL;
     } catch {}
   }
-  if (typeof url !== "string" || !/^https?:\/\/[^\s"'<>]+$/.test(url)) return null;
-  return url.replace(/\/+$/, "") + "/admin/";
+  return adminUrl(url);
 }
 
 function readStdin() {
@@ -240,6 +245,7 @@ module.exports = {
   composeMessage,
   sendMail,
   loadConfig,
+  adminUrl,
   adminUrlFor,
   sendmailExists,
   fromAddress,

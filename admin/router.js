@@ -31,8 +31,9 @@ const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
-const { backupDir, listBackups, backupFile, parseBackupName, engineInfo } = require("../tools/agent-lib");
+const { backupDir, listBackups, backupFile, parseBackupName, engineInfo, instance } = require("../tools/agent-lib");
 const { buildSettings, DEFAULT_BACKUP_TIME } = require("../src/settings");
+const notify = require("../tools/notify");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
 const PAGES_DIR = path.join(config.CONTENT_DIR, "pages");
@@ -374,6 +375,109 @@ router.get("/api/backups/:name", (req, res) => {
   res.download(file, req.params.name, (err) => {
     if (err && !res.headersSent) res.status(500).json({ error: "Could not read the backup" });
   });
+});
+
+// ---- email alerts ------------------------------------------------------------
+// The app owns notify.json (0600, in the data dir): it saves what the owner
+// typed and sends the test email itself. The root scripts read the same file
+// through tools/notify.js when something fails. The password goes in and never
+// comes back out: GET says only whether one is saved, and an empty one on save
+// keeps it.
+const notifyTestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many test emails. Try again in a few minutes." },
+});
+
+function storedNotify() {
+  const loaded = notify.loadConfig(config.NOTIFY_CONFIG);
+  return loaded && loaded.config ? loaded.config : null;
+}
+
+// The form as the browser sends it (the port is a string there) → a
+// validated config, keeping the saved password when the field is left empty.
+function notifyFromForm(b) {
+  b = b || {};
+  const cfg = { to: typeof b.to === "string" ? b.to.trim() : b.to, from: typeof b.from === "string" ? b.from.trim() : b.from, method: b.method };
+  if (b.method === "smtp") {
+    const s = b.smtp || {};
+    const port = typeof s.port === "string" && /^\d{1,5}$/.test(s.port.trim()) ? Number(s.port.trim()) : s.port;
+    let pass = typeof s.pass === "string" ? s.pass : "";
+    const prev = storedNotify();
+    if (!pass && prev && prev.smtp) pass = prev.smtp.pass;
+    cfg.smtp = { host: typeof s.host === "string" ? s.host.trim() : s.host, port, security: s.security, user: typeof s.user === "string" ? s.user.trim() : s.user, pass };
+  }
+  return notify.validateConfig(cfg);
+}
+
+function saveNotify(req, res) {
+  const v = notifyFromForm(req.body);
+  if (!v.ok) {
+    res.status(400).json({ error: v.error });
+    return null;
+  }
+  writeRequest(config.NOTIFY_CONFIG, v.config); // 0600, renamed into place
+  return v.config;
+}
+
+function instanceName() {
+  try {
+    return instance(process.env).name;
+  } catch {
+    return "site";
+  }
+}
+
+router.get("/api/notify", (req, res) => {
+  const out = { configured: false, sendmailAvailable: notify.sendmailExists() };
+  const loaded = notify.loadConfig(config.NOTIFY_CONFIG);
+  if (loaded && loaded.error) out.problem = loaded.error;
+  const c = loaded && loaded.config;
+  if (c) {
+    Object.assign(out, { configured: true, to: c.to, from: c.from, method: c.method });
+    if (c.smtp) {
+      const { pass, ...rest } = c.smtp;
+      out.smtp = { ...rest, passSaved: !!pass };
+    }
+  }
+  res.json(out);
+});
+
+router.post("/api/notify", (req, res) => {
+  if (saveNotify(req, res)) res.json({ saved: true });
+});
+
+// Saves, then sends a test email now and waits for the answer (at most ~20 s),
+// so the owner sees it worked, or the mail server's own words for why not.
+router.post("/api/notify-test", notifyTestLimiter, async (req, res) => {
+  const cfg = saveNotify(req, res);
+  if (!cfg) return;
+  let siteUrl = null;
+  try {
+    siteUrl = manifest.load().url;
+  } catch {}
+  const msg = notify.composeMessage(
+    {
+      subject: "Email alerts work",
+      text:
+        "This is a test from /admin, Email alerts.\n\n" +
+        "From now on, if a backup, an update or a restore of this site fails, an email like this one tells you what went wrong.",
+    },
+    { instance: instanceName(), adminUrl: notify.adminUrl(siteUrl) }
+  );
+  try {
+    await notify.sendMail(cfg, msg);
+    res.json({ saved: true, sent: true, to: cfg.to });
+  } catch (e) {
+    res.json({ saved: true, sent: false, error: String((e && e.message) || e) });
+  }
+});
+
+router.delete("/api/notify", (req, res) => {
+  fs.rmSync(config.NOTIFY_CONFIG, { force: true });
+  res.json({ configured: false });
 });
 
 // ---- export (Site Package download) ---------------------------------------

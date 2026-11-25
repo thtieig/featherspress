@@ -150,6 +150,12 @@ config.IMPORT_STAGING_DIR = env(
   "IMPORT_STAGING_DIR",
   path.join(config.CONTENT_DIR, "..", "import-staging")
 );
+// Email alerts (/admin → Email alerts): how to send a failure email and to
+// whom, SMTP password included, so 0600 and the site user's. The app writes
+// it; the root scripts read it through tools/notify.js. Beside content/, like
+// every other data file, so a full backup carries it (credentials section).
+config.NOTIFY_CONFIG = env("NOTIFY_CONFIG", path.join(config.CONTENT_DIR, "..", "notify.json"));
+
 // Import uploads are whole sites, not single images: the 25MB media limit is far
 // too small (blog's own package is ~17MB and grows with its library).
 config.MAX_IMPORT_BYTES = parseInt(env("MAX_IMPORT_BYTES", String(2 * 1024 * 1024 * 1024)), 10);
