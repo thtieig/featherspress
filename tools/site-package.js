@@ -11,6 +11,8 @@
 //   skins/<name>/         the active CUSTOM skin (bundled skins ship with the engine)
 //   favicon/              per-site icons (optional)
 //   auth-config.json      credentials/2FA — ONLY in the "full" profile
+//   notify.json           email alert settings, SMTP password included; travels
+//                         with auth-config.json (full profile, credentials)
 //   engine.json           which engine made it ({commit, version}); information only
 //
 // export  packs the live data into a .tar.gz (profile "site" = no credentials,
@@ -81,6 +83,11 @@ function exportPackage(opts) {
     // caller passes sections:["credentials"] by mistake or by malice.
     if (profile === "full" && want.has("credentials") && authConfigPath && fs.existsSync(authConfigPath)) {
       fs.copyFileSync(authConfigPath, path.join(stage, "auth-config.json"));
+    }
+    // The email alert settings carry the SMTP password: same gate as the login.
+    const notifyPath = opts.notifyConfigPath;
+    if (profile === "full" && want.has("credentials") && notifyPath && fs.existsSync(notifyPath)) {
+      fs.copyFileSync(notifyPath, path.join(stage, "notify.json"));
     }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     // A "full" artifact carries the password hash and the TOTP secret in
@@ -194,6 +201,7 @@ function importPackage(opts) {
     bundledSkinsDir,
     force = false,
     restoreAuth = false,
+    notifyConfigPath,
   } = opts;
 
   // Which sections to restore. Omitting `sections` restores every section the
@@ -270,6 +278,9 @@ function importPackage(opts) {
     if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
       required.push(["authConfigPath", authConfigPath]);
     }
+    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "notify.json"))) {
+      required.push(["notifyConfigPath", notifyConfigPath]);
+    }
     for (const [name, value] of required) {
       if (typeof value !== "string" || value === "") {
         throw new Error(`cannot import: this package needs a ${name}, but none was configured`);
@@ -321,6 +332,12 @@ function importPackage(opts) {
       // whatever mode the file had inside the archive.
       fs.chmodSync(authConfigPath, 0o600);
     }
+    // The email alert settings, same rule. A package from before email alerts
+    // has none, and the ones already here are kept.
+    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "notify.json"))) {
+      fs.copyFileSync(path.join(dir, "notify.json"), notifyConfigPath);
+      fs.chmodSync(notifyConfigPath, 0o600);
+    }
   } finally {
     cleanup();
   }
@@ -369,6 +386,7 @@ function resolvePackagePaths(config, manifest) {
     mediaDir: config.MEDIA_DIR,
     manifestPath,
     authConfigPath: config.AUTH_CONFIG,
+    notifyConfigPath: config.NOTIFY_CONFIG,
     faviconDir,
     skin,
     skinsDir,
@@ -402,6 +420,7 @@ function reownAfterRootRestore(paths) {
     paths.manifestPath,
     paths.faviconDir,
     paths.authConfigPath,
+    paths.notifyConfigPath,
     paths.skinsDir,
   ].filter((p) => p && fs.existsSync(p));
 

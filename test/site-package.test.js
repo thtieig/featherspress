@@ -597,3 +597,65 @@ test("an unknown section name is refused", () => {
     fs.rmSync(t.dir, { recursive: true, force: true });
   }
 });
+
+// ---- email alert settings travel with the credentials -------------------------
+// notify.json holds the SMTP password, so it goes exactly where auth-config.json
+// goes: only in a "full" package with the credentials section, and back only on
+// a credentials restore. An older package without one restores as before.
+const NOTIFY_JSON = JSON.stringify({ to: "o@example.com", method: "smtp", smtp: { host: "h", port: 587, security: "starttls", user: "u", pass: "p" } });
+
+test("notify.json is packed only in a full export with the credentials section", () => {
+  const dir = makeDataDir();
+  const out = path.join(dir, "out");
+  fs.mkdirSync(out);
+  try {
+    fs.writeFileSync(path.join(dir, "notify.json"), NOTIFY_JSON, { mode: 0o600 });
+    const p = { ...paths(dir), notifyConfigPath: path.join(dir, "notify.json") };
+    sp.exportPackage({ ...p, profile: "full", outFile: path.join(out, "full.tar.gz") });
+    assert.ok(listTar(path.join(out, "full.tar.gz")).includes("notify.json"));
+    sp.exportPackage({ ...p, profile: "full", sections: ["content", "site"], outFile: path.join(out, "nocred.tar.gz") });
+    assert.ok(!listTar(path.join(out, "nocred.tar.gz")).includes("notify.json"));
+    sp.exportPackage({ ...p, profile: "site", sections: ["content", "credentials"], outFile: path.join(out, "site.tar.gz") });
+    assert.ok(!listTar(path.join(out, "site.tar.gz")).includes("notify.json"), "never in a site-profile package");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a credentials restore brings notify.json back 0600; without restoreAuth it stays out", () => {
+  const pkg = makePackageDir({ withAuth: true });
+  fs.writeFileSync(path.join(pkg, "notify.json"), NOTIFY_JSON);
+  fs.chmodSync(path.join(pkg, "notify.json"), 0o644);
+  const t = { ...makeTarget() };
+  t.notifyConfigPath = path.join(t.dir, "notify.json");
+  try {
+    sp.importPackage({ src: pkg, ...t, sections: ["content", "credentials"], force: true });
+    assert.ok(!fs.existsSync(t.notifyConfigPath), "not without restoreAuth");
+    sp.importPackage({ src: pkg, ...t, sections: ["content", "credentials"], restoreAuth: true, force: true });
+    assert.strictEqual(fs.readFileSync(t.notifyConfigPath, "utf8"), NOTIFY_JSON);
+    assert.strictEqual(fs.statSync(t.notifyConfigPath).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("a package from before email alerts restores credentials and keeps the alert settings here", () => {
+  const pkg = makePackageDir({ withAuth: true });
+  const t = { ...makeTarget() };
+  t.notifyConfigPath = path.join(t.dir, "notify.json");
+  fs.writeFileSync(t.notifyConfigPath, NOTIFY_JSON, { mode: 0o600 });
+  try {
+    sp.importPackage({ src: pkg, ...t, sections: ["content", "credentials"], restoreAuth: true, force: true });
+    assert.ok(fs.existsSync(t.authConfigPath));
+    assert.strictEqual(fs.readFileSync(t.notifyConfigPath, "utf8"), NOTIFY_JSON);
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true });
+    fs.rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("resolvePackagePaths points notify.json at the app's own file", () => {
+  const p = sp.resolvePackagePaths(require("../config"), null);
+  assert.strictEqual(p.notifyConfigPath, require("../config").NOTIFY_CONFIG);
+});
