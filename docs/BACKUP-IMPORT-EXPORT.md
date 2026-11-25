@@ -22,7 +22,12 @@ media/…               uploads
 skins/<name>/         your active CUSTOM skin (bundled skins ship with the engine)
 favicon/              your per-site icons
 auth-config.json      credentials/2FA — ONLY in the "full" profile
+engine.json           which engine made it: {"commit": "3dc6ab2", "version": "0.1.0"}
 ```
+
+`engine.json` is information only. A restore shows it next to the engine the
+site runs now and never refuses because they differ; older packages without
+it restore as before.
 
 ## Two profiles
 
@@ -98,14 +103,17 @@ $FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
 - After a content change the running site hot-reloads; after an import, restart
   the service if you changed the skin/manifest: `sudo systemctl restart featherspress@blog`.
 
-## Scheduled off-box backups
+## Scheduled backups
 
 `deploy/backup.sh` (run as root by each site's `featherspress-backup@<name>.timer`)
-exports the `full` profile, optionally encrypts it, ships it, and prunes to
-keep-last-N. `deploy/add-instance.sh` sets all of this up: nightly at 00:20 to
-`/var/backups/featherspress/<name>`, keeping 14. Its settings live in
-`/etc/featherspress/<name>/backup.env`, which **/admin → Backup & Restore**
-manages for you.
+exports the `full` profile, encrypts it when a key is set, keeps it on this
+server, optionally uploads a copy off the box, and prunes to keep-last-N.
+`deploy/add-instance.sh` sets this up: nightly at 00:20, keeping 14. The
+settings live in `/etc/featherspress/<name>/backup.env`, which
+**/admin → Backup & Restore** manages for you.
+
+Backups are named `featherspress-full-<UTC time>-<engine commit>.tar.gz`, plus
+`.age` when encrypted (older ones have no commit in the name).
 
 ```sh
 systemctl list-timers 'featherspress-backup@*'
@@ -113,44 +121,73 @@ sudo systemctl start featherspress-backup@blog.service    # run one now to test
 journalctl -u featherspress-backup@blog.service -n 20
 ```
 
-### Destinations
-- `local` — a folder on this server, inside the site's own
-  `/var/backups/featherspress/<name>` (the root agent refuses anything else, so
-  one site can never write into, or prune, another site's backups). Mount a
-  disk there if you want them elsewhere. Encryption is optional *only* because the
-  artifact never leaves the machine — **not** because it is harmless. Every
-  backup is a `full` export, so an unencrypted one is your password hash and
-  your TOTP secret sitting in a file. `backup.sh` keeps `LOCAL_DIR` at `0700`
-  and each artifact at `0600` for exactly that reason; if you point `LOCAL_DIR`
-  at a mount shared with anything else, set `AGE_RECIPIENT` and encrypt it too.
-- `rclone` — any [rclone](https://rclone.org) remote: **S3**, **Dropbox**, or
-  **SFTP over ssh**. Configure once with `rclone config`. Encryption is
-  **mandatory** here. Give every site its own remote path (say
-  `featherspress/<name>`): old backups at that path are pruned to `KEEP_LAST`.
+### Where backups go
 
-  Install rclone from the official script, not the distro package — Debian 12
-  ships 1.60, too old for some remotes and for `rclone serve s3` if you want to
-  test against a local endpoint. The installer needs an unzip tool, which a
-  minimal cloud image does not have:
+- **On this server, always**: `/var/backups/featherspress/<name>` (or a folder
+  inside it; the root agent refuses anything else, so one site can never write
+  into, or prune, another's). This copy is what the **backups list** in /admin
+  shows and restores from. The folder is `0750 root:fp-<name>` and each backup
+  `0640`: root writes and prunes, the site can only read its own, and
+  `/var/backups/featherspress` (`0711`) lets no site list the others. The site
+  can already read the live login a backup carries, so this exposes nothing
+  new. An unencrypted backup is still your password hash and 2FA secret in a
+  file: set up encryption anyway.
+- **Plus an off-box copy** (`DEST_TYPE=rclone`, "This server + an off-box
+  copy" in /admin): the same file is also uploaded to an
+  [rclone](https://rclone.org) remote, as the safety copy for a lost server.
+  Encryption is **mandatory** for it. The site's name is added to the remote
+  path you give, so several sites can share one bucket or folder:
+  `garage:fp-backups/featherspress` becomes
+  `garage:fp-backups/featherspress/blog`. `KEEP_LAST` applies on both sides.
+  If the upload fails (wrong credentials, host down) the run is marked failed
+  in /admin ("the off-box copy failed; this backup is kept on this server
+  only"); the local copy is still made. A dead host takes a few minutes to
+  give up (rclone retries); a refused login fails at once.
 
-  ```sh
-  sudo apt install -y unzip
-  curl https://rclone.org/install.sh | sudo bash
-  rclone version          # want >= 1.65
-  ```
+### Setting up an off-box copy
 
-  Remember that rclone's config belongs to the user that runs the backup — the
-  timer runs as **root**, so configure the remote as root (`sudo rclone config`)
-  or the timer will not find it.
+The timer runs as **root**, so set up the rclone remote as root; it then
+appears in /admin's Remote list. Debian's `rclone` package (1.60 on Debian 13)
+works for S3 and SFTP; use the [official installer](https://rclone.org/install/)
+if you need a newer backend.
 
-  For an **SFTP** remote, set `known_hosts_file` as well. Without it rclone
-  prints `No host key validation is being performed` and ships your backups to
-  whatever answers on that address:
+```sh
+sudo apt install -y rclone
+```
 
-  ```sh
-  ssh-keyscan -H backuphost >> /root/.ssh/known_hosts
-  sudo rclone config update myremote known_hosts_file /root/.ssh/known_hosts
-  ```
+**S3** (AWS, Backblaze B2, Wasabi, a self-hosted Garage...): a bucket and an
+access key that may write and delete in it, then:
+
+```sh
+sudo rclone config create offsite s3 provider=Other \
+  endpoint=https://s3.example.com region=us-east-1 \
+  access_key_id=AKIA... secret_access_key=...
+sudo rclone lsd offsite:                 # lists your buckets: the key works
+```
+
+(Use `provider=AWS` and leave out `endpoint` for Amazon itself.) In /admin pick
+**This server + an off-box copy**, remote `offsite`, path
+`my-bucket/featherspress`, and **Save**.
+
+**SFTP** (any server you can ssh to): give root a key that logs in as a
+backup user there, and pin the host key, or rclone uploads to whatever answers
+on that address:
+
+```sh
+sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/fp_backup
+# add /root/.ssh/fp_backup.pub to ~backup/.ssh/authorized_keys on backuphost
+sudo sh -c 'ssh-keyscan backuphost > /root/.ssh/fp_backup_known_hosts'
+sudo rclone config create backuphost sftp host=backuphost user=backup \
+  key_file=/root/.ssh/fp_backup known_hosts_file=/root/.ssh/fp_backup_known_hosts
+sudo rclone mkdir backuphost:featherspress
+```
+
+In /admin pick remote `backuphost`, path `featherspress` (relative to the
+backup user's home). Then press **Back up now** and check the result line, or:
+
+```sh
+sudo rclone ls offsite:my-bucket/featherspress/blog
+```
 
 ### Encryption (age)
 Backups carry `auth-config.json` (your TOTP secret in cleartext + password
@@ -168,7 +205,7 @@ age-keygen -o key.txt          # prints the public key; KEEP key.txt OFF the box
 # put the public key in backup.env as AGE_RECIPIENT=age1...
 ```
 
-### Restoring an encrypted artifact — the full drill
+### Restoring an encrypted artifact by hand
 
 The private key is deliberately **not on the box**, so decrypt where the key is
 (your laptop), then move the plaintext tarball over. `age` is a single static
@@ -206,8 +243,8 @@ sudo stat -c '%a %U:%G' /var/lib/featherspress/blog/auth-config.json   # 600 fp-
 ```
 
 ### Retention
-`KEEP_LAST` (default 14) newest backups are kept at the destination; older ones
-are pruned automatically.
+`KEEP_LAST` (default 14) newest backups are kept on this server and, with an
+off-box copy, in the site's remote folder; older ones are pruned automatically.
 
 ## Failure notifications
 
@@ -254,18 +291,37 @@ If `media/` ever grows past a few GB, switch the media portion to `rclone sync`
 (dedup) and tar only `content/ + site.json + skin + favicon (+ auth)`. Until
 then, keep it simple.
 
-## Restoring from /admin (the usual way, since 2026-07-25)
+## Restoring from /admin (the usual way)
 
-You no longer need SSH for a normal restore. In **Backup & Restore**:
+You do not need SSH for a normal restore.
 
-1. **Export** an archive from the old site ("Migrate this site" = everything).
+### A backup on this server
+
+**Backup & Restore → Backups on this server** lists this site's backups,
+newest first: when, size, the engine that took it, encrypted or not.
+
+- **Download** saves the file exactly as stored (still encrypted if it was).
+- **Restore** picks it for the Restore form below: paste your age private key
+  if it is encrypted, tick the sections, type `RESTORE`. If another engine
+  version took the backup the form says so; that is fine, it restores the same.
+
+### An archive from elsewhere
+
+1. **Export** an archive from the old site ("Migrate this site" = everything),
+   or fetch an off-box copy: `sudo rclone copy offsite:my-bucket/featherspress/blog/<file> .`
 2. On the new box, add the site and create a login (steps 3 and 4 of
    [DEPLOY.md](DEPLOY.md)), then sign in to `/admin`.
 3. **Restore**: choose the file, paste your age private key if it is `.age`,
    tick the sections to bring back, type `RESTORE` to confirm.
 
-What happens under the hood: the app stages the upload and decrypts it (the key
-is piped to `age`, never written to disk), then writes a restore request. The
+### What happens
+
+The app never restores anything itself. A backup from the list is named in the
+request by its bare file name; the root agent checks it matches the backup
+naming pattern and is a regular file in this site's own backup folder, and
+never deletes it. An encrypted backup, or an upload, is decrypted by the app
+into a staging folder first (the key is piped to `age`, never written to disk
+or put in the request): root has no key. The
 ROOT agent snapshots your current site, restores the requested sections, applies
 any `settings.json` through the same whitelist the backup panel uses, restarts
 the service, and checks that `/healthz` AND the home page both respond. **If the

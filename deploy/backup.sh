@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # featherspress backup: pack the live data into a Site Package (profile "full",
-# so credentials are included for disaster recovery), optionally encrypt it, ship
-# it to a destination, and prune to keep-last-N. A backup is just an export saved
-# somewhere — restore with:  npm run import -- <artifact> [--restore-auth]
+# so credentials are included for disaster recovery), optionally encrypt it, keep
+# it in this site's backup folder (the /admin backups list), optionally upload a
+# copy off the box, and prune both to keep-last-N. A backup is just an export
+# saved somewhere — restore with:  npm run import -- <artifact> [--restore-auth]
 #
 # Run as root from featherspress-backup@<name>.timer, for that one instance
 # (see deploy/instance.sh). Reads two env files from /etc/featherspress/<name>/:
@@ -101,8 +102,9 @@ if [ "$DEST_TYPE" = "rclone" ]; then
   [ -n "${RCLONE_REMOTE:-}" ] ||
     refuse "off-box is chosen but no remote is set (RCLONE_REMOTE in backup.env)"
   REMOTE_DIR="${RCLONE_REMOTE%/}/$INSTANCE"
-  # Fail in about a minute, not after rclone's default retries, when the
-  # remote is unreachable or refuses the credentials.
+  # Fewer retries than rclone's defaults: refused credentials or a stopped
+  # server fail at once, an unreachable host within a few minutes (about 4 on
+  # the test box), instead of holding the run much longer.
   export RCLONE_CONTIMEOUT="${RCLONE_CONTIMEOUT:-20s}" RCLONE_TIMEOUT="${RCLONE_TIMEOUT:-60s}"
   export RCLONE_RETRIES="${RCLONE_RETRIES:-2}" RCLONE_LOW_LEVEL_RETRIES="${RCLONE_LOW_LEVEL_RETRIES:-2}"
 fi

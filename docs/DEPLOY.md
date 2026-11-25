@@ -25,7 +25,9 @@ For an instance called `<name>`:
     featherspress.env                  PORT, SESSION_SECRET, SITE_PACKAGE
     backup.env                         backup destination, retention, key
     update.conf                        AUTO_APPLY, REPO_REF
-/var/backups/featherspress/<name>/     nightly backups (the default destination)
+/var/backups/featherspress/<name>/     nightly backups, always kept here; root
+                                       writes them, the site may read them
+                                       (the /admin backups list)
 user fp-<name>                         runs the site; owns its code and data
 featherspress@<name>.service           the site
 featherspress-backup@<name>.timer      nightly backup
@@ -128,19 +130,37 @@ Then in a browser: the home page, a post, an image under `/media/`, and
 ## Backups
 
 Each site backs itself up every night at 00:20 to
-`/var/backups/featherspress/<name>`, keeping 14. Change the time, the
-destination (another folder inside that one, or off-box through rclone) and
-retention in **/admin → Backup & Restore**. Press **Set up encryption** there
-too, and keep the private key it shows you somewhere off the server. For
-off-box backups, give every site its own remote path: old backups there are
-pruned to the retention count. Details:
-[BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
+`/var/backups/featherspress/<name>`, keeping 14. **/admin → Backup & Restore**
+lists those backups (Download, or Restore one) and sets the time, retention and
+whether a copy also goes off the box through rclone (S3, SFTP, ...). The local
+copy is always kept: it is what the list restores from; the off-box copy is
+for a lost server. Each site's off-box copies go into its own folder under the
+remote path you give (`.../featherspress/<name>`), so sites sharing a remote
+never prune each other's. Press **Set up encryption** there too, and keep the
+private key it shows you somewhere off the server. Details, including S3 and
+SFTP examples: [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
 
 ```sh
 systemctl list-timers 'featherspress-backup@*'
 sudo systemctl start featherspress-backup@blog.service      # one now
 sudo ls -l /var/backups/featherspress/blog
 ```
+
+### Upgrading a server set up before the backups list
+
+Older installs made the backup folders root-only, so /admin says it cannot
+read them. Open each site's folder to its own user (or re-run `add-instance.sh`
+with the site's name, domain and port, which does the same):
+
+```sh
+sudo chmod 711 /var/backups/featherspress
+sudo chgrp fp-blog /var/backups/featherspress/blog
+sudo chmod 750 /var/backups/featherspress/blog
+```
+
+Backups already there become readable at the next backup run. If an off-box
+path already ended in the site's name (`s3:bucket/featherspress/blog`), set it
+to the base (`s3:bucket/featherspress`): the name is now added for you.
 
 ## Updates
 
@@ -172,7 +192,12 @@ sudo systemctl daemon-reload
 ## Rebuild a site from a backup
 
 The checklist for a dead server, or for moving a site to a new one. You need
-the backup (`featherspress-full-*.tar.gz.age`) and its age private key.
+the backup (`featherspress-full-*.tar.gz.age`) and its age private key. With an
+off-box copy, fetch the newest one from any machine with that rclone remote:
+`rclone copy offsite:my-bucket/featherspress/blog/<file> .`
+(`rclone ls offsite:my-bucket/featherspress/blog` lists them). To go back to
+an earlier state on a server that still works, you need none of this: pick
+the backup in **Backups on this server** and press Restore.
 
 1. **New server:** Debian, with the packages from step 1.
 2. **Node:** step 2.
