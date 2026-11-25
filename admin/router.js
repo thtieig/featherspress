@@ -105,6 +105,21 @@ router.get("/login", (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "login.html"));
 });
 
+// The time step of the last accepted TOTP code: a code at or before it is a
+// replay and is refused. In memory only, so a restart re-opens just the
+// current code's ~1 minute window.
+let lastTotpTimeStep = -1;
+
+// A fresh session id on every login, so an id planted before login (session
+// fixation) is worthless afterwards.
+function startSession(req, res) {
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: "Could not start a session" });
+    req.session.authenticated = true;
+    res.json({ ok: true });
+  });
+}
+
 router.post("/api/login", loginLimiter, async (req, res) => {
   if (!fs.existsSync(AUTH_CONFIG_PATH)) {
     return res.status(500).json({ error: "Not set up yet -- run `node setup.js` first." });
@@ -122,9 +137,9 @@ router.post("/api/login", loginLimiter, async (req, res) => {
   } catch {
     totpResult = { valid: false };
   }
-  if (totpResult.valid) {
-    req.session.authenticated = true;
-    return res.json({ ok: true });
+  if (totpResult.valid && totpResult.timeStep > lastTotpTimeStep) {
+    lastTotpTimeStep = totpResult.timeStep;
+    return startSession(req, res);
   }
   // One-time recovery code fallback (SHA-256 of the normalized code).
   const codeHash = crypto.createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
@@ -134,8 +149,7 @@ router.post("/api/login", loginLimiter, async (req, res) => {
   }
   const remaining = recoveryCodeHashes.filter((_, i) => i !== matchIndex);
   writeAuthConfigAtomic(AUTH_CONFIG_PATH, { ...authConfig, recoveryCodeHashes: remaining });
-  req.session.authenticated = true;
-  res.json({ ok: true });
+  startSession(req, res);
 });
 
 router.post("/api/logout", (req, res) => {
