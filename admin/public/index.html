@@ -892,8 +892,10 @@
         el('f-date').value = toDatetimeLocalValue(p.date);
         dateFieldDirty = false;
         tagInput.set((p.postTags || []).map(function (t) { return t.name; }));
-        editor.setMarkdown(p.body || '');
+        // Markdown mode FIRST: setMarkdown while in WYSIWYG would run the body
+        // through the WYSIWYG model and drop raw HTML such as <details>.
         setEditorMode('markdown');
+        editor.setMarkdown(p.body || '');
         document.querySelector('input[name=type][value=' + (p.type === 'page' ? 'page' : 'post') + ']').checked = true;
         syncDateFieldVisibility();
         el('btn-cancel-edit').hidden = false;

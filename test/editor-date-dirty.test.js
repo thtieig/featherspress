@@ -313,3 +313,21 @@ test("resetForm() clears both the field and the dirty flag, so a new post saved 
   const payload = JSON.parse(postCall.init.body);
   assert.ok(!("date" in payload), "date key must be absent when creating with the field left untouched, got: " + JSON.stringify(payload));
 });
+
+// Found in the 2026-11-25 restore drill: editPost() loaded the body while the
+// editor was still in WYSIWYG (the mode a fresh /admin opens in), so Toast UI
+// ran it through the WYSIWYG model first and silently dropped raw HTML such
+// as <details> before the Markdown view ever showed it. The switch to
+// Markdown must come BEFORE setMarkdown.
+test("editPost switches to Markdown mode before loading the body", async () => {
+  const fetchStub = makeFetchStub([
+    { match: (url) => url === "/admin/api/post/post/raw-html", response: { slug: "raw-html", type: "post", title: "Raw", date: "2016-10-14T11:53:07.000Z", postTags: [], status: "published", body: "<details><summary>More</summary>Hidden</details>" } },
+  ]);
+  const { sandbox } = buildSandbox(fetchStub);
+  const order = [];
+  sandbox.setEditorMode = function (mode) { order.push("mode:" + mode); };
+  sandbox.editor = { setMarkdown: function () { order.push("setMarkdown"); }, getMarkdown: function () { return ""; } };
+  sandbox.__exports.editPost("post", "raw-html");
+  await flush();
+  assert.deepStrictEqual(order, ["mode:markdown", "setMarkdown"]);
+});
