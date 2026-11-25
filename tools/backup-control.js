@@ -21,6 +21,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { SECTIONS } = require("./site-package");
 const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
@@ -111,15 +112,13 @@ function validateRequest(req, ctx) {
   if (!validTimeOfDay(s.timeOfDay || "00:00")) return fail("bad timeOfDay");
   if (s.preset === "weekly" && !WEEKDAYS.includes(s.weekday)) return fail("weekly needs a weekday");
 
-  // Which sections the scheduled backup captures — the same five the export
-  // already uses (tools/site-package.js SECTIONS). Absent field = back-compat
-  // default of "all five" (existing requests predate this field).
-  const ALL_SECTIONS = ["content", "media", "site", "settings", "credentials"];
-  let sections = ALL_SECTIONS;
+  // Which sections the scheduled backup captures. Absent = all of them
+  // (requests from older app versions carry no list).
+  let sections = [...SECTIONS];
   if (req.sections !== undefined) {
     if (!Array.isArray(req.sections) || req.sections.length === 0) return fail("bad sections");
     for (const sec of req.sections) {
-      if (typeof sec !== "string" || !ALL_SECTIONS.includes(sec)) return fail("unknown section");
+      if (typeof sec !== "string" || !SECTIONS.includes(sec)) return fail("unknown section");
     }
     sections = [...new Set(req.sections)];
   }
@@ -542,8 +541,6 @@ function applyRequest(env) {
 // module scope — so this borrows update.sh's discipline: snapshot, restore,
 // restart, health-check, and roll back if the site does not come up.
 
-const RESTORE_SECTIONS = ["content", "media", "site", "settings", "credentials"];
-
 // Validate an untrusted restore request. `stagedName` must be a BARE filename:
 // it is joined to the staging dir, so a path or `..` would aim the import at an
 // arbitrary file. Errors are fixed strings and never echo the input.
@@ -566,7 +563,7 @@ function validateRestoreRequest(req, ctx) {
   }
   if (!Array.isArray(req.sections) || req.sections.length === 0) return fail("bad sections");
   for (const s of req.sections) {
-    if (typeof s !== "string" || !RESTORE_SECTIONS.includes(s)) return fail("unknown section");
+    if (typeof s !== "string" || !SECTIONS.includes(s)) return fail("unknown section");
   }
   return {
     ok: true,
