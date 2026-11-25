@@ -22,6 +22,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { SECTIONS } = require("./site-package");
+const { DEFAULT_BACKUP_TIME } = require("../src/settings");
 const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
@@ -37,7 +38,7 @@ function validTimeOfDay(t) {
 // Build the systemd OnCalendar string from a whitelisted preset. Root does this
 // itself so the app never supplies raw calendar syntax.
 function buildOnCalendar(schedule) {
-  const t = schedule.timeOfDay || "00:00";
+  const t = schedule.timeOfDay || DEFAULT_BACKUP_TIME;
   const [h, m] = t.split(":");
   switch (schedule.preset) {
     case "hourly":
@@ -109,7 +110,8 @@ function validateRequest(req, ctx) {
 
   const s = req.schedule || {};
   if (!PRESETS.includes(s.preset)) return fail("unknown schedule preset");
-  if (!validTimeOfDay(s.timeOfDay || "00:00")) return fail("bad timeOfDay");
+  const timeOfDay = s.timeOfDay || DEFAULT_BACKUP_TIME;
+  if (!validTimeOfDay(timeOfDay)) return fail("bad timeOfDay");
   if (s.preset === "weekly" && !WEEKDAYS.includes(s.weekday)) return fail("weekly needs a weekday");
 
   // Which sections the scheduled backup captures. Absent = all of them
@@ -131,7 +133,7 @@ function validateRequest(req, ctx) {
       remote,
       remotePath,
       keepLast: req.keepLast,
-      schedule: { preset: s.preset, timeOfDay: s.timeOfDay || "00:00", weekday: s.weekday || null },
+      schedule: { preset: s.preset, timeOfDay, weekday: s.weekday || null },
       sections,
       action: req.action,
     },
@@ -344,7 +346,7 @@ function refreshStatus(env) {
     sections: conf.BACKUP_SECTIONS ? conf.BACKUP_SECTIONS.split(",") : null,
     schedule: {
       preset: conf.BACKUP_SCHEDULE_PRESET || null,
-      timeOfDay: conf.BACKUP_SCHEDULE_TIME || "00:24",
+      timeOfDay: conf.BACKUP_SCHEDULE_TIME || DEFAULT_BACKUP_TIME,
       weekday: conf.BACKUP_SCHEDULE_WEEKDAY || null,
       raw: readScheduleDropIn(env.SCHEDULE_DROPIN),
       effective: readEffectiveSchedule("featherspress-backup.timer"),
@@ -630,7 +632,7 @@ function applyRestoredSettings(env, settings) {
         ? { type: "rclone", remote: b.remote, remotePath: b.remotePath }
         : { type: "local", localDir: b.localDir || "/var/backups/featherspress" },
     keepLast: Number.isInteger(b.keepLast) ? b.keepLast : 14,
-    schedule: b.schedule || { preset: "daily", timeOfDay: "00:20", weekday: null },
+    schedule: b.schedule || { preset: "daily", timeOfDay: DEFAULT_BACKUP_TIME, weekday: null },
     sections: Array.isArray(b.sections) ? b.sections : undefined,
   };
   const v = validateRequest(req, {

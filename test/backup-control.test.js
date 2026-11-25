@@ -762,3 +762,10 @@ test("the agent defaults NODE_BIN to the Node running it, overridable by NODE_BI
     else process.env.NODE_BIN = saved;
   }
 });
+
+test("a schedule with no time of day defaults to 00:20, the shipped timer's time", () => {
+  const r = bc.validateRequest({ ...base, schedule: { preset: "daily" } }, CTX);
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.config.schedule.timeOfDay, "00:20");
+  assert.strictEqual(bc.buildOnCalendar({ preset: "daily" }), "*-*-* 00:20:00");
+});

@@ -7,6 +7,10 @@
 // lives here, not in admin/, so the CLI path never has to pull in web/admin
 // code just to build a settings object.
 
+// When backups run if nothing else says: the time in the shipped
+// deploy/featherspress-backup.timer.
+const DEFAULT_BACKUP_TIME = "00:20";
+
 // The portable half of the box's configuration. Box-specific facts (paths,
 // users, NODE_BIN, SESSION_SECRET) are absent by construction — this only ever
 // reads fields the root agent already publishes.
@@ -23,7 +27,7 @@ function buildSettings(status) {
       keepLast: typeof c.keepLast === "number" ? c.keepLast : 14,
       schedule: {
         preset: sch.preset || "daily",
-        timeOfDay: sch.timeOfDay || "00:24",
+        timeOfDay: sch.timeOfDay || DEFAULT_BACKUP_TIME,
         weekday: sch.weekday || null,
       },
       sections: Array.isArray(c.sections) ? c.sections : null,
@@ -36,4 +40,4 @@ function buildSettings(status) {
   };
 }
 
-module.exports = { buildSettings };
+module.exports = { buildSettings, DEFAULT_BACKUP_TIME };

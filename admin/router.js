@@ -33,6 +33,7 @@ const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
+const { DEFAULT_BACKUP_TIME } = require("../src/settings");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
 const PAGES_DIR = path.join(config.CONTENT_DIR, "pages");
@@ -311,10 +312,10 @@ router.post("/api/backup-run", (req, res) => {
       cur.schedule && cur.schedule.preset
         ? {
             preset: cur.schedule.preset,
-            timeOfDay: cur.schedule.timeOfDay || "00:24",
+            timeOfDay: cur.schedule.timeOfDay || DEFAULT_BACKUP_TIME,
             weekday: cur.schedule.weekday || null,
           }
-        : { preset: "daily", timeOfDay: "00:24", weekday: null },
+        : { preset: "daily", timeOfDay: DEFAULT_BACKUP_TIME, weekday: null },
   });
   res.json({ requestId });
 });

@@ -29,3 +29,9 @@ test("buildSettings pulls the portable fields out of status", () => {
   assert.strictEqual(s.update.autoApply, false);
   assert.strictEqual(s.backup.localDir, "/var/backups/featherspress");
 });
+
+test("buildSettings defaults the backup time to 00:20, the shipped timer's time", () => {
+  const { DEFAULT_BACKUP_TIME } = require("../src/settings");
+  assert.strictEqual(DEFAULT_BACKUP_TIME, "00:20");
+  assert.strictEqual(buildSettings({}).backup.schedule.timeOfDay, "00:20");
+});

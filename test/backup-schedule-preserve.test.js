@@ -172,7 +172,7 @@ test("run-now round-trips through the real root agent without touching the sched
     assert.strictEqual(
       bc.buildOnCalendar(written.schedule),
       "Sun *-*-* 03:00:00",
-      "the request the app wrote must still describe the configured Sunday 03:00 schedule, not the daily 00:24 default"
+      "the request the app wrote must still describe the configured Sunday 03:00 schedule, not the daily 00:20 default"
     );
     // The router's shape cleanup: status.config.schedule carries a `raw`
     // field (the systemd OnCalendar string); the request it writes must not
@@ -203,4 +203,16 @@ test("run-now round-trips through the real root agent without touching the sched
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });
   }
+});
+
+test("run-now on a box with no saved schedule asks for daily at 00:20, the shipped timer's time", async () => {
+  if (!cookie) await api("POST", "/admin/api/login", { password: PASSWORD, code: RECOVERY });
+  fs.writeFileSync(
+    config.BACKUP_STATUS_FILE,
+    JSON.stringify({ appliedRequestId: 1, config: { destType: "local", keepLast: 14, schedule: { preset: null } } })
+  );
+  const run = await api("POST", "/admin/api/backup-run", {});
+  assert.strictEqual(run.status, 200, await run.text());
+  const written = JSON.parse(fs.readFileSync(config.BACKUP_REQUEST_FILE, "utf8"));
+  assert.deepStrictEqual(written.schedule, { preset: "daily", timeOfDay: "00:20", weekday: null });
 });

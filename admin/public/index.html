@@ -336,7 +336,7 @@
           <option value="twice-daily">Twice daily</option>
           <option value="weekly">Weekly</option>
         </select>
-        <span id="bk-time-wrap">at <input type="time" id="bk-time" value="00:24"></span>
+        <span id="bk-time-wrap">at <input type="time" id="bk-time" value="00:20"></span>
         <span id="bk-weekday-wrap" hidden>on
           <select id="bk-weekday">
             <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option>
@@ -1192,7 +1192,7 @@
       if (sch.weekday) el('bk-weekday').value = sch.weekday;
       el('bk-schedule-hint').hidden = true;
     } else {
-      // Don't pretend: the form's HTML default (Daily 00:24) is NOT
+      // Don't pretend: the form's HTML default (Daily 00:20) is NOT
       // necessarily what systemd is actually running. Say so plainly rather
       // than silently displaying a schedule that isn't real — and rather
       // than letting an unrelated Save (e.g. changing retention) quietly
@@ -1295,7 +1295,7 @@
       ? { type: 'rclone', remote: el('bk-remote').value, remotePath: el('bk-remotepath').value.trim() }
       : { type: 'local', localDir: el('bk-localdir').value.trim() };
     var preset = el('bk-preset').value;
-    var schedule = { preset: preset, timeOfDay: el('bk-time').value || '00:24' };
+    var schedule = { preset: preset, timeOfDay: el('bk-time').value || '00:20' };
     if (preset === 'weekly') schedule.weekday = el('bk-weekday').value;
     var sections = [].slice.call(document.querySelectorAll('.bk-sec:checked')).map(function (c) { return c.value; });
     return { destination: destination, keepLast: parseInt(el('bk-keeplast').value, 10), schedule: schedule, sections: sections };
