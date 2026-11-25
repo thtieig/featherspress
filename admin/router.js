@@ -214,26 +214,31 @@ router.get("/api/update-status", (req, res) => {
   res.json(status);
 });
 
-// Monotonic-ish request id, same scheme as nextBackupRequestId below.
-function nextUpdateRequestId() {
+// ---- requests to the root agents -------------------------------------------
+// Monotonic-ish request id: one past the last id the agent applied (read from
+// its status file by `lastApplied`), nudged by a random offset so two quick
+// clicks can't collide before the agent records progress. The agent only
+// honours ids strictly greater than the last applied one.
+function nextRequestId(statusFile, lastApplied = (s) => s.appliedRequestId) {
   try {
-    const s = JSON.parse(fs.readFileSync(config.UPDATE_APPLY_STATUS_FILE, "utf8"));
-    return (s.appliedRequestId || 0) + 1 + Math.floor(Math.random() * 1000);
+    return (lastApplied(JSON.parse(fs.readFileSync(statusFile, "utf8"))) || 0) + 1 + Math.floor(Math.random() * 1000);
   } catch {
     return Date.now();
   }
 }
 
-function writeUpdateRequest(obj) {
-  const tmp = config.UPDATE_REQUEST_FILE + ".tmp";
+// Write a request for a root agent: 0600, renamed into place so the agent
+// never reads half a file.
+function writeRequest(file, obj) {
+  const tmp = file + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
   fs.chmodSync(tmp, 0o600); // mode is ignored when the tmp file already exists
-  fs.renameSync(tmp, config.UPDATE_REQUEST_FILE);
+  fs.renameSync(tmp, file);
 }
 
 router.post("/api/update-apply", updateApplyLimiter, (req, res) => {
-  const requestId = nextUpdateRequestId();
-  writeUpdateRequest({ requestId, action: "apply" });
+  const requestId = nextRequestId(config.UPDATE_APPLY_STATUS_FILE);
+  writeRequest(config.UPDATE_REQUEST_FILE, { requestId, action: "apply" });
   res.json({ requestId });
 });
 
@@ -251,30 +256,15 @@ router.get("/api/backup-status", (req, res) => {
   }
 });
 
-// Monotonic-ish request id: one past the last applied id, nudged by a random
-// offset so two quick saves can't collide on the same number before the agent
-// records progress. The agent only honours ids strictly greater than applied.
-function nextBackupRequestId() {
-  try {
-    const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
-    return (s.appliedRequestId || 0) + 1 + Math.floor(Math.random() * 1000);
-  } catch {
-    return Date.now();
-  }
-}
-
 function writeBackupRequest(obj) {
-  const tmp = config.BACKUP_REQUEST_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
-  fs.chmodSync(tmp, 0o600); // mode is ignored when the tmp file already exists
-  fs.renameSync(tmp, config.BACKUP_REQUEST_FILE);
+  const requestId = nextRequestId(config.BACKUP_STATUS_FILE);
+  writeRequest(config.BACKUP_REQUEST_FILE, { requestId, ...obj });
+  return requestId;
 }
 
 router.post("/api/backup-config", (req, res) => {
   const b = req.body || {};
-  const requestId = nextBackupRequestId();
-  writeBackupRequest({
-    requestId,
+  const requestId = writeBackupRequest({
     action: "apply",
     destination: b.destination,
     keepLast: b.keepLast,
@@ -285,7 +275,6 @@ router.post("/api/backup-config", (req, res) => {
 });
 
 router.post("/api/backup-run", (req, res) => {
-  const requestId = nextBackupRequestId();
   // "Back up now" keeps the current config; read it back from status so the
   // agent re-validates the same destination rather than a blank one.
   let cur = {};
@@ -296,8 +285,7 @@ router.post("/api/backup-run", (req, res) => {
     cur.destType === "rclone"
       ? { type: "rclone", remote: cur.remote, remotePath: cur.remotePath }
       : { type: "local", localDir: cur.localDir || "/var/backups/featherspress" };
-  writeBackupRequest({
-    requestId,
+  const requestId = writeBackupRequest({
     action: "run-now",
     destination,
     keepLast: cur.keepLast || 14,
@@ -327,8 +315,7 @@ router.post("/api/backup-run", (req, res) => {
 const AGE_KEY_ONCE_FILE = path.join(path.dirname(config.BACKUP_STATUS_FILE), "age-key-once.txt");
 
 router.post("/api/backup-keygen", (req, res) => {
-  const requestId = nextBackupRequestId();
-  writeBackupRequest({ requestId, action: "keygen" });
+  const requestId = writeBackupRequest({ action: "keygen" });
   res.json({ requestId });
 });
 
@@ -1005,13 +992,6 @@ router.post("/api/import-upload", (req, res) => {
   });
 });
 
-function writeRestoreRequest(obj) {
-  const tmp = config.RESTORE_REQUEST_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
-  fs.chmodSync(tmp, 0o600);
-  fs.renameSync(tmp, config.RESTORE_REQUEST_FILE);
-}
-
 router.post("/api/restore", (req, res) => {
   const b = req.body || {};
   // stagedName is a BARE FILENAME, never a path — the root agent re-checks this,
@@ -1028,14 +1008,8 @@ router.post("/api/restore", (req, res) => {
   for (const s of sections) {
     if (!SECTIONS.includes(s)) return res.status(400).json({ error: "unknown section" });
   }
-  let requestId;
-  try {
-    const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
-    requestId = ((s.restore && s.restore.appliedRequestId) || 0) + 1 + Math.floor(Math.random() * 1000);
-  } catch {
-    requestId = Date.now();
-  }
-  writeRestoreRequest({ requestId, stagedName: name, sections, restoreAuth: sections.includes("credentials") });
+  const requestId = nextRequestId(config.BACKUP_STATUS_FILE, (s) => s.restore && s.restore.appliedRequestId);
+  writeRequest(config.RESTORE_REQUEST_FILE, { requestId, stagedName: name, sections, restoreAuth: sections.includes("credentials") });
   res.json({ requestId });
 });
 
