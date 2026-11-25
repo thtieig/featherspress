@@ -1924,7 +1924,7 @@
   });
 
   el('al-test').addEventListener('click', function () {
-    alPost('/admin/api/notify-test', 'Saving and sending a test email\u2026 this can take up to 20 seconds.').then(function (b) {
+    alPost('/admin/api/notify-test', 'Saving and sending a test email\u2026 this can take up to half a minute.').then(function (b) {
       if (!b) return;
       if (b.sent) alMsg('Saved, and a test email is on its way to ' + b.to + '. Check your inbox (and the spam folder).', 'ok');
       else alMsg('Saved, but the test email could not be sent: ' + b.error, 'err');

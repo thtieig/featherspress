@@ -14,6 +14,11 @@
 //
 //       echo "what went wrong" | node tools/notify.js --subject "Backup failed"
 //
+//   --report adds one JSON line on stdout, {"sent":true} or {"sent":false,
+//   "error":"..."}, for the root agent that sends the "this server's mail"
+//   test email on the app's behalf (the site's sandbox keeps postfix and exim
+//   from taking mail from it).
+//
 // The CLI never gets in the way of the failure it reports: not set up means
 // nothing is sent, and any trouble sending is logged and it still exits 0.
 //
@@ -125,9 +130,17 @@ function composeMessage({ subject, text }, { instance: name, host, adminUrl, at 
   body = body.replace(/\s+$/, "");
   const lines = [body, "", `When: ${when}`, `Server: ${host}`, `Site: ${oneLine(name, 40) || "?"}`];
   if (adminUrl) lines.push(`Admin: ${adminUrl}`);
-  lines.push("", "--", "Sent by Featherspress because something failed. Change or turn off these emails in /admin, Email alerts.");
+  lines.push("", "--", "Sent by Featherspress. Change or turn off these emails in /admin, Email alerts.");
   return { subject: `[featherspress ${oneLine(name, 40) || "?"}] ${oneLine(subject, 150)} on ${host}`, text: lines.join("\n") + "\n" };
 }
+
+// The "Send test email" message, wherever it is sent from.
+const TEST_MESSAGE = {
+  subject: "Email alerts work",
+  text:
+    "This is a test from /admin, Email alerts.\n\n" +
+    "From now on, if a backup, an update or a restore of this site fails, an email like this one tells you what went wrong.",
+};
 
 // Send one message. Rejects with the mailer's own error (the test button shows
 // it); bounded by timeoutMs even when the far end just stops talking.
@@ -190,56 +203,60 @@ function readStdin() {
   }
 }
 
+// Returns {sent:true} or {sent:false, error}; logs either way.
 async function main(argv) {
   const log = (m) => process.stderr.write(`[notify] ${m}\n`);
+  const notSent = (error) => {
+    log(`${error}; nothing sent`);
+    return { sent: false, error };
+  };
   const i = argv.indexOf("--subject");
   const subject = i >= 0 ? argv[i + 1] : "";
-  if (!subject) {
-    log("usage: echo body | notify.js --subject <text>");
-    return;
-  }
+  if (!subject) return notSent("usage: echo body | notify.js --subject <text> [--report]");
   let inst;
   try {
     inst = instance(process.env);
   } catch (e) {
-    log(`not sent: ${e.message}`);
-    return;
+    return notSent(e.message);
   }
   const file = process.env.NOTIFY_CONFIG || path.join(inst.dataDir, "notify.json");
   const loaded = loadConfig(file);
   const text = readStdin();
-  if (!loaded) {
-    log(`email alerts are not set up; nothing sent ("${oneLine(subject, 150)}")`);
-    return;
-  }
-  if (loaded.error) {
-    log(`${loaded.error}; nothing sent`);
-    return;
-  }
+  if (!loaded) return notSent(`email alerts are not set up ("${oneLine(subject, 150)}")`);
+  if (loaded.error) return notSent(loaded.error);
   const timeoutMs = Number(process.env.NOTIFY_TIMEOUT_MS) > 0 ? Number(process.env.NOTIFY_TIMEOUT_MS) : TIMEOUT_MS;
   const msg = composeMessage({ subject, text }, { instance: inst.name, adminUrl: adminUrlFor(inst.dataDir, inst.confDir) });
   try {
     await sendMail(loaded.config, msg, { timeoutMs });
     log(`sent "${msg.subject}" to ${loaded.config.to}`);
+    return { sent: true };
   } catch (e) {
-    log(`could not send the alert email to ${loaded.config.to}: ${oneLine(e && e.message, 500)}`);
+    const error = oneLine(e && e.message, 500);
+    log(`could not send the alert email to ${loaded.config.to}: ${error}`);
+    return { sent: false, error };
   }
 }
 
 if (require.main === module) {
   // Whatever happens, the caller's own failure handling carries on: exit 0,
   // and never hang past the send timeout.
-  const hard = setTimeout(() => process.exit(0), (Number(process.env.NOTIFY_TIMEOUT_MS) || TIMEOUT_MS) + 8000);
+  const report = process.argv.includes("--report");
+  const done = (result) => {
+    if (report) process.stdout.write(JSON.stringify(result) + "\n");
+    process.exit(0);
+  };
+  const hard = setTimeout(() => done({ sent: false, error: "timed out" }), (Number(process.env.NOTIFY_TIMEOUT_MS) || TIMEOUT_MS) + 8000);
   main(process.argv.slice(2))
-    .catch((e) => process.stderr.write(`[notify] not sent: ${e && e.message}\n`))
-    .finally(() => {
+    .catch((e) => ({ sent: false, error: `not sent: ${e && e.message}` }))
+    .then((result) => {
       clearTimeout(hard);
-      process.exit(0);
+      done(result);
     });
 }
 
 module.exports = {
   SENDMAIL,
+  TEST_MESSAGE,
   validateConfig,
   transportOptions,
   composeMessage,

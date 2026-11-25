@@ -74,9 +74,14 @@ function validateRequest(req, ctx) {
   if (!req || typeof req !== "object") return fail("malformed request");
   if (!Number.isInteger(req.requestId) || req.requestId <= ctx.appliedRequestId)
     return fail("stale or invalid requestId");
-  if (req.action !== "apply" && req.action !== "run-now" && req.action !== "keygen") {
-    return fail("action must be apply, run-now or keygen");
+  if (!["apply", "run-now", "keygen", "test-email"].includes(req.action)) {
+    return fail("action must be apply, run-now, keygen or test-email");
   }
+
+  // The "Send test email" button, for this server's own mail (sendmail):
+  // postfix and exim need privileges the sandboxed site does not have, so
+  // root sends it, with this site's own notify.json, exactly as a real alert.
+  if (req.action === "test-email") return { ok: true, config: { action: "test-email" } };
 
   // Generating the box's backup key needs no destination, retention or
   // schedule, so it short-circuits the rest of the whitelist. It is refused
@@ -487,6 +492,15 @@ function applyRequest(env) {
     refreshStatus(env);
     return;
   }
+  if (v.config.action === "test-email") {
+    env._appliedRequestId = request.requestId;
+    const r = sendTestEmail(env);
+    env._lastOk = r.sent;
+    env._lastErr = r.sent ? null : r.error || "the test email was not sent";
+    consumeRequest(env.BACKUP_REQUEST, request.requestId);
+    refreshStatus(env);
+    return;
+  }
   if (v.config.action === "keygen") {
     env._appliedRequestId = request.requestId;
     const err = generateAgeKey(env, conf);
@@ -656,6 +670,27 @@ function alertRestore(env, r, detail) {
       timeout: 40000,
     });
   } catch {}
+}
+
+// The test email, sent as root through tools/notify.js --report. Returns
+// {sent:true} or {sent:false, error}.
+function sendTestEmail(env) {
+  const { TEST_MESSAGE } = require("./notify");
+  const childEnv = { ...process.env, NOTIFY_CONFIG: env.NOTIFY_CONFIG };
+  if (env.INSTANCE) childEnv.INSTANCE = env.INSTANCE;
+  try {
+    const out = execFileSync(process.execPath, [path.join(__dirname, "notify.js"), "--subject", TEST_MESSAGE.subject, "--report"], {
+      input: TEST_MESSAGE.text,
+      env: childEnv,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "inherit"],
+      timeout: 40000,
+    });
+    const r = JSON.parse(out.trim().split("\n").pop());
+    return { sent: r.sent === true, error: typeof r.error === "string" ? r.error.slice(0, 500) : null };
+  } catch {
+    return { sent: false, error: "the test email could not be sent" };
+  }
 }
 
 // The last part of a failed command's stderr, for the alert email.

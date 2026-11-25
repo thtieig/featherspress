@@ -634,3 +634,62 @@ test("restore: a restore that is rolled back sends one email saying the old site
     fs.rmSync(site.dir, { recursive: true, force: true });
   }
 });
+
+// ---- the test email for this server's own mail, sent by root -------------------
+
+test("CLI --report prints whether it was sent, for the agent to pass on", async () => {
+  const sink = await smtpSink();
+  const dir = tmp();
+  try {
+    const cfgPath = writeConfig(dir, smtpConfig(sink.port));
+    const ok = await cli(["--subject", "x", "--report"], { input: "y", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: cfgPath } });
+    assert.deepStrictEqual(JSON.parse(ok.stdout.trim().split("\n").pop()), { sent: true });
+    sink.close();
+    const bad = await cli(["--subject", "x", "--report"], { input: "y", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: cfgPath } });
+    assert.strictEqual(bad.status, 0);
+    const r = JSON.parse(bad.stdout.trim().split("\n").pop());
+    assert.strictEqual(r.sent, false);
+    assert.match(r.error, /ECONNREFUSED/);
+    const none = await cli(["--subject", "x", "--report"], { input: "y", env: { INSTANCE: "alpha", DATA_DIR: dir, NOTIFY_CONFIG: path.join(dir, "none.json") } });
+    assert.match(JSON.parse(none.stdout.trim().split("\n").pop()).error, /not set up/);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backup-control apply: a test-email request sends the test as root and records the outcome", async () => {
+  const sink = await smtpSink();
+  const dir = tmp();
+  try {
+    const status = path.join(dir, "backup-status.json");
+    const run = (requestId) => {
+      fs.writeFileSync(path.join(dir, "backup-request.json"), JSON.stringify({ requestId, action: "test-email" }), { mode: 0o600 });
+      return runAsync(process.execPath, [path.join(ROOT, "tools", "backup-control.js"), "apply"], {
+        env: {
+          INSTANCE: "alpha", DATA_DIR: dir, BACKUP_ROOT: path.join(dir, "backups"),
+          BACKUP_ENV: path.join(dir, "backup.env"), SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+          UPDATE_CONF: path.join(dir, "update.conf"), NOTIFY_CONFIG: writeConfig(dir, smtpConfig(sink.port)),
+          PATH: process.env.PATH,
+        },
+      });
+    };
+    let r = await run(7);
+    assert.strictEqual(r.status, 0, r.stderr);
+    let st = JSON.parse(fs.readFileSync(status, "utf8"));
+    assert.strictEqual(st.appliedRequestId, 7);
+    assert.strictEqual(st.lastRequestOk, true, st.lastRequestError);
+    assert.strictEqual(sink.messages.length, 1);
+    assert.match(readable(sink.messages[0].data), /^Subject: \[featherspress alpha\] Email alerts work on /m);
+    assert.strictEqual(fs.existsSync(path.join(dir, "backup-request.json")), false, "consumed");
+
+    sink.close();
+    r = await run(8);
+    st = JSON.parse(fs.readFileSync(status, "utf8"));
+    assert.strictEqual(st.lastRequestOk, false);
+    assert.match(st.lastRequestError, /ECONNREFUSED/);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

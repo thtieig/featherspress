@@ -127,6 +127,13 @@ test("action must be apply or run-now", () => {
   assert.strictEqual(bc.validateRequest({ ...base, action: "rm" }, CTX).ok, false);
 });
 
+// The "Send test email" button for this server's own mail asks root to send
+// it: postfix and exim cannot take mail from the sandboxed site.
+test("a test-email request needs nothing else, and is still a fresh request", () => {
+  assert.deepStrictEqual(bc.validateRequest({ requestId: 4, action: "test-email" }, CTX), { ok: true, config: { action: "test-email" } });
+  assert.strictEqual(bc.validateRequest({ requestId: 3, action: "test-email" }, CTX).ok, false);
+});
+
 // ---- configurable backup sections ------------------------------------------
 
 test("accepts a valid sections list", () => {

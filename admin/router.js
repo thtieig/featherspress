@@ -449,24 +449,39 @@ router.post("/api/notify", (req, res) => {
   if (saveNotify(req, res)) res.json({ saved: true });
 });
 
-// Saves, then sends a test email now and waits for the answer (at most ~20 s),
-// so the owner sees it worked, or the mail server's own words for why not.
+// This server's own mail is tested by root: postfix and exim queue mail
+// through setgid helpers that the site's sandbox (NoNewPrivileges, a
+// read-only /var) blocks, so sendmail started from here would hang. The
+// backup agent sends it (action "test-email") and we wait for its answer.
+// Returns null when sent, else the error.
+async function testThroughAgent() {
+  const requestId = writeBackupRequest({ action: "test-email" });
+  const until = Date.now() + 45000;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+      if (s.appliedRequestId >= requestId) return s.lastRequestOk ? null : s.lastRequestError || "not sent";
+    } catch {}
+  }
+  return "the server did not answer in time (is the backup agent installed?), so no test email was sent";
+}
+
+// Saves, then sends a test email now and waits for the answer (at most ~20 s
+// over SMTP), so the owner sees it worked, or the mail server's own words for
+// why not.
 router.post("/api/notify-test", notifyTestLimiter, async (req, res) => {
   const cfg = saveNotify(req, res);
   if (!cfg) return;
+  if (cfg.method === "sendmail") {
+    const error = await testThroughAgent();
+    return res.json(error ? { saved: true, sent: false, error } : { saved: true, sent: true, to: cfg.to });
+  }
   let siteUrl = null;
   try {
     siteUrl = manifest.load().url;
   } catch {}
-  const msg = notify.composeMessage(
-    {
-      subject: "Email alerts work",
-      text:
-        "This is a test from /admin, Email alerts.\n\n" +
-        "From now on, if a backup, an update or a restore of this site fails, an email like this one tells you what went wrong.",
-    },
-    { instance: instanceName(), adminUrl: notify.adminUrl(siteUrl) }
-  );
+  const msg = notify.composeMessage(notify.TEST_MESSAGE, { instance: instanceName(), adminUrl: notify.adminUrl(siteUrl) });
   try {
     await notify.sendMail(cfg, msg);
     res.json({ saved: true, sent: true, to: cfg.to });
