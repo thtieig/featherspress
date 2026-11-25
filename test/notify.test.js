@@ -138,6 +138,7 @@ test("validateConfig refuses what it cannot safely hand to a mailer", () => {
     [{ ...good, smtp: { ...good.smtp, security: "maybe" } }, /security/],
     [{ ...good, smtp: { ...good.smtp, user: "me\nRCPT" } }, /username/],
     [{ ...good, smtp: { ...good.smtp, user: "", pass: "PLACEHOLDER-PASS-3" } }, /username/],
+    [{ ...good, smtp: { ...good.smtp, user: "me", pass: "" } }, /password/],
     [null, /settings/],
   ];
   for (const [cfg, re] of bad) {
@@ -362,6 +363,7 @@ test("backup.sh: a failed run sends one email saying why", async () => {
     assert.match(text, /^Subject: \[featherspress alpha\] Backup failed on /m);
     assert.match(text, /KEEP_LAST must be at least 1/);
     assert.match(text, /\[backup\] refusing/, "the log tail is in the body");
+    assert.doesNotMatch(text, /^<\d>/m, "journald priority prefixes are left out");
   } finally {
     sink.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -376,7 +378,7 @@ test("backup.sh: a failed off-box copy sends one email, and the local backup is 
   const dir = backupSite(["DEST_TYPE=rclone", "RCLONE_REMOTE=offsite:bucket", "KEEP_LAST=2", `AGE_RECIPIENT=${recipient}`]);
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "rclone"), '#!/bin/sh\necho "Failed to copy: access denied" >&2\nexit 1\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "rclone"), '#!/bin/sh\necho "<3>ERROR : Failed to copy: access denied" >&2\nexit 1\n', { mode: 0o755 });
   try {
     const r = await runBackup(dir, { port: sink.port, env: { PATH: bin + path.delimiter + process.env.PATH } });
     assert.strictEqual(r.status, 1);
@@ -384,7 +386,7 @@ test("backup.sh: a failed off-box copy sends one email, and the local backup is 
     assert.strictEqual(sink.messages.length, 1, r.stderr);
     const text = readable(sink.messages[0].data);
     assert.match(text, /off-box copy failed; this backup is kept on this server only/);
-    assert.match(text, /access denied/, "rclone's own words are in the log tail");
+    assert.match(text, /^ERROR : Failed to copy: access denied$/m, "rclone's own words, without the journald prefix");
   } finally {
     sink.close();
     fs.rmSync(dir, { recursive: true, force: true });

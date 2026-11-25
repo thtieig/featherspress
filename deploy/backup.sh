@@ -49,10 +49,15 @@ TEE_PID=$!
 # alerts are set up, and never fails this script).
 send_alert() {
   {
-    echo "The backup of this site failed: $FAIL_MSG."
+    if [ "$FAIL_MSG" = "backup run failed" ]; then
+      echo "The backup of this site stopped with an error; the log lines below say where."
+    else
+      echo "The backup of this site failed: $FAIL_MSG."
+    fi
     echo
     echo "The last lines it logged:"
-    tail -n 25 "$ERR_LOG"
+    # Without the <N> priority prefixes rclone adds for the journal.
+    tail -n 25 "$ERR_LOG" | sed 's/^<[0-7]>//'
   } | "$NODE_BIN" "$ENGINE_DIR/tools/notify.js" --subject "Backup failed" || true
 }
 

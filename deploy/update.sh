@@ -40,7 +40,7 @@ on_exit() {
       [ -n "${CURRENT:-}" ] && echo && echo "Running: ${CURRENT:0:7}   Available: ${AVAILABLE:0:7} (${REPO_REF:-main})"
       echo
       echo "The last lines it logged:"
-      tail -n 25 "$ERR_LOG"
+      tail -n 25 "$ERR_LOG" | sed 's/^<[0-7]>//'
     } | "${NODE_BIN:-/opt/node/bin/node}" "$NOTIFY_JS" --subject "$ALERT_SUBJECT" || true
   fi
   rm -f "$ERR_LOG"

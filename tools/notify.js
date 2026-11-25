@@ -85,6 +85,7 @@ function validateConfig(c, opts = {}) {
   if (typeof user !== "string" || user.length > 256 || CONTROL_RE.test(user)) return bad("The username is not valid.");
   if (typeof pass !== "string" || pass.length > 1024 || CONTROL_RE.test(pass)) return bad("The password is not valid.");
   if (pass && !user) return bad("A password needs a username to go with it.");
+  if (user && !pass) return bad("Enter the password for this username (leave both empty only if the server needs no login).");
   return { ok: true, config: { to: c.to, from, method: "smtp", smtp: { host: s.host, port: s.port, security: s.security, user, pass } } };
 }
 
