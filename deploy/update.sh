@@ -18,6 +18,35 @@ FP_ENV="${FP_ENV:-$CONF_DIR/featherspress.env}"
 UPDATE_CONF="${UPDATE_CONF:-$CONF_DIR/update.conf}"
 UPDATE_LOCK="${UPDATE_LOCK:-/run/featherspress-update-$INSTANCE.lock}"
 
+# ---- failure email ---------------------------------------------------------
+# Any failed run (the check, an apply, a rollback) sends one email through this
+# checkout's tools/notify.js, which sends nothing until /admin → Email alerts is
+# set up and never fails this script. ALERT_SUBJECT/ALERT_TEXT follow the run
+# as it gets further, so the email says how far it got. A copy of stderr (still
+# streamed as before, through fd 3) gives the email its log tail.
+NOTIFY_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/notify.js"
+ALERT_SUBJECT="Update check failed"
+ALERT_TEXT="The nightly check for engine updates could not run, so this site cannot tell whether an update is waiting."
+ERR_LOG="$(mktemp)"
+exec 3>&2 2> >(tee -a "$ERR_LOG" >&3)
+TEE_PID=$!
+on_exit() {
+  local rc=$?
+  exec 2>&3
+  wait "$TEE_PID" 2>/dev/null || true
+  if [ "$rc" -ne 0 ] && [ -f "$NOTIFY_JS" ]; then
+    {
+      echo "$ALERT_TEXT"
+      [ -n "${CURRENT:-}" ] && echo && echo "Running: ${CURRENT:0:7}   Available: ${AVAILABLE:0:7} (${REPO_REF:-main})"
+      echo
+      echo "The last lines it logged:"
+      tail -n 25 "$ERR_LOG"
+    } | "${NODE_BIN:-/opt/node/bin/node}" "$NOTIFY_JS" --subject "$ALERT_SUBJECT" || true
+  fi
+  rm -f "$ERR_LOG"
+}
+trap on_exit EXIT
+
 # Serialize with any other update run — the GUI's "Apply now" button
 # (tools/update-control.js) and the routine daily check can otherwise overlap
 # and both step on the same rollback point / npm ci. This is the same guard
@@ -129,6 +158,9 @@ echo "[update] behind=$BEHIND current=${CURRENT:0:7} available=${AVAILABLE:0:7} 
 [ "$BEHIND" -eq 0 ] && { echo "[update] up to date."; exit 0; }
 [ "$AUTO_APPLY" != "1" ] && { echo "[update] update available — AUTO_APPLY off, leaving for the operator."; exit 0; }
 
+ALERT_SUBJECT="Update failed"
+ALERT_TEXT="The engine update was not applied. The site still runs the engine it had."
+
 # A modified code dir makes `git merge --ff-only` abort with git's own wording,
 # which reads like a developer problem rather than "this box stopped updating".
 # Worse, an edit to a file the incoming commit does not touch merges cleanly and
@@ -157,8 +189,12 @@ rollback() {
   write_status
   if healthy; then
     echo "[update] rolled back and healthy at ${CURRENT:0:7}." >&2
+    ALERT_SUBJECT="Update failed and was rolled back"
+    ALERT_TEXT="The engine update failed, so the site was put back on the engine it had (${CURRENT:0:7}). It is up and running again."
   else
     echo "[update] ROLLBACK DID NOT RECOVER THE SERVICE — manual intervention needed." >&2
+    ALERT_SUBJECT="Update failed and the site did not come back"
+    ALERT_TEXT="The engine update failed, and putting the old engine (${CURRENT:0:7}) back did not bring the site up. The site may be down: check the server."
   fi
 }
 

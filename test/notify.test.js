@@ -70,9 +70,13 @@ function smtpSink() {
   });
 }
 
-// The message as a reader sees it: quoted-printable soft breaks and escapes undone.
+// The message as a reader sees it: folded headers unfolded, quoted-printable
+// soft breaks and escapes undone.
 function readable(data) {
-  return data.replace(/=\n/g, "").replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  const cut = data.indexOf("\n\n");
+  const head = data.slice(0, cut).replace(/\n[ \t]+/g, " ");
+  const body = data.slice(cut).replace(/=\n/g, "").replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  return head + body;
 }
 
 function tmp() {
@@ -416,5 +420,124 @@ test("backup.sh: with alerts not set up, or a mail server that refuses, the fail
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+});
+
+// ---- deploy/update.sh: one email per failed check, apply or rollback -------------
+
+const UPDATE_SH = path.join(ROOT, "deploy", "update.sh");
+const gitq = (cwd, ...args) =>
+  require("node:child_process").execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "pipe" });
+
+// origin has two commits; the site's checkout ("engine") sits one behind.
+// systemctl and curl are stubbed (curl decides "healthy"), npm too (NPM_FAIL
+// makes the install fail, which is how an apply goes wrong here).
+function updateSite() {
+  const dir = tmp();
+  const seed = path.join(dir, "seed");
+  fs.mkdirSync(seed);
+  gitq(seed, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  gitq(seed, "add", ".");
+  gitq(seed, "commit", "-q", "-m", "one");
+  fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.1" }));
+  gitq(seed, "commit", "-q", "-am", "two");
+  gitq(dir, "clone", "-q", "--bare", seed, "origin.git");
+  gitq(dir, "clone", "-q", path.join(dir, "origin.git"), "engine");
+  gitq(path.join(dir, "engine"), "reset", "-q", "--hard", "HEAD~1");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "curl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "npm"), '#!/bin/sh\n[ -n "$NPM_FAIL" ] && [ ! -f "$NPM_FAIL" ] && { touch "$NPM_FAIL"; echo "npm ERR! could not resolve" >&2; exit 1; }\nexit 0\n', { mode: 0o755 });
+  return dir;
+}
+
+function runUpdate(dir, port, env = {}) {
+  const base = { ...process.env };
+  for (const k of ["AUTO_APPLY", "REPO_REF", "NODE_BIN", "NPM_BIN", "SERVICE", "FP_USER"]) delete base[k];
+  fs.writeFileSync(path.join(dir, "update.conf"),
+    `AUTO_APPLY=0\nREPO_REF=main\nNODE_BIN=${process.execPath}\nNPM_BIN=${path.join(dir, "bin", "npm")}\n`);
+  return runAsync("bash", [UPDATE_SH], {
+    env: {
+      ...base,
+      PATH: path.join(dir, "bin") + path.delimiter + process.env.PATH,
+      INSTANCE: "alpha",
+      DATA_DIR: dir,
+      ENGINE_DIR: path.join(dir, "engine"),
+      FP_ENV: path.join(dir, "no-such.env"),
+      UPDATE_CONF: path.join(dir, "update.conf"),
+      UPDATE_LOCK: path.join(dir, "update.lock"),
+      UPDATE_STATUS_FILE: path.join(dir, "update-status.json"),
+      NOTIFY_CONFIG: writeConfig(dir, smtpConfig(port)),
+      ...env,
+    },
+  });
+}
+
+test("update.sh: an update that fails and is rolled back sends one email saying so", async () => {
+  const sink = await smtpSink();
+  const dir = updateSite();
+  try {
+    const r = await runUpdate(dir, sink.port, { AUTO_APPLY: "1", NPM_FAIL: path.join(dir, "npm-failed-once") });
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /rolled back and healthy/);
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /^Subject: \[featherspress alpha\] Update failed and was rolled back on /m);
+    assert.match(text, /put back on the engine it had/);
+    assert.match(text, /npm ERR! could not resolve/);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh: an apply refused before it starts sends one email", async () => {
+  const sink = await smtpSink();
+  const dir = updateSite();
+  try {
+    fs.writeFileSync(path.join(dir, "engine", "local-edit.txt"), "x");
+    const r = await runUpdate(dir, sink.port, { AUTO_APPLY: "1" });
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /^Subject: \[featherspress alpha\] Update failed on /m);
+    assert.match(text, /uncommitted local changes/);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh: a check that cannot reach the repository sends one email", async () => {
+  const sink = await smtpSink();
+  const dir = updateSite();
+  try {
+    fs.rmSync(path.join(dir, "origin.git"), { recursive: true, force: true });
+    const r = await runUpdate(dir, sink.port);
+    assert.notStrictEqual(r.status, 0);
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    assert.match(readable(sink.messages[0].data), /^Subject: \[featherspress alpha\] Update check failed on /m);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh: a check that finds an update, or a good apply, sends nothing", async () => {
+  const sink = await smtpSink();
+  const dir = updateSite();
+  try {
+    const check = await runUpdate(dir, sink.port);
+    assert.strictEqual(check.status, 0, check.stderr);
+    const apply = await runUpdate(dir, sink.port, { AUTO_APPLY: "1" });
+    assert.strictEqual(apply.status, 0, apply.stderr);
+    assert.match(apply.stdout, /applied and healthy/);
+    assert.strictEqual(sink.messages.length, 0);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
