@@ -81,8 +81,10 @@ if [ ! -d "$CODE/.git" ]; then
   echo "Cloning $REPO ($REF) into $CODE"
   as_site git clone --quiet --branch "$REF" "$REPO" "$CODE"
 fi
-echo "Installing dependencies"
-as_site npm ci --omit=dev --no-audit --no-fund --loglevel=error --prefix "$CODE"
+if [ ! -d "$CODE/node_modules" ]; then
+  echo "Installing dependencies"
+  as_site npm ci --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error --prefix "$CODE"
+fi
 
 # --- Config (kept if already there) -------------------------------------------
 # write_conf <file> <group> <mode> <sed args...>: fill in deploy/<file>.example.
