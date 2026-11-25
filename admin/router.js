@@ -364,6 +364,13 @@ router.get("/api/backups", (req, res) => {
 router.get("/api/backups/:name", (req, res) => {
   const file = backupFile(backupFolder(), req.params.name);
   if (!file) return res.status(404).json({ error: "No such backup" });
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+  } catch {
+    // Taken before the folder was opened to the site; the next backup run
+    // opens it (deploy/backup.sh).
+    return res.status(403).json({ error: "This backup is not readable by the site yet. The next backup run fixes that." });
+  }
   res.download(file, req.params.name, (err) => {
     if (err && !res.headersSent) res.status(500).json({ error: "Could not read the backup" });
   });

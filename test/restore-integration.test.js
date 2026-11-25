@@ -420,6 +420,23 @@ test("Download refuses anything that is not a listed backup", async () => {
   fs.rmSync(path.join(BACKUPS, "featherspress-full-20261120-002000.tar.gz"));
 });
 
+// A backup taken before the folder was opened to the site is still 0600
+// root:root. Download must say so, not hand the browser an error as a file.
+test("Download of a backup the site cannot read yet is a plain refusal", async () => {
+  const name = "featherspress-full-20261121-002000.tar.gz";
+  const p = path.join(BACKUPS, name);
+  fs.writeFileSync(p, "sealed");
+  fs.chmodSync(p, 0o000);
+  try {
+    const res = await api("GET", "/admin/api/backups/" + name);
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.headers.get("content-disposition"), null, "no download prompt for an error");
+    assert.match((await res.json()).error, /next backup run/);
+  } finally {
+    fs.rmSync(p, { force: true });
+  }
+});
+
 test("the backups list and Download require auth", async () => {
   const saved = cookie;
   cookie = "";
