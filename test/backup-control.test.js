@@ -487,7 +487,7 @@ test("buildStatus carries the restore state", () => {
 });
 
 // ---- The age recipient must survive a migration ---------------------------
-// Found by the bare-box drill: gvm's settings.json carried its ageRecipient,
+// A migrated settings.json carried its ageRecipient,
 // the restored box's backup.env did not, so the migrated box would have started
 // writing PLAINTEXT nightly archives containing the password hash and TOTP
 // secret — silently, because nothing reports it.
@@ -502,7 +502,7 @@ function restoreSettingsEnv(name, existingEnv) {
   return env;
 }
 
-const GVM_RECIPIENT = "age1z7nvtfksch6luzwd0lf2awt54t8qweq0jjntdtd5utam02kthfpqg8nhaj";
+const OLD_BOX_RECIPIENT = "age1z7nvtfksch6luzwd0lf2awt54t8qweq0jjntdtd5utam02kthfpqg8nhaj";
 
 const migrateSettings = (over) => ({
   schemaVersion: 1,
@@ -512,7 +512,7 @@ const migrateSettings = (over) => ({
     keepLast: 14,
     schedule: { preset: "daily", timeOfDay: "00:20", weekday: null },
     sections: ["content", "media", "site", "settings", "credentials"],
-    ageRecipient: GVM_RECIPIENT,
+    ageRecipient: OLD_BOX_RECIPIENT,
     ...over,
   },
 });
@@ -521,7 +521,7 @@ test("a restored settings.json carries its age recipient onto a box that has non
   const env = restoreSettingsEnv("fp-bc-rec-");
   bc.applyRestoredSettings(env, migrateSettings());
   const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
-  assert.match(written, new RegExp(`^AGE_RECIPIENT=${GVM_RECIPIENT}$`, "m"),
+  assert.match(written, new RegExp(`^AGE_RECIPIENT=${OLD_BOX_RECIPIENT}$`, "m"),
     "without this the migrated box backs up credentials in plaintext");
   assert.match(written, /^BACKUP_SCHEDULE_TIME=00:20$/m);
 });
@@ -534,7 +534,7 @@ test("a recipient this box already has is NOT overwritten by the archive's", () 
   const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
   assert.match(written, new RegExp(`^AGE_RECIPIENT=${mine}$`, "m"),
     "rotating it would orphan every backup this box has already taken");
-  assert.doesNotMatch(written, new RegExp(GVM_RECIPIENT));
+  assert.doesNotMatch(written, new RegExp(OLD_BOX_RECIPIENT));
 });
 
 test("a junk age recipient in an archive is refused and reported, not written", () => {

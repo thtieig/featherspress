@@ -9,7 +9,7 @@
 // drop-in, and refreshes `backup-status.json` — which the app reads (read-only)
 // to render the panel. The app never gains a privilege; it can only propose.
 //
-// Design + threat model: docs/superpowers/specs/2026-07-24-backup-admin-ui-design.md
+// Design and threat model: docs/BACKUP-IMPORT-EXPORT.md
 //
 //   node tools/backup-control.js apply    # read+validate+apply a request
 //   node tools/backup-control.js status    # just refresh the status file
