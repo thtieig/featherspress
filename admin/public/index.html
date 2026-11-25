@@ -29,7 +29,7 @@
      input above. It isn't actually first in the form -- restore the normal
      spacing here. */
   #date-field label:first-child { margin-top: 18px; }
-  input[type=text], input[type=datetime-local], select {
+  input[type=text], input[type=datetime-local], input[type=email], input[type=password], input[type=number], select {
     width: 100%; padding: 9px 11px; border: 1px solid var(--rule); border-radius: 6px;
     background: var(--bg-2); color: var(--ink); font-family: var(--sans); font-size: 0.92rem;
   }
@@ -181,6 +181,32 @@
     padding: 10px 14px; margin-bottom: 12px; font-size: 0.88rem; }
   .rs-source button { margin: 0; padding: 4px 10px; font-size: 0.8rem; font-weight: 500; }
 
+  /* Email alerts */
+  .al-intro { color: var(--ink-soft); font-size: 0.92rem; margin: 0 0 14px; max-width: 640px; }
+  .al-state { display: inline-flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 600;
+    padding: 4px 12px; border-radius: 999px; background: var(--bg-2); color: var(--ink-soft); border: 1px solid var(--rule); margin-bottom: 6px; }
+  .al-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint); }
+  .al-state.on { background: #E9F3EC; color: #2E5C3A; border-color: #D5E8DB; }
+  .al-state.on::before { background: #3E8A55; }
+  .al-methods { display: flex; gap: 12px; flex-wrap: wrap; }
+  .al-methods label.al-method { flex: 1 1 240px; display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 12px 14px;
+    border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); color: var(--ink); font-weight: 400; cursor: pointer; }
+  .al-methods label.al-method:has(input:checked) { border-color: var(--accent); background: #FFFBF8; box-shadow: 0 0 0 1px var(--accent) inset; }
+  .al-method input { margin-top: 4px; accent-color: var(--accent); }
+  .al-method b { display: block; font-size: 0.9rem; font-weight: 600; }
+  .al-method small { display: block; color: var(--ink-faint); font-size: 0.78rem; line-height: 1.4; }
+  .al-grid { display: grid; grid-template-columns: 1fr 120px; gap: 0 16px; }
+  .al-grid.two { grid-template-columns: 1fr 1fr; }
+  .al-grid label { margin-top: 18px; }
+  .al-tip { margin-top: 16px; background: var(--bg-2); border-left: 3px solid var(--accent); border-radius: 6px;
+    padding: 10px 14px; font-size: 0.84rem; color: var(--ink-soft); max-width: 640px; }
+  .al-tip b { color: var(--ink); }
+  .al-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 22px; }
+  .al-actions button { margin: 0; }
+  .al-actions .spacer { flex: 1; }
+  #al-msg.status { max-width: 640px; overflow-wrap: anywhere; }
+  @media (max-width: 560px) { .al-grid, .al-grid.two { grid-template-columns: 1fr; } }
+
   /* Confirm modal */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal { background: var(--bg); border-radius: 10px; padding: 24px; max-width: 440px; width: 90%; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
@@ -215,6 +241,7 @@
   <div class="tab" data-tab="media">Media</div>
   <div class="tab" data-tab="tags">Tags</div>
   <div class="tab" data-tab="backups">Backup &amp; Restore</div>
+  <div class="tab" data-tab="alerts">Email alerts</div>
 </div>
 
 <main>
@@ -436,6 +463,62 @@
     <div class="actions"><button id="rs-go" disabled>Restore</button></div>
     <div id="rs-msg" class="hint" style="margin-top:10px;"></div>
   </section>
+
+  <!-- EMAIL ALERTS: saved by the app as notify.json; the root scripts send
+       through tools/notify.js when a backup, an update or a restore fails. -->
+  <section id="view-alerts" hidden>
+    <h3 style="margin-top:0;">Email alerts</h3>
+    <p class="al-intro">
+      Get an email when something goes wrong: a backup that fails or cannot make its off-box copy,
+      an update that fails or is rolled back, or a restore that does not work.
+      Nothing is sent while all is well.
+    </p>
+    <div id="al-state" class="al-state">Loading…</div>
+
+    <label for="al-to">Send alerts to</label>
+    <input type="email" id="al-to" placeholder="you@example.com" autocomplete="email">
+
+    <label>Send them using</label>
+    <div class="al-methods">
+      <label class="al-method"><input type="radio" name="al-method" value="smtp" checked>
+        <span><b>An email account (SMTP)</b><small>Gmail, Outlook, Fastmail or your own provider</small></span></label>
+      <label class="al-method" id="al-sendmail-wrap" hidden><input type="radio" name="al-method" value="sendmail">
+        <span><b>This server&rsquo;s own mail</b><small>Hands the email to the mail software installed here (sendmail)</small></span></label>
+    </div>
+
+    <div id="al-smtp">
+      <div class="al-grid">
+        <div><label for="al-host">Mail server</label><input type="text" id="al-host" placeholder="smtp.gmail.com" autocomplete="off" spellcheck="false"></div>
+        <div><label for="al-port">Port</label><input type="number" id="al-port" min="1" max="65535" value="587"></div>
+      </div>
+      <label for="al-security">Security</label>
+      <select id="al-security">
+        <option value="starttls">STARTTLS (usually port 587)</option>
+        <option value="tls">SSL/TLS (usually port 465)</option>
+        <option value="none">None (only for a mail server on this machine or network)</option>
+      </select>
+      <div class="al-grid two">
+        <div><label for="al-user">Username</label><input type="text" id="al-user" placeholder="you@gmail.com" autocomplete="off" spellcheck="false"></div>
+        <div><label for="al-pass">Password</label><input type="password" id="al-pass" autocomplete="new-password"></div>
+      </div>
+      <div class="al-tip">
+        <b>Using Gmail?</b> Mail server <b>smtp.gmail.com</b>, port <b>587</b>, STARTTLS, your Gmail address as the
+        username, and an <b>app password</b> as the password: create one in your Google Account under
+        Security, 2-Step Verification, App passwords. Your normal Gmail password will not work.
+      </div>
+    </div>
+
+    <label for="al-from">From address <span class="hint">optional; if empty, the username is used when it is an email address</span></label>
+    <input type="email" id="al-from" placeholder="alerts@example.com">
+
+    <div class="al-actions">
+      <button id="al-save">Save</button>
+      <button class="secondary" id="al-test">Send test email</button>
+      <span class="spacer"></span>
+      <button class="secondary" id="al-off" hidden>Turn off alerts</button>
+    </div>
+    <div id="al-msg"></div>
+  </section>
 </main>
 
 <script src="/admin/vendor/toastui-editor.bundle.js"></script>
@@ -585,6 +668,7 @@
     el('view-media').hidden = name !== 'media';
     el('view-tags').hidden = name !== 'tags';
     el('view-backups').hidden = name !== 'backups';
+    el('view-alerts').hidden = name !== 'alerts';
   }
 
   document.querySelectorAll('.tab').forEach(function (t) {
@@ -595,6 +679,7 @@
       if (t.dataset.tab === 'media') loadMedia();
       if (t.dataset.tab === 'tags') loadTagAudit();
       if (t.dataset.tab === 'backups') loadBackups();
+      if (t.dataset.tab === 'alerts') loadAlerts();
     });
   });
 
@@ -1758,6 +1843,104 @@
       el('update-apply-btn').disabled = false;
       el('update-banner-text').textContent = 'Could not queue the update: ' + e.message;
     });
+  });
+
+  // ---- Email alerts --------------------------------------------------------
+  // The password never comes back from the server: the field stays empty,
+  // says when one is saved, and an empty field on save keeps it.
+  function alMethod() {
+    var r = document.querySelector('input[name=al-method]:checked');
+    return r ? r.value : 'smtp';
+  }
+  function alShowMethod() { el('al-smtp').hidden = alMethod() !== 'smtp'; }
+  function alMsg(text, kind) {
+    el('al-msg').className = text ? 'status ' + kind : '';
+    el('al-msg').textContent = text || '';
+  }
+  function alBusy(busy) { ['al-save', 'al-test', 'al-off'].forEach(function (id) { el(id).disabled = busy; }); }
+
+  function renderAlerts(s) {
+    el('al-sendmail-wrap').hidden = !s.sendmailAvailable && s.method !== 'sendmail';
+    el('al-state').className = 'al-state' + (s.configured ? ' on' : '');
+    el('al-state').textContent = s.configured ? 'On \u00b7 alerts go to ' + s.to : 'Off \u00b7 no alerts are sent yet';
+    el('al-off').hidden = !s.configured;
+    var m = s.configured ? s.method : (s.sendmailAvailable ? alMethod() : 'smtp');
+    document.querySelectorAll('input[name=al-method]').forEach(function (r) { r.checked = r.value === m; });
+    if (s.configured) {
+      el('al-to').value = s.to || '';
+      el('al-from').value = s.from || '';
+      if (s.smtp) {
+        el('al-host').value = s.smtp.host || '';
+        el('al-port').value = s.smtp.port || '';
+        el('al-security').value = s.smtp.security || 'starttls';
+        el('al-user').value = s.smtp.user || '';
+      }
+    }
+    el('al-pass').value = '';
+    el('al-pass').placeholder = s.smtp && s.smtp.passSaved ? 'Saved \u00b7 leave empty to keep it' : '';
+    alShowMethod();
+    if (s.problem) alMsg('The saved settings could not be used (' + s.problem + '). Fill them in and save again.', 'err');
+  }
+
+  function loadAlerts() {
+    alMsg('');
+    return fetch('/admin/api/notify').then(function (r) { return r.json(); }).then(renderAlerts)
+      .catch(function (e) { alMsg('Could not load the email alert settings: ' + e.message, 'err'); });
+  }
+
+  function alForm() {
+    return {
+      to: el('al-to').value, from: el('al-from').value, method: alMethod(),
+      smtp: { host: el('al-host').value, port: el('al-port').value, security: el('al-security').value,
+              user: el('al-user').value, pass: el('al-pass').value },
+    };
+  }
+
+  function alPost(url, pending) {
+    alBusy(true);
+    alMsg(pending, 'pending');
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alForm()) })
+      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+      .then(function (res) {
+        alBusy(false);
+        if (!res.ok) { alMsg(res.body.error || 'Not saved.', 'err'); return null; }
+        return fetch('/admin/api/notify').then(function (r) { return r.json(); }).then(function (s) { renderAlerts(s); return res.body; });
+      })
+      .catch(function (e) { alBusy(false); alMsg('Something went wrong: ' + e.message, 'err'); return null; });
+  }
+
+  document.querySelectorAll('input[name=al-method]').forEach(function (r) { r.addEventListener('change', alShowMethod); });
+
+  // The usual port follows the security choice, unless a custom one was typed.
+  el('al-security').addEventListener('change', function () {
+    var usual = { starttls: '587', tls: '465', none: '25' };
+    if (['', '25', '465', '587'].indexOf(el('al-port').value) >= 0) el('al-port').value = usual[el('al-security').value];
+  });
+
+  el('al-save').addEventListener('click', function () {
+    alPost('/admin/api/notify', 'Saving\u2026').then(function (b) {
+      if (b) alMsg('Saved. If something fails, an email goes to ' + el('al-to').value + '.', 'ok');
+    });
+  });
+
+  el('al-test').addEventListener('click', function () {
+    alPost('/admin/api/notify-test', 'Saving and sending a test email\u2026 this can take up to 20 seconds.').then(function (b) {
+      if (!b) return;
+      if (b.sent) alMsg('Saved, and a test email is on its way to ' + b.to + '. Check your inbox (and the spam folder).', 'ok');
+      else alMsg('Saved, but the test email could not be sent: ' + b.error, 'err');
+    });
+  });
+
+  el('al-off').addEventListener('click', function () {
+    if (!window.confirm('Turn off email alerts? Failures will then only show here in /admin.')) return;
+    alBusy(true);
+    fetch('/admin/api/notify', { method: 'DELETE' }).then(function () {
+      alBusy(false);
+      ['al-to', 'al-from', 'al-host', 'al-user', 'al-pass'].forEach(function (id) { el(id).value = ''; });
+      el('al-port').value = '587';
+      el('al-security').value = 'starttls';
+      loadAlerts().then(function () { alMsg('Email alerts are off.', 'ok'); });
+    }).catch(function (e) { alBusy(false); alMsg('Could not turn them off: ' + e.message, 'err'); });
   });
 
   loadMeta();
