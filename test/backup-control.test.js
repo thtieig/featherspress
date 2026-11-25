@@ -749,3 +749,16 @@ test("the generated key actually round-trips a backup", () => {
   const out = execFileSync("age", ["-d", "-i", "-", enc], { input: identity, encoding: "utf8" });
   assert.strictEqual(out, "a backup artifact");
 });
+
+test("the agent defaults NODE_BIN to the Node running it, overridable by NODE_BIN", () => {
+  const saved = process.env.NODE_BIN;
+  try {
+    delete process.env.NODE_BIN;
+    assert.strictEqual(bc.envFromProcess().NODE_BIN, process.execPath);
+    process.env.NODE_BIN = "/usr/bin/node";
+    assert.strictEqual(bc.envFromProcess().NODE_BIN, "/usr/bin/node");
+  } finally {
+    if (saved === undefined) delete process.env.NODE_BIN;
+    else process.env.NODE_BIN = saved;
+  }
+});

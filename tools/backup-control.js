@@ -794,7 +794,7 @@ function envFromProcess() {
     FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
     ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
     SERVICE: process.env.SERVICE || "featherspress",
-    NODE_BIN: process.env.NODE_BIN || "/opt/node/bin/node",
+    NODE_BIN: process.env.NODE_BIN || process.execPath,
     BACKUP_REQUEST: process.env.BACKUP_REQUEST || "/var/lib/featherspress/backup-request.json",
     BACKUP_STATUS: process.env.BACKUP_STATUS || "/var/lib/featherspress/backup-status.json",
     LAST_RUN_FILE: process.env.LAST_RUN_FILE || "/var/lib/featherspress/backup-last-run.json",
@@ -836,4 +836,5 @@ module.exports = {
   restoreRequest,
   applyRestoredSettings,
   siteHealthy,
+  envFromProcess,
 };
