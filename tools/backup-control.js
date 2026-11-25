@@ -181,7 +181,7 @@ function assertEnvSafe(name, value) {
   }
 }
 
-// Render /etc/featherspress/backup.env from a validated config, preserving the
+// Render /etc/featherspress/<name>/backup.env from a validated config, preserving the
 // operator-set, non-UI fields (encryption key, node path, engine dir).
 function renderBackupEnv(config, prev) {
   assertEnvSafe("destType", config.destType);

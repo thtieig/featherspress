@@ -38,10 +38,11 @@ part of the package (recover it from git), and `featherspress.env` is disposable
 ## Running the tool on a server
 
 Two things bite every hand-run of `export`/`import` on a box built per
-[DEPLOY.md](DEPLOY.md), so they are folded into every command below:
+[DEPLOY.md](DEPLOY.md), so they are folded into every command below. The
+examples use a site (instance) called `blog`; use your own site's name.
 
 1. **`npm` is not on `sudo`'s PATH** (Node lives under `/opt/node`), so
-   `sudo -u featherspress npm run …` fails with `sudo: npm: command not found`.
+   `sudo -u fp-blog npm run …` fails with `sudo: npm: command not found`.
    Call the script with the absolute node path instead.
 2. **The tool needs your deployment's config.** With no env it falls back to the
    bundled `example-site/` inside the code dir — and since the app user owns that
@@ -51,8 +52,8 @@ Two things bite every hand-run of `export`/`import` on a box built per
    write into the engine dir, but pass the flag and don't rely on the guard.)
 
 ```sh
-FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
-ENVF="--env-file /etc/featherspress/featherspress.env"
+FP="sudo -u fp-blog /opt/node/bin/node /opt/featherspress/blog/tools/site-package.js"
+ENVF="--env-file /etc/featherspress/blog/featherspress.env"
 ```
 
 `import` prints the resolved content/media/skin/favicon/auth paths before it
@@ -95,24 +96,28 @@ $FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
 - **`--restore-auth`** is required to overwrite `auth-config.json` — a routine
   content import can never clobber your working 2FA.
 - After a content change the running site hot-reloads; after an import, restart
-  the service if you changed the skin/manifest: `sudo systemctl restart featherspress`.
+  the service if you changed the skin/manifest: `sudo systemctl restart featherspress@blog`.
 
 ## Scheduled off-box backups
 
-`deploy/backup.sh` (run by `featherspress-backup.timer` as root) exports the
-`full` profile, optionally encrypts it, ships it, and prunes to keep-last-N.
+`deploy/backup.sh` (run as root by each site's `featherspress-backup@<name>.timer`)
+exports the `full` profile, optionally encrypts it, ships it, and prunes to
+keep-last-N. `deploy/add-instance.sh` sets all of this up: nightly at 00:20 to
+`/var/backups/featherspress/<name>`, keeping 14. Its settings live in
+`/etc/featherspress/<name>/backup.env`, which **/admin → Backup & Restore**
+manages for you.
 
 ```sh
-sudo cp /opt/featherspress/deploy/backup.env.example /etc/featherspress/backup.env
-sudo nano /etc/featherspress/backup.env          # DEST_TYPE, destination, KEEP_LAST, AGE_RECIPIENT
-sudo cp /opt/featherspress/deploy/featherspress-backup.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now featherspress-backup.timer
-sudo systemctl start featherspress-backup.service    # run one now to test
+systemctl list-timers 'featherspress-backup@*'
+sudo systemctl start featherspress-backup@blog.service    # run one now to test
+journalctl -u featherspress-backup@blog.service -n 20
 ```
 
 ### Destinations
-- `local` — a local/mounted path. Encryption is optional *only* because the
+- `local` — a folder on this server, inside the site's own
+  `/var/backups/featherspress/<name>` (the root agent refuses anything else, so
+  one site can never write into, or prune, another site's backups). Mount a
+  disk there if you want them elsewhere. Encryption is optional *only* because the
   artifact never leaves the machine — **not** because it is harmless. Every
   backup is a `full` export, so an unencrypted one is your password hash and
   your TOTP secret sitting in a file. `backup.sh` keeps `LOCAL_DIR` at `0700`
@@ -120,7 +125,8 @@ sudo systemctl start featherspress-backup.service    # run one now to test
   at a mount shared with anything else, set `AGE_RECIPIENT` and encrypt it too.
 - `rclone` — any [rclone](https://rclone.org) remote: **S3**, **Dropbox**, or
   **SFTP over ssh**. Configure once with `rclone config`. Encryption is
-  **mandatory** here.
+  **mandatory** here. Give every site its own remote path (say
+  `featherspress/<name>`): old backups at that path are pruned to `KEEP_LAST`.
 
   Install rclone from the official script, not the distro package — Debian 12
   ships 1.60, too old for some remotes and for `rclone serve s3` if you want to
@@ -176,14 +182,14 @@ age -d -i key.txt featherspress-full-<ts>.tar.gz.age > restore.tar.gz
 scp restore.tar.gz root@yourbox:/tmp/
 
 # 2. on the box:
-sudo chown featherspress:featherspress /tmp/restore.tar.gz
-FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
-$FP import --env-file /etc/featherspress/featherspress.env \
+sudo chown fp-blog:fp-blog /tmp/restore.tar.gz
+FP="sudo -u fp-blog /opt/node/bin/node /opt/featherspress/blog/tools/site-package.js"
+$FP import --env-file /etc/featherspress/blog/featherspress.env \
    /tmp/restore.tar.gz --force --restore-auth
 #    ^ check the "restoring into:" paths it prints before it proceeds
 
 # 3. the service caches the manifest, skin and post index at boot:
-sudo systemctl restart featherspress
+sudo systemctl restart featherspress@blog
 sudo rm -f /tmp/restore.tar.gz          # it contains your credentials
 ```
 
@@ -192,10 +198,11 @@ with `featherspress ok` and still returns `200` on `/` (an empty blog with the
 default skin), so neither of those proves anything. Check real content:
 
 ```sh
-curl -s localhost:8787/ | grep -o '<title>[^<]*</title>'   # your title, not the fallback
-curl -so /dev/null -w '%{http_code}\n' localhost:8787/<a-known-post-slug>/
-sudo ls /var/lib/featherspress/content/posts | wc -l       # the count you expect
-sudo stat -c '%a %U:%G' /var/lib/featherspress/auth-config.json   # 600 featherspress
+PORT=8801   # this site's port, from /etc/featherspress/blog/featherspress.env
+curl -s localhost:$PORT/ | grep -o '<title>[^<]*</title>'   # your title, not the fallback
+curl -so /dev/null -w '%{http_code}\n' localhost:$PORT/<a-known-post-slug>/
+sudo ls /var/lib/featherspress/blog/content/posts | wc -l       # the count you expect
+sudo stat -c '%a %U:%G' /var/lib/featherspress/blog/auth-config.json   # 600 fp-blog:fp-blog
 ```
 
 ### Retention
@@ -211,22 +218,33 @@ silently ignores an `OnFailure=` naming a unit that is not installed (it logs
 the config reads as though failures are covered when they are not.
 
 A silent backup failure means no backup on the day you need one, so wire this
-up: uncomment the line in `deploy/featherspress-backup.service` (and
-`…-update.service`), point it at your own notifier — email, ntfy, whatever you
-already use for systemd alerts — and then **prove it fires** by forcing a
-failure:
+up for every site at once with a drop-in (the unit files themselves are
+rewritten by `add-instance.sh`), pointed at your own notifier — email, ntfy,
+whatever you already use for systemd alerts:
 
 ```sh
-sudo RCLONE_REMOTE=nosuchremote: systemctl start featherspress-backup.service
-systemctl is-failed featherspress-backup.service     # expect: failed
+for u in featherspress-backup@ featherspress-update@; do
+  sudo mkdir -p /etc/systemd/system/$u.service.d
+  printf '[Unit]\nOnFailure=status-email@%%n.service\n' |
+    sudo tee /etc/systemd/system/$u.service.d/notify.conf
+done
+sudo systemctl daemon-reload
+```
+
+Then **prove it fires** by forcing a failure:
+
+```sh
+# point RCLONE_REMOTE in /etc/featherspress/blog/backup.env at a bad name, then:
+sudo systemctl start featherspress-backup@blog.service
+systemctl is-failed featherspress-backup@blog.service     # expect: failed
 ```
 
 Until then, check on it by hand:
 
 ```sh
-systemctl is-failed featherspress-backup.service
-systemctl list-timers featherspress-backup.timer
-journalctl -u featherspress-backup.service --since -7d | grep -iE 'refus|error'
+systemctl is-failed 'featherspress-backup@*'
+systemctl list-timers 'featherspress-backup@*'
+journalctl -u 'featherspress-backup@*' --since -7d | grep -iE 'refus|error'
 ```
 
 ## If your media ever gets large
@@ -241,8 +259,8 @@ then, keep it simple.
 You no longer need SSH for a normal restore. In **Backup & Restore**:
 
 1. **Export** an archive from the old site ("Migrate this site" = everything).
-2. On the new box, install Featherspress and run `node setup.js` so you have a
-   login, then sign in to `/admin`.
+2. On the new box, add the site and create a login (steps 3 and 4 of
+   [DEPLOY.md](DEPLOY.md)), then sign in to `/admin`.
 3. **Restore**: choose the file, paste your age private key if it is `.age`,
    tick the sections to bring back, type `RESTORE` to confirm.
 
@@ -261,10 +279,11 @@ Two things to expect:
 
 Selective restore is available from the CLI too:
 
-    npm run import -- <artifact> --force --sections content,media \
-      --env-file /etc/featherspress/featherspress.env
+    $FP import $ENVF <artifact> --force --sections content,media
 
-Omitting `--sections` restores everything the archive carries, as before.
+Omitting `--sections` restores everything the archive carries, as before. The
+step-by-step checklist for rebuilding a whole site on a new server is
+[Rebuild a site from a backup](DEPLOY.md#rebuild-a-site-from-a-backup).
 
 ### Choosing what the scheduled backup captures
 

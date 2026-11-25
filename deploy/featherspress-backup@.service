@@ -5,8 +5,9 @@ Description=Featherspress data backup for %i (Site Package, full profile)
 # just logs "Failed to enqueue OnFailure= job" and every failure passes in
 # silence. An OnFailure= pointing at nothing reads like failures are covered.
 #
-# Uncomment once you have a handler (email/ntfy/…), and TEST it by forcing a
-# failure: point RCLONE_REMOTE at a bad name and `systemctl start` this unit.
+# Once you have a handler (email/ntfy/…), add this line through a drop-in, so
+# re-installing the templates does not drop it (docs/BACKUP-IMPORT-EXPORT.md,
+# "Failure notifications"), and TEST it by forcing a failure.
 #OnFailure=status-email@%n.service
 #
 # Until then, check on it yourself:

@@ -1,446 +1,243 @@
 # Deploying Featherspress
 
-> **This is one example way to self-host**, using a common **Apache + systemd**
-> stack on a single Linux box. Nothing here is required: the engine is just a
-> Node process listening on localhost, so any reverse proxy (nginx, Caddy,
-> Traefik), any process manager, and any host (a container, a PaaS, your laptop)
-> work just as well. Adapt the paths, user, and proxy to your setup.
+> **This is one example way to self-host**: Apache + systemd on a Debian box.
+> The engine is just a Node process on localhost, so any reverse proxy and any
+> process manager work too. Adapt as you like.
 
-Featherspress is a single Node process that renders the blog on request (no
-build step) and also serves `/admin`. In production it sits behind a reverse
-proxy (Apache examples below) that serves `/media` straight off disk and proxies
-everything else to the engine on localhost.
+Every site on a server is a **named instance**, even when there is only one.
+Each instance has its own code checkout, data, config, port, system user and
+systemd units, so several sites can share one server without touching each
+other. The only shared pieces are the Node runtime in `/opt/node` and Apache.
+Adding a site is: pick a name, a port and a domain, run one script.
 
-This is a **clean, isolated** setup: an unpacked Node runtime under `/opt/node`
-(no distro Node packages), a dedicated non-root service user, and
-content + media + secrets in a data dir **outside** the code. Nothing compiles
-(all deps are pure JS), so there is no `build-essential` / `node-gyp` step.
+## The layout
 
-## Layout on the server
+For an instance called `<name>`:
 
 ```
-/opt/node                     Node LTS runtime (symlink to the unpacked tarball)
-/opt/featherspress            Engine CODE only (a git checkout; updatable)
-/var/lib/featherspress/       DATA (treat like a database, and back it up):
-    content/  posts/*.md, pages/*.md
-    media/    uploaded images/attachments (served at /media/)
-    site.json your site's manifest (identity, skin, nav, home mode)
-    skins/    your per-site custom skin(s), if any
-    favicon/  your per-site icons, if any
-    auth-config.json          password hash + TOTP secret + recovery hashes
-    update-status.json        written by the update timer; read by the admin UI
-/etc/featherspress/featherspress.env       runtime config (paths, port, secret)
-/etc/systemd/system/featherspress.service
+/opt/node                              Node runtime, shared by every site
+/opt/featherspress/<name>/             the site's own git checkout (code only)
+/var/lib/featherspress/<name>/         its DATA, treat it like a database:
+    site.json  content/  media/  skins/  favicon/
+    auth-config.json                   password hash + 2FA secret
+    *-status.json, *-request.json      how /admin talks to the root agents
+/etc/featherspress/<name>/
+    featherspress.env                  PORT, SESSION_SECRET, SITE_PACKAGE
+    backup.env                         backup destination, retention, key
+    update.conf                        AUTO_APPLY, REPO_REF
+/var/backups/featherspress/<name>/     nightly backups (the default destination)
+user fp-<name>                         runs the site; owns its code and data
+featherspress@<name>.service           the site
+featherspress-backup@<name>.timer      nightly backup
+featherspress-update@<name>.timer      nightly update check
+featherspress-{backup,update}-control@<name>.{path,timer}
+                                       the root agents behind /admin's
+                                       Backup, Restore and Apply now buttons
+/etc/apache2/sites-available/featherspress-<name>.conf
 ```
 
-## Requirements
+The unit files in `deploy/` are systemd templates (`featherspress@.service`
+and friends); `%i` is the instance name.
 
-- A reverse proxy. For Apache: `mod_proxy`, `mod_proxy_http`, `mod_headers`,
-  `mod_rewrite`, `mod_ssl`.
-- A TLS certificate for your domain (e.g. Let's Encrypt / certbot).
-- No system Node needed, since you install your own under `/opt`.
-
-## 0. Packages
-
-A minimal cloud image has none of these. `git` is not optional: the update
-timer needs a real checkout, not an unpacked tarball.
+## 1. Packages
 
 ```sh
 sudo apt update
-sudo apt install -y git curl ca-certificates xz-utils apache2
-# only if you will use the backup timer (see BACKUP-IMPORT-EXPORT.md):
-sudo apt install -y age            # and rclone, for off-box destinations
+sudo apt install -y git curl ca-certificates xz-utils openssl sudo apache2 age
 ```
 
-## 1. Service user + directories
+`git` is needed for updates, `age` for encrypted backups. For off-box backups
+you will also want rclone (see [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md)).
+
+## 2. Node (once per server)
+
+Get a copy of the repo anywhere, and install Node from it:
 
 ```sh
-sudo useradd --system --home /var/lib/featherspress --shell /usr/sbin/nologin featherspress
-sudo mkdir -p /opt/featherspress /var/lib/featherspress/content /var/lib/featherspress/media /etc/featherspress
-sudo chown -R featherspress:featherspress /var/lib/featherspress
-# Step 3 clones into /opt/featherspress AS the featherspress user, so that dir
-# has to be writable by it — otherwise the clone dies on ".git: Permission denied".
-sudo chown featherspress:featherspress /opt/featherspress
+sudo git clone https://github.com/thtieig/featherspress.git /root/featherspress
+sudo /root/featherspress/tools/install-node.sh /opt/node
 ```
 
-## 2. Isolated Node runtime
+It installs the newest release of the major version in `.nvmrc`, checked
+against nodejs.org's checksums. Run it again later to move to a newer release,
+then `sudo systemctl restart 'featherspress@*'`.
 
-Pick the current LTS from <https://nodejs.org/dist/>:
-
-```sh
-NODE_VER=v24.18.0            # check the site for the latest LTS
-cd /tmp
-curl -fsSLO https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz
-sudo tar -xJf node-$NODE_VER-linux-x64.tar.xz -C /opt
-sudo ln -sfn /opt/node-$NODE_VER-linux-x64 /opt/node
-/opt/node/bin/node -v
-```
-
-To upgrade Node later, once the engine is checked out (step 3): `sudo
-/opt/featherspress/tools/install-node.sh /opt/node` installs the latest release
-of the major in `.nvmrc`, checksum-verified, then `sudo systemctl restart
-featherspress`.
-
-## 3. Ship the engine code (a git checkout)
-
-Deploy the code as a **git clone** (this is what lets the update timer in
-"Updates" below fast-forward it). Content/media/auth are gitignored, so the
-checkout never collides with your data in `/var/lib/featherspress`.
+## 3. Add a site
 
 ```sh
-sudo -u featherspress git clone https://github.com/you/featherspress.git /opt/featherspress
-cd /opt/featherspress
-sudo -u featherspress env PATH=/opt/node/bin:$PATH npm ci --omit=dev
-sudo chown -R featherspress:featherspress /opt/featherspress
-```
-
-(`npm`'s shebang is `#!/usr/bin/env node`, so it needs `/opt/node/bin` on `PATH`
-to find `node` — calling `node` directly, as elsewhere in this doc, doesn't
-have this problem since there's no shebang involved.)
-
-**Migrating an existing `git archive` install** (a code dir with no `.git`):
-clone fresh alongside it, verify, then swap — and **pin the currently-deployed
-commit first** so you don't silently jump to the tip of `main`:
-
-```sh
-DEPLOYED=<the commit sha you last shipped>     # from your release notes / CI
-sudo -u featherspress git clone https://github.com/you/featherspress.git /opt/featherspress.new
-cd /opt/featherspress.new
-sudo -u featherspress git reset --hard "$DEPLOYED"    # match what's live, don't leap ahead
-sudo -u featherspress env PATH=/opt/node/bin:$PATH npm ci --omit=dev
-sudo chown -R featherspress:featherspress /opt/featherspress.new
-# verify it boots (temp port), then swap and restart once:
-sudo mv /opt/featherspress /opt/featherspress.old && sudo mv /opt/featherspress.new /opt/featherspress
-sudo systemctl restart featherspress
-```
-
-## 4. Runtime config
-
-```sh
-sudo cp /opt/featherspress/deploy/featherspress.env.example /etc/featherspress/featherspress.env
-sudo nano /etc/featherspress/featherspress.env
-#   - set a real SESSION_SECRET:  openssl rand -hex 32
-#   - confirm PORT (default 8787) matches the ProxyPass in the vhost
-#   - set SITE_URL to your real origin (http://… if you are not terminating TLS here)
-sudo chown root:featherspress /etc/featherspress/featherspress.env
-sudo chmod 640 /etc/featherspress/featherspress.env
-```
-
-> **Quote any value containing a space** (`SITE_TITLE="My Blog"`). systemd reads
-> this file literally, but `backup.sh` and `update.sh` `source` it with a shell,
-> which would read a bare `SITE_TITLE=My Blog` as the assignment `SITE_TITLE=My`
-> followed by the command `Blog` — and abort before doing any work.
-
-## 5. Put your content in place
-
-Your **Site Package** is the content. The engine ships the tool that installs
-one — use it rather than copying directories by hand, so the package is
-validated (renderable skin, no path escapes) and your icons and custom skin land
-where the runtime looks for them:
-
-```sh
-cd /opt/featherspress
-sudo -u featherspress env $(grep -E '^(CONTENT_DIR|MEDIA_DIR|AUTH_CONFIG|FAVICON_DIR)=' \
-  /etc/featherspress/featherspress.env | xargs) \
-  /opt/node/bin/node tools/site-package.js import /path/to/package --force
-sudo chown -R featherspress:featherspress /var/lib/featherspress
-```
-
-`import` takes either a directory (raw converter output) or a `.tar.gz`. Coming
-from WordPress? Build a package first; see
-[MIGRATING-FROM-WORDPRESS.md](MIGRATING-FROM-WORDPRESS.md). The alternative is
-to point `SITE_PACKAGE=/path/to/package` at a package and skip the data dir
-entirely. Full details in [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
-
-If your package carries a `favicon/`, keep `FAVICON_DIR` set (step 4): `import`
-writes the icons into the data dir, but the engine only *serves* them when
-pointed there — otherwise you silently get the bundled placeholder icons.
-
-`site.json` carries the site identity (title, tagline, nav, which skin, home
-mode, `postsPath`). Set it once here; it is not edited from the admin UI.
-
-## 6. Password + 2FA
-
-```sh
-cd /opt/featherspress
-sudo -i                                            # the env file is root-readable only
-set -a; . /etc/featherspress/featherspress.env; set +a
-sudo -u featherspress --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js
-```
-
-Scan the QR with an authenticator app and **save the recovery codes** (shown
-once). Enroll a second device too if you can.
-
-`setup.js` reads the password from stdin, so an unattended build can pipe it —
-but everything you must keep (TOTP secret, recovery codes) is only ever printed
-to the terminal, so capture that output:
-
-```sh
-printf '%s\n' "$ADMIN_PASSWORD" | sudo -u featherspress \
-  --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js | tee /root/setup-output.txt
-```
-
-`auth-config.json` holds your password hash and your **TOTP secret in
-cleartext**. Check it is not group/world-readable, and tighten it if it is:
-
-```sh
-sudo chmod 600 /var/lib/featherspress/auth-config.json
-```
-
-## 7. Start the service (still private, on 127.0.0.1)
-
-```sh
-sudo cp /opt/featherspress/deploy/featherspress.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now featherspress
-sudo systemctl status featherspress          # "active (running)"
-```
-
-It binds to `127.0.0.1:8787` only, so it is not yet reachable from the internet.
-
-## 8. Verify before exposing it (via localhost)
-
-```sh
-for p in /healthz / /posts/ /favicon.ico; do
-  curl -s -o /dev/null -w "%{http_code}  $p\n" http://127.0.0.1:8787$p
-done
-curl -s "http://127.0.0.1:8787/search?q=hello" | head -c 120; echo
-```
-
-All should be `200` (search returns JSON — `[]` is a fine answer if nothing
-matches). Also fetch one real post and one real tag page from your own content,
-not just the index pages: a missing custom skin or a bad `site.json` shows up
-there first. Fix anything here before exposing the box.
-
-## 9. Put a reverse proxy in front (Apache example)
-
-The `deploy/apache/` vhosts are templates: replace `example.com`, point the
-cert paths at your certificate, and merge any custom directives your existing
-vhost has (logging, headers, IP rules).
-
-**Terminating TLS on this box** (the usual case) — the `:80` vhost redirects to
-`:443`, and the `-le-ssl` vhost does the proxying:
-
-```sh
-sudo a2enmod proxy proxy_http headers rewrite
-sudo cp /opt/featherspress/deploy/apache/featherspress.conf        /etc/apache2/sites-available/
-sudo cp /opt/featherspress/deploy/apache/featherspress-le-ssl.conf /etc/apache2/sites-available/
-sudo a2ensite featherspress featherspress-le-ssl
-sudo apache2ctl configtest        # "Syntax OK"
-sudo systemctl reload apache2
-```
-
-**TLS terminated in front of you** (Cloudflare, a load balancer, a tunnel), or a
-box that has no certificate yet — use the plain-HTTP vhost instead, which
-carries the same proxy and `/media` config on `:80`:
-
-```sh
-sudo a2enmod proxy proxy_http headers rewrite
-sudo cp /opt/featherspress/deploy/apache/featherspress-http.conf /etc/apache2/sites-available/
-sudo a2dissite 000-default
-sudo a2ensite featherspress-http
+sudo /root/featherspress/deploy/add-instance.sh blog blog.example.org 8801
 sudo apache2ctl configtest && sudo systemctl reload apache2
 ```
 
-Then verify live: the home page, a real post, a tag page, `/posts/`, an image
-under `/media/`, and `/admin` (sign in, create a test draft, preview, publish,
-delete it). A `Cache-Control: public, max-age=…` header on a `/media` file
-confirms Apache served it off disk instead of proxying it to Node.
+Name, domain, port: the name is lowercase letters, digits and dashes (24 at
+most); give every site its own port. Two optional extra arguments pick the
+repo and the branch (default: this repo, `main`).
 
-## 10. The backup / restore agent
+The script creates the user, the directories, a fresh clone with its
+dependencies, the three config files (with a new random `SESSION_SECRET`), and
+the Apache vhost, then starts the site and all its timers. It refuses a port or
+domain another instance already uses. Running it again is safe: it keeps the
+existing checkout, config and login. `RELOAD_APACHE=1` makes it reload Apache
+for you.
 
-**Install this if you want the `/admin` → *Backup & Restore* panel to work at
-all** — including restoring an archive onto this box. The app runs unprivileged:
-it can neither edit `/etc` nor restart itself, so it only ever *writes a request
-file* into the data dir. A root systemd unit reads that request, decides whether
-to honour it, and does the work. Without these units nothing reads the requests,
-the panel reports "Backups are not configured on this server yet", and a Restore
-would never be applied.
+## 4. Admin login, or restore
 
-```sh
-sudo cp /opt/featherspress/deploy/featherspress-backup-control.{path,service,timer} \
-        /etc/systemd/system/
-# If your Node is not at /opt/node (e.g. a distro package at /usr/bin/node),
-# fix the two ExecStart lines first:
-#   sudo sed -i 's|/opt/node/bin/node|/usr/bin/node|' \
-#     /etc/systemd/system/featherspress-backup-control.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now featherspress-backup-control.path \
-                            featherspress-backup-control.timer
-# Within ~2 minutes it writes the status file the panel reads. Force it now:
-sudo systemctl start featherspress-backup-control.service
-ls -l /var/lib/featherspress/backup-status.json
-```
-
-Reload `/admin` → **Backup & Restore**; the panel should now show a schedule
-form, Export and Restore instead of the "not configured" message. Set the
-schedule itself from that panel — you do not need to write `backup.env` by hand.
-The *scheduled* backup additionally needs `featherspress-backup.{service,timer}`
-(see "Day-to-day" below); restore does not.
-
-While you are there, press **Set up encryption** (needs `age` from step 0). The
-server generates a backup key, keeps only the public half, and shows you the
-private half **once** — save it off the box. Without a key, backups are written
-in plaintext and any export containing credentials is refused outright.
-
-## Day-to-day
-
-Write at `https://your-domain/admin`. Saving publishes instantly (the engine
-writes the `.md` and refreshes its in-memory list, with no build). Drafts save
-privately and preview at `/admin/preview/…`; publish when ready.
-
-**Backups / import / export:** `/var/lib/featherspress` is your data (plain
-Markdown + files, no database). The engine ships a one-artifact backup +
-import/export toolchain — a **Site Package** (`site.json` + `content/` + `media/`
-+ your skin + favicon [+ credentials]) that `export`, `import`, and `backup` all
-speak. See **[BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md)** for the full
-guide; the short version:
+A new site needs a login (password + 2FA):
 
 ```sh
-# On a server, call the tool by absolute path (npm is not on sudo's PATH) and
-# always pass --env-file, so it resolves YOUR data dir and not the bundled
-# example-site inside the code dir:
-FP="sudo -u featherspress /opt/node/bin/node /opt/featherspress/tools/site-package.js"
-ENVF="--env-file /etc/featherspress/featherspress.env"
-
-# one-off portable export (no credentials) — a shareable/movable Site Package:
-$FP export $ENVF --out /tmp/site.tar.gz
-
-# scheduled off-box backups (full, incl. credentials, age-encrypted to cloud):
-sudo apt install -y age
-sudo cp deploy/backup.env.example /etc/featherspress/backup.env   # then edit
-sudo cp deploy/featherspress-backup.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now featherspress-backup.timer
-sudo systemctl start featherspress-backup.service     # run one now and check it
-
-# restore (or migrate a whole site) from any artifact:
-$FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
-sudo systemctl restart featherspress
+sudo -u fp-blog env SITE_PACKAGE=/var/lib/featherspress/blog \
+  /opt/node/bin/node /opt/featherspress/blog/setup.js
 ```
 
-The engine code itself is *not* backed up — it's recoverable from git.
-`/etc/featherspress/featherspress.env` is disposable too (losing it just forces
-everyone to re-log-in; regenerate `SESSION_SECRET`).
+Scan the QR code with an authenticator app and **save the recovery codes**:
+they are shown once. `setup.js` reads the password from stdin, so a script can
+pipe it in; capture the output then, because it holds the 2FA key.
+
+Moving an existing site here instead? Create a login anyway (you need one to
+reach `/admin`), then follow [Rebuild a site from a backup](#rebuild-a-site-from-a-backup).
+
+## 5. HTTPS
+
+```sh
+sudo a2enmod ssl proxy proxy_http headers rewrite
+sudo apt install -y certbot python3-certbot-apache
+sudo certbot --apache -d blog.example.org
+```
+
+certbot copies the site's vhost into an HTTPS one and makes the plain one
+redirect. Nothing else to edit: the vhost tells the engine which scheme the
+browser used.
+
+**Behind Cloudflare:** use SSL mode *Full (strict)* with the certificate above.
+If certbot's check fails while the DNS record is proxied (orange cloud), set it
+to *DNS only* for the first run, then switch the proxy back on. If you use
+*Flexible* instead (Cloudflare talks plain HTTP to this box), change
+`X-Forwarded-Proto` in the vhost to `"https"`.
+
+## 6. Check it
+
+```sh
+curl -s http://127.0.0.1:8801/ | grep -o '<title>[^<]*</title>'                    # the site itself
+curl -s -H 'Host: blog.example.org' http://127.0.0.1/ | grep -o '<title>[^<]*</title>'  # through Apache
+systemctl list-units 'featherspress*@blog*'
+```
+
+Then in a browser: the home page, a post, an image under `/media/`, and
+`/admin` (sign in, save a draft, delete it).
+
+## Backups
+
+Each site backs itself up every night at 00:20 to
+`/var/backups/featherspress/<name>`, keeping 14. Change the time, the
+destination (another folder inside that one, or off-box through rclone) and
+retention in **/admin → Backup & Restore**. Press **Set up encryption** there
+too, and keep the private key it shows you somewhere off the server. For
+off-box backups, give every site its own remote path: old backups there are
+pruned to the retention count. Details:
+[BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).
+
+```sh
+systemctl list-timers 'featherspress-backup@*'
+sudo systemctl start featherspress-backup@blog.service      # one now
+sudo ls -l /var/backups/featherspress/blog
+```
 
 ## Updates
 
-A root systemd timer checks the git remote and writes `update-status.json` into
-the data dir; the admin UI shows an "update available" banner. By default it
-only notifies — you apply on your terms; set `AUTO_APPLY=1` for hands-off apply
-(pull → reinstall → restart → health-check → auto-rollback on failure).
+Each site checks for engine updates every night and only tells you: `/admin`
+shows "update available" with an **Apply now** button. Apply now pulls the new
+code into that site's checkout, reinstalls dependencies, restarts that site,
+checks it renders, and rolls back if it does not. Other sites are not touched;
+each one updates on its own.
+
+By hand, the same thing:
 
 ```sh
-sudo cp deploy/update.conf.example /etc/featherspress/update.conf   # AUTO_APPLY=0 by default
-sudo cp deploy/featherspress-update.{service,timer} /etc/systemd/system/
-sudo systemctl enable --now featherspress-update.timer
-
-# apply an update by hand (the default, notify-only workflow):
-sudo /opt/featherspress/deploy/update.sh
-# to apply this once even though update.conf says AUTO_APPLY=0 (a value
-# given in the environment wins over update.conf; everything else in
-# update.conf still applies):
-sudo env AUTO_APPLY=1 /opt/featherspress/deploy/update.sh
+sudo env AUTO_APPLY=1 /opt/featherspress/blog/deploy/update.sh
 ```
 
-Applying happens as root (the app can't write its own code dir or restart
-itself — by design). `AUTO_APPLY=1` trades that safety step for convenience:
-a compromised upstream commit would auto-run within a timer tick, so opt in
-per box, knowingly.
+Set `AUTO_APPLY=1` in `/etc/featherspress/<name>/update.conf` to apply updates
+automatically, and `REPO_REF` to follow another branch. Automatic is
+convenient, but a bad upstream commit then runs within a day, so choose it per
+site, knowingly.
 
-### Apply from the GUI
-
-**Optional, separate install** from the daily checker above (the same
-relationship `featherspress-backup-control.*` has to `featherspress-backup.*`
-in step 10). Install these three units and, once the agent has checked in for
-the first time (its `.path` unit fires immediately on a queued request; its
-5-minute safety timer is the backstop otherwise), an authenticated **Apply
-now** button appears in `/admin` next to the "update available" banner, so
-applying a routine update no longer needs SSH. Before this agent has ever
-run, `/admin` shows a hint to install it instead of a button that would
-silently do nothing.
+The systemd templates in `/etc/systemd/system` are shared by all sites. If an
+update changes `deploy/featherspress*@.*`, copy them in again:
 
 ```sh
-sudo cp /opt/featherspress/deploy/featherspress-update-control.{path,service,timer} \
-        /etc/systemd/system/
-# If your Node is not at /opt/node (e.g. a distro package at /usr/bin/node),
-# fix ExecStart first (same as step 10):
-#   sudo sed -i 's|/opt/node/bin/node|/usr/bin/node|' \
-#     /etc/systemd/system/featherspress-update-control.service
+sudo install -m 644 /opt/featherspress/blog/deploy/featherspress*@.* /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now featherspress-update-control.path \
-                            featherspress-update-control.timer
 ```
 
-Clicking **Apply now** writes a request the agent above picks up (inotify,
-backstopped by its own 5-minute safety timer). The agent runs
-`deploy/update.sh` as root with `AUTO_APPLY=1` set for this one run, which
-wins over `update.conf`'s own `AUTO_APPLY`; your box's `REPO_REF`/`NODE_BIN`/
-`NPM_BIN`/`SERVICE`/`FP_USER` still come from `update.conf`. It is the same
-pull → reinstall → restart → health-check → rollback
-sequence the daily timer's `AUTO_APPLY=1` path uses. The click only queues
-it: there is no live progress in the browser, since the restart tears down
-your own session along with everything else. Sign back in after a minute or
-two — the banner clears on success, or (if the apply failed and rolled back)
-shows the failure so it's visible without needing SSH.
+## Rebuild a site from a backup
 
-The SSH fallback above still works exactly as documented, and is now
-flock-protected, so it's safe to run by hand even with the GUI agent
-installed: a concurrent run waits up to 30s for the other to finish rather
-than racing it, and fails loudly (not silently) if that wait times out.
+The checklist for a dead server, or for moving a site to a new one. You need
+the backup (`featherspress-full-*.tar.gz.age`) and its age private key.
+
+1. **New server:** Debian, with the packages from step 1.
+2. **Node:** step 2.
+3. **Add the site:** step 3, with the same name and domain (any free port).
+4. **Temporary login:** step 4's `setup.js`, so you can reach `/admin`.
+5. **Restore:** sign in to `/admin`. Before DNS points here, reach the new
+   server by adding `<new-ip> blog.example.org` to your computer's hosts
+   file. **Backup & Restore → Restore**: choose the
+   `.age` file, paste the age private key, tick every section, type `RESTORE`.
+   The site restarts and signs you out; sign back in with the **old** site's
+   password and 2FA. Its backup schedule, retention and encryption key come
+   back too.
+
+   Without `/admin`, one command does the same (decrypt on the machine that
+   holds the key, copy `restore.tar.gz` to the server first):
+
+   ```sh
+   sudo /opt/node/bin/node /opt/featherspress/blog/tools/site-package.js import \
+     --env-file /etc/featherspress/blog/featherspress.env /root/restore.tar.gz \
+     --force --restore-auth && sudo systemctl restart featherspress@blog
+   ```
+
+   Then delete `/root/restore.tar.gz` and the `/tmp/featherspress-prerestore-*`
+   snapshot: both hold your credentials. This route does not bring the backup
+   settings back; set them in `/admin`.
+6. **HTTPS:** if you saved the old server's `/etc/letsencrypt`, copy it back
+   and run `sudo certbot install --apache --cert-name blog.example.org`.
+   Otherwise run step 5 for a new certificate (after DNS points here).
+7. **DNS:** point the domain at the new server.
+8. **Confirm the next nightly backup:** `systemctl list-timers
+   'featherspress-backup@blog*'` shows it scheduled, and the next morning
+   `/admin → Backup & Restore` shows a successful last run (or
+   `sudo ls /var/backups/featherspress/blog`).
 
 ## Account recovery
 
-- Forgot the password, still have 2FA: SSH in and run it exactly as step 6
-  does (same user, same preserved env var — running this as root, or without
-  `--preserve-env=AUTH_CONFIG`, either fails outright or leaves
-  `auth-config.json` owned `root:root` and unreadable by the app, turning a
-  password lockout into a full outage):
+- **Forgot the password, still have 2FA:**
   ```sh
-  cd /opt/featherspress
-  sudo -i                                            # the env file is root-readable only
-  set -a; . /etc/featherspress/featherspress.env; set +a
-  sudo -u featherspress --preserve-env=AUTH_CONFIG /opt/node/bin/node setup.js --password-only
+  sudo -u fp-blog env SITE_PACKAGE=/var/lib/featherspress/blog \
+    /opt/node/bin/node /opt/featherspress/blog/setup.js --password-only
+  sudo systemctl restart featherspress@blog
   ```
-  Then `sudo systemctl restart featherspress` -- the restart is required, not
-  optional: sessions are in-memory, so it's also what invalidates any
-  currently-live login. This rotates the password only; TOTP secret and
-  recovery codes are untouched.
-- Lost device but have a recovery code: use it in place of the 6-digit code
-  (works once). Re-run `setup.js` to mint a fresh set when low.
-- Lost everything: SSH in and re-run step 6 (`node setup.js`), then
-  `sudo systemctl restart featherspress`. This rotates password + TOTP +
-  recovery codes. SSH is the root of trust for this single-user tool.
+  The restart matters: sessions live in memory, so it also signs out any
+  session using the old password.
+- **Lost the 2FA device, have a recovery code:** use it instead of the 6-digit
+  code (each works once). Re-run `setup.js` for a fresh set.
+- **Lost everything:** re-run step 4's `setup.js` (new password, 2FA and
+  recovery codes), then restart the site. SSH is the root of trust.
 
-## Media uploads
+## Remove a site
 
-Uploaded via `/admin` to `/var/lib/featherspress/media/<YYYY>/<MM>/`, served at
-`/media/`. Capped at 25 MB and validated by content, not extension. SVG is
-rejected (it can carry scripts).
+```sh
+sudo /root/featherspress/deploy/remove-instance.sh blog
+sudo systemctl reload apache2
+```
 
-## Migrating an existing site onto this box
+It stops the site's units and removes its code, config and vhost. Its data,
+backups and `fp-blog` user stay until you delete them yourself.
 
-Skip step 5 entirely — the archive *is* the content. The engine boots fine with
-an empty data dir and no `site.json`.
+## Good to know
 
-1. Finish steps 0-4 (packages, user, node, code, runtime config). Install `age`
-   at step 0 if the archive is encrypted; the restore decrypts it on this box.
-2. Run `node setup.js` (step 6) to create a temporary login.
-3. Start the service (step 7) and put the proxy in front (step 9).
-4. **Install the backup/restore agent — step 10.** This is not optional for
-   this flow: without it the Restore block reports that the agent is missing and
-   stays disabled, because nothing would ever apply the request.
-5. Sign in to `/admin` → **Backup & Restore → Restore**: upload the archive
-   exported from the old box, paste its age private key if encrypted, tick every
-   section, type `RESTORE`, confirm.
-6. The service restarts and signs you out. Sign back in with the **old site's**
-   password and 2FA — restoring Credentials replaced the ones setup.js just made.
-
-Restoring the `settings` section also brings the old box's backup schedule,
-retention, destination and age recipient across, so the new box starts backing
-itself up on the same terms. Check with
-`systemctl list-timers featherspress-backup.timer` afterwards — it needs
-`featherspress-backup.{service,timer}` installed (see "Day-to-day") to run.
-
-If the restored site fails to render, the root agent puts your previous state
-back automatically and reports `rolled-back` in the panel.
+- **Media** uploaded in `/admin` lands in `/var/lib/featherspress/<name>/media/`
+  and Apache serves it straight from disk. Uploads are capped at 25 MB and
+  checked by content; SVG is refused (it can carry scripts).
+- **The code is not backed up**: it comes back from git. `featherspress.env`
+  is not precious either: a new `SESSION_SECRET` only signs everyone out.
+- **Failure alerts** are not set up by default; see "Failure notifications" in
+  [BACKUP-IMPORT-EXPORT.md](BACKUP-IMPORT-EXPORT.md).

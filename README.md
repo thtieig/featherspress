@@ -176,7 +176,7 @@ All optional; sensible defaults for local dev.
 
 | Variable | Purpose |
 |---|---|
-| `SITE_PACKAGE` | Path to a Site Package (derives the three below). |
+| `SITE_PACKAGE` | Path to a Site Package. Content, media, `site.json` and the login (`auth-config.json`) all live in it; the variables below override single paths. |
 | `CONTENT_DIR` / `MEDIA_DIR` | Content and media roots (override individually). |
 | `SITE_MANIFEST` | Explicit path to `site.json`. |
 | `SKINS_DIR` / `DEFAULT_SKIN` | Where skins live / fallback skin. |
@@ -185,9 +185,17 @@ All optional; sensible defaults for local dev.
 
 ## Deploying
 
-Featherspress runs as one small Node process behind a reverse proxy (Apache
-templates in `deploy/`). The step-by-step guide covers the service user,
-isolated Node, systemd, TLS, and backups: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Each site runs as one small Node process behind a reverse proxy. On a server,
+every site is a named instance with its own code, data, config, port and user,
+so several sites can live side by side; only Node and Apache are shared. One
+script adds a site:
+
+```sh
+sudo deploy/add-instance.sh blog blog.example.org 8801
+```
+
+The guide covers Node, the admin login, HTTPS, updates, backups and rebuilding
+a site from a backup: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ## What it proudly does *not* do
 
