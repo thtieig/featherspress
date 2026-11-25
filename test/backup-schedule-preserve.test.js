@@ -130,6 +130,7 @@ test("run-now round-trips through the real root agent without touching the sched
     BACKUP_STATUS: config.BACKUP_STATUS_FILE,
     LAST_RUN_FILE: path.join(agentDir, "last-run.json"),
     SCHEDULE_DROPIN: path.join(agentDir, "dropin", "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress",
   };
   fs.mkdirSync(path.dirname(agentEnv.SCHEDULE_DROPIN), { recursive: true });
   fs.writeFileSync(agentEnv.SCHEDULE_DROPIN, "[Timer]\nOnCalendar=\nOnCalendar=*-*-* 09:15:00\n");
@@ -175,6 +176,8 @@ test("run-now round-trips through the real root agent without touching the sched
     // escapes bc.applyRequest here). That's fine: the assertion that matters
     // is the drop-in content, not whether systemctl itself succeeded.
     bc.applyRequest(agentEnv);
+    const after = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+    assert.strictEqual(after.lastRequestOk, true, after.lastRequestError);
 
     assert.match(
       fs.readFileSync(agentEnv.SCHEDULE_DROPIN, "utf8"),

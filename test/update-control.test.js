@@ -212,3 +212,45 @@ test("applyRequest rejects and records a stale request without invoking update.s
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("envFromProcess points every file at this instance's own directories", () => {
+  const saved = { ...process.env };
+  try {
+    for (const k of ["UPDATE_REQUEST", "UPDATE_APPLY_STATUS", "UPDATE_CONF", "FP_ENV", "ENGINE_DIR", "CONF_DIR", "DATA_DIR"]) {
+      delete process.env[k];
+    }
+    process.env.INSTANCE = "alpha";
+    const e = uc.envFromProcess();
+    assert.strictEqual(e.UPDATE_REQUEST, "/var/lib/featherspress/alpha/update-request.json");
+    assert.strictEqual(e.UPDATE_APPLY_STATUS, "/var/lib/featherspress/alpha/update-apply-status.json");
+    assert.strictEqual(e.UPDATE_CONF, "/etc/featherspress/alpha/update.conf");
+    assert.strictEqual(e.FP_ENV, "/etc/featherspress/alpha/featherspress.env");
+    assert.strictEqual(e.ENGINE_DIR, path.join(__dirname, ".."));
+    assert.strictEqual(e.INSTANCE, "alpha");
+  } finally {
+    process.env = saved;
+  }
+});
+
+test("applyRequest tells update.sh which instance it is updating", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
+  try {
+    fs.mkdirSync(path.join(dir, "deploy"), { recursive: true });
+    const stub = path.join(dir, "deploy", "update.sh");
+    fs.writeFileSync(stub, "#!/usr/bin/env bash\nenv > \"$ENGINE_DIR/env-dump.txt\"\nexit 0\n");
+    fs.chmodSync(stub, 0o755);
+    const env = {
+      INSTANCE: "alpha",
+      UPDATE_REQUEST: path.join(dir, "update-request.json"),
+      UPDATE_APPLY_STATUS: path.join(dir, "update-apply-status.json"),
+      UPDATE_CONF: path.join(dir, "update.conf"),
+      FP_ENV: "/dev/null",
+      ENGINE_DIR: dir,
+    };
+    fs.writeFileSync(env.UPDATE_REQUEST, JSON.stringify({ requestId: 1, action: "apply" }));
+    uc.applyRequest(env);
+    assert.match(fs.readFileSync(path.join(dir, "env-dump.txt"), "utf8"), /^INSTANCE=alpha$/m);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

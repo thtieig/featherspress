@@ -417,6 +417,19 @@ test("backup-run omits sections entirely when status has never set a scope", asy
   assert.ok(!("sections" in written), `expected no sections key, got ${JSON.stringify(written)}`);
 });
 
+// With no local folder saved yet, "Back up now" aims at this site's own backup
+// folder (from status), the only local place the root agent accepts.
+test("backup-run falls back to this site's own backup folder", async () => {
+  fs.writeFileSync(
+    require("../config").BACKUP_STATUS_FILE,
+    JSON.stringify({ appliedRequestId: 1, localRoot: "/var/backups/featherspress/alpha", config: { destType: "local" } })
+  );
+  const res = await api("POST", "/admin/api/backup-run", {});
+  assert.strictEqual(res.status, 200);
+  const written = JSON.parse(fs.readFileSync(require("../config").BACKUP_REQUEST_FILE, "utf8"));
+  assert.deepStrictEqual(written.destination, { type: "local", localDir: "/var/backups/featherspress/alpha" });
+});
+
 test("backup endpoints require auth", async () => {
   const res = await fetch(base + "/admin/api/backup-status");
   assert.strictEqual(res.status, 401);

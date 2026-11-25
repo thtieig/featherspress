@@ -4,6 +4,32 @@
 // tools/update-control.js) and the site-package CLI.
 
 const fs = require("node:fs");
+const path = require("node:path");
+
+// One named instance: every directory and unit name an agent may touch,
+// derived from the name alone. The name is INSTANCE, or else the name of the
+// checkout this code runs from (/opt/featherspress/<name>), which is how the
+// systemd units (they run /opt/featherspress/%i/tools/...) pass it without
+// saying so. CONF_DIR, DATA_DIR and BACKUP_ROOT may be moved by the
+// environment; the unit names may not. deploy/instance.sh is the shell twin.
+const INSTANCE_RE = /^[a-z][a-z0-9-]{0,23}$/;
+
+function instance(env) {
+  const engineDir = path.resolve(env.ENGINE_DIR || path.join(__dirname, ".."));
+  const name = env.INSTANCE || path.basename(engineDir);
+  if (!INSTANCE_RE.test(name)) {
+    throw new Error("invalid instance name (lowercase letters, digits and dashes, 24 at most)");
+  }
+  return {
+    name,
+    engineDir,
+    confDir: env.CONF_DIR || `/etc/featherspress/${name}`,
+    dataDir: env.DATA_DIR || `/var/lib/featherspress/${name}`,
+    backupRoot: env.BACKUP_ROOT || `/var/backups/featherspress/${name}`,
+    service: `featherspress@${name}`,
+    backupUnit: `featherspress-backup@${name}`,
+  };
+}
 
 function fail(error) {
   return { ok: false, error };
@@ -83,6 +109,7 @@ function consumeRequest(requestPath, requestId) {
 }
 
 module.exports = {
+  instance,
   fail,
   readRequestNoFollow,
   parseEnv,

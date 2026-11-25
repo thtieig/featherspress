@@ -275,14 +275,15 @@ router.post("/api/backup-config", (req, res) => {
 router.post("/api/backup-run", (req, res) => {
   // "Back up now" keeps the current config; read it back from status so the
   // agent re-validates the same destination rather than a blank one.
-  let cur = {};
+  let status = {};
   try {
-    cur = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8")).config || {};
+    status = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8")) || {};
   } catch {}
+  const cur = status.config || {};
   const destination =
     cur.destType === "rclone"
       ? { type: "rclone", remote: cur.remote, remotePath: cur.remotePath }
-      : { type: "local", localDir: cur.localDir || "/var/backups/featherspress" };
+      : { type: "local", localDir: cur.localDir || status.localRoot };
   const requestId = writeBackupRequest({
     action: "run-now",
     destination,

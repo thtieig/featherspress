@@ -17,7 +17,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { fail, readRequestNoFollow, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
+const { instance, fail, readRequestNoFollow, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 // Validate an untrusted request. Returns {ok:true} or {ok:false, error} where
 // error is a fixed, non-echoing string. ctx.appliedRequestId is the last id
@@ -86,10 +86,12 @@ function applyRequest(env) {
 
   // update.sh lets the environment win over update.conf, so forcing
   // AUTO_APPLY here applies this once even when update.conf says 0, and every
-  // other setting (REPO_REF, NODE_BIN, NPM_BIN, SERVICE, FP_USER) still comes
-  // from update.conf. Nothing else is set here, so nothing else overrides it.
+  // other setting (REPO_REF, NODE_BIN, NPM_BIN) still comes from update.conf.
+  // Besides naming the instance and its files, nothing else is set here, so
+  // nothing else overrides it.
   const childEnv = {
     ...process.env,
+    INSTANCE: env.INSTANCE,
     AUTO_APPLY: "1",
     UPDATE_CONF: env.UPDATE_CONF,
     FP_ENV: env.FP_ENV,
@@ -120,12 +122,15 @@ function applyRequest(env) {
 }
 
 function envFromProcess() {
+  const i = instance(process.env);
+  const e = (k, fallback) => process.env[k] || fallback;
   return {
-    UPDATE_REQUEST: process.env.UPDATE_REQUEST || "/var/lib/featherspress/update-request.json",
-    UPDATE_APPLY_STATUS: process.env.UPDATE_APPLY_STATUS || "/var/lib/featherspress/update-apply-status.json",
-    UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
-    FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
-    ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
+    INSTANCE: i.name,
+    UPDATE_REQUEST: e("UPDATE_REQUEST", path.join(i.dataDir, "update-request.json")),
+    UPDATE_APPLY_STATUS: e("UPDATE_APPLY_STATUS", path.join(i.dataDir, "update-apply-status.json")),
+    UPDATE_CONF: e("UPDATE_CONF", path.join(i.confDir, "update.conf")),
+    FP_ENV: e("FP_ENV", path.join(i.confDir, "featherspress.env")),
+    ENGINE_DIR: i.engineDir,
   };
 }
 
@@ -148,4 +153,5 @@ module.exports = {
   validateRequest,
   applyRequest,
   heartbeat,
+  envFromProcess,
 };

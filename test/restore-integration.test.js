@@ -80,7 +80,14 @@ const BIN = path.join(TMP, "bin");
 const FAILS = path.join(TMP, "curl-fails-left"); // how many health checks still fail
 const CALLS = path.join(TMP, "curl-calls");
 fs.mkdirSync(BIN, { recursive: true });
-fs.writeFileSync(path.join(BIN, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+// systemctl logs what it was asked, so a test can check WHICH site restarted.
+const SYSTEMCTL_LOG = path.join(TMP, "systemctl-calls");
+fs.writeFileSync(path.join(BIN, "systemctl"), `#!/bin/sh\necho "$*" >> "${SYSTEMCTL_LOG}"\nexit 0\n`, { mode: 0o755 });
+const systemctlCalls = () => {
+  const lines = fs.existsSync(SYSTEMCTL_LOG) ? fs.readFileSync(SYSTEMCTL_LOG, "utf8").trim().split("\n") : [];
+  fs.rmSync(SYSTEMCTL_LOG, { force: true });
+  return lines;
+};
 // Counting, so one run can fail the restore's health check and then let the
 // ROLLBACK's succeed — which is the only way to reach the "your previous site
 // was put back" branch rather than the harsher both-failed one.
@@ -106,7 +113,10 @@ const agentEnv = () => ({
   IMPORT_STAGING: STAGING,
   FP_ENV,
   ENGINE_DIR: ROOT,
-  SERVICE: "featherspress",
+  // The live site is instance "alpha" on a server that also runs others.
+  SERVICE: "featherspress@alpha",
+  BACKUP_UNIT: "featherspress-backup@alpha",
+  BACKUP_ROOT: "/var/backups/featherspress/alpha",
   NODE_BIN: process.execPath,
   UPDATE_CONF: path.join(TMP, "update.conf"),
 });
@@ -213,11 +223,14 @@ test("a healthy restore replaces the site and reports done", async () => {
   const { stagedName, requestId } = await uploadAndRequest(archive,
     ["content", "media", "site", "credentials"]);
 
+  systemctlCalls();
   bc.restoreRequest(agentEnv());
 
   const st = restoreState();
   assert.strictEqual(st.state, "done", `restore said ${st.state}: ${st.error}`);
   assert.strictEqual(st.appliedRequestId, requestId);
+  assert.deepStrictEqual(systemctlCalls().filter((c) => !c.startsWith("show ")), ["restart featherspress@alpha"],
+    "a restore restarts this site only");
 
   assert.deepStrictEqual(livePosts(), ["migrated.md"], "the source's content must have replaced the live site's");
   assert.strictEqual(liveTitle(), "Source Site");
@@ -332,10 +345,17 @@ test("the settings section carries the source's schedule and age recipient", asy
   });
 
   await uploadAndRequest(out, ["content", "site", "settings"]);
+  systemctlCalls();
   bc.restoreRequest(env);
 
   assert.strictEqual(restoreState().state, "done");
+  const calls = systemctlCalls();
+  assert.ok(calls.includes("restart featherspress-backup@alpha.timer"), calls.join("\n"));
+  assert.deepStrictEqual(calls.filter((c) => /restart/.test(c) && !/@alpha\b/.test(c)), [],
+    "only this site's units may be restarted");
   const written = fs.readFileSync(env.BACKUP_ENV, "utf8");
+  assert.match(written, /^LOCAL_DIR=\/var\/backups\/featherspress\/alpha$/m,
+    "the old box's single-site folder becomes this site's own");
   assert.match(written, /^KEEP_LAST=21$/m);
   assert.match(written, /^BACKUP_SCHEDULE_PRESET=weekly$/m);
   assert.match(written, /^BACKUP_SCHEDULE_WEEKDAY=Tue$/m);

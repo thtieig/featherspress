@@ -137,3 +137,48 @@ test("parseEnv accepts an export prefix and strips one layer of quotes", () => {
   );
   assert.deepStrictEqual(conf, { AGE_RECIPIENT: "age1abc", NODE_BIN: "/usr/bin/node", SERVICE: "fp" });
 });
+
+// ---- named instances --------------------------------------------------------
+// Every path and unit an agent touches comes from the instance name, so one
+// site's agent can never reach another site's files or restart its service.
+
+test("instance() derives every path and unit from the name", () => {
+  const i = lib.instance({ INSTANCE: "alpha" });
+  assert.deepStrictEqual(
+    { ...i, engineDir: undefined },
+    {
+      name: "alpha",
+      engineDir: undefined,
+      confDir: "/etc/featherspress/alpha",
+      dataDir: "/var/lib/featherspress/alpha",
+      backupRoot: "/var/backups/featherspress/alpha",
+      service: "featherspress@alpha",
+      backupUnit: "featherspress-backup@alpha",
+    }
+  );
+});
+
+test("instance() takes the name from the checkout it runs in by default", () => {
+  assert.strictEqual(lib.instance({ ENGINE_DIR: "/opt/featherspress/beta" }).name, "beta");
+  assert.strictEqual(lib.instance({ ENGINE_DIR: "/opt/featherspress/beta" }).engineDir, "/opt/featherspress/beta");
+  // No ENGINE_DIR: the checkout tools/agent-lib.js itself lives in.
+  const repo = path.join(__dirname, "..");
+  assert.strictEqual(lib.instance({}).engineDir, repo);
+  assert.strictEqual(lib.instance({}).name, path.basename(repo));
+});
+
+test("instance() lets the environment move the directories (tests, odd boxes)", () => {
+  const i = lib.instance({ INSTANCE: "alpha", CONF_DIR: "/c", DATA_DIR: "/d", BACKUP_ROOT: "/b" });
+  assert.strictEqual(i.confDir, "/c");
+  assert.strictEqual(i.dataDir, "/d");
+  assert.strictEqual(i.backupRoot, "/b");
+  assert.strictEqual(i.service, "featherspress@alpha");
+});
+
+test("instance() refuses a name that is not a plain lowercase word", () => {
+  for (const bad of ["Alpha", "-a", "1a", "a/b", "..", "a b", "a".repeat(25), "a.b"]) {
+    assert.throws(() => lib.instance({ INSTANCE: bad }), /instance name/, JSON.stringify(bad));
+  }
+  assert.strictEqual(lib.instance({ INSTANCE: "a".repeat(24) }).name, "a".repeat(24));
+  assert.strictEqual(lib.instance({ INSTANCE: "my-blog2" }).name, "my-blog2");
+});

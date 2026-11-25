@@ -5,7 +5,7 @@
 // The unprivileged web app writes an untrusted `backup-request.json` into the
 // data dir (the one place it can write). This script, run AS ROOT by a systemd
 // .path unit (plus a 2-minute safety timer), validates that request against a
-// strict whitelist, applies it to /etc/featherspress/backup.env and a timer
+// strict whitelist, applies it to this instance's backup.env and a timer
 // drop-in, and refreshes `backup-status.json` — which the app reads (read-only)
 // to render the panel. The app never gains a privilege; it can only propose.
 //
@@ -23,11 +23,10 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { SECTIONS } = require("./site-package");
 const { DEFAULT_BACKUP_TIME } = require("../src/settings");
-const { fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
+const { instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const LOCAL_ROOT = "/var/backups";
 
 function validTimeOfDay(t) {
   if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
@@ -57,9 +56,17 @@ function buildOnCalendar(schedule) {
   }
 }
 
+// p is root itself or somewhere below it.
+function isInside(root, p) {
+  const rel = path.relative(root, p);
+  return !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 // Validate an untrusted request. Returns {ok:true, config} or {ok:false, error}
 // where error is a fixed, non-echoing string. ctx carries the box facts the app
-// cannot know itself (which remotes exist, whether encryption is set up).
+// cannot know itself (which remotes exist, whether encryption is set up, and
+// localRoot: this site's own backup folder, the only place a local backup may
+// go, so one site can never write into, or prune, another site's backups).
 function validateRequest(req, ctx) {
   if (!req || typeof req !== "object") return fail("malformed request");
   if (!Number.isInteger(req.requestId) || req.requestId <= ctx.appliedRequestId)
@@ -86,8 +93,7 @@ function validateRequest(req, ctx) {
     if (typeof d.localDir !== "string" || !path.isAbsolute(d.localDir)) return fail("localDir must be absolute");
     if (!/^[A-Za-z0-9._/-]+$/.test(d.localDir)) return fail("localDir has invalid characters");
     const norm = path.normalize(d.localDir);
-    const rel = path.relative(LOCAL_ROOT, norm);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) return fail("localDir must be under /var/backups");
+    if (!ctx.localRoot || !isInside(ctx.localRoot, norm)) return fail("localDir must be inside this site's backup folder");
     localDir = norm;
   } else if (d.type === "rclone") {
     if (!ctx.ageRecipientSet) return fail("off-box needs encryption: set AGE_RECIPIENT first");
@@ -156,6 +162,7 @@ function buildStatus(i) {
     nextRun: i.nextRun ?? null,
     artifactCount: i.artifactCount ?? 0,
     ageRecipient: i.ageRecipient ?? null,
+    localRoot: i.localRoot ?? null,
     update: i.update ?? null,
     restore: i.restore ?? null,
   };
@@ -349,7 +356,7 @@ function refreshStatus(env) {
       timeOfDay: conf.BACKUP_SCHEDULE_TIME || DEFAULT_BACKUP_TIME,
       weekday: conf.BACKUP_SCHEDULE_WEEKDAY || null,
       raw: readScheduleDropIn(env.SCHEDULE_DROPIN),
-      effective: readEffectiveSchedule("featherspress-backup.timer"),
+      effective: readEffectiveSchedule(`${env.BACKUP_UNIT}.timer`),
     },
   };
   const status = buildStatus({
@@ -360,10 +367,11 @@ function refreshStatus(env) {
     encrypted: !!conf.AGE_RECIPIENT,
     availableRemotes: listRemotes(),
     lastRun,
-    nextRun: nextRunUTC("featherspress-backup.timer"),
+    nextRun: nextRunUTC(`${env.BACKUP_UNIT}.timer`),
     artifactCount,
     writtenAt: new Date().toISOString(),
     ageRecipient: conf.AGE_RECIPIENT || null,
+    localRoot: env.BACKUP_ROOT || null,
     update: { autoApply: upd.AUTO_APPLY === "1", repoRef: upd.REPO_REF || "main" },
     restore: env._restore ?? readRestoreState(env.BACKUP_STATUS),
   });
@@ -463,6 +471,7 @@ function applyRequest(env) {
     availableRemotes: listRemotes(),
     ageRecipientSet: !!conf.AGE_RECIPIENT,
     appliedRequestId: readAppliedId(env.BACKUP_STATUS),
+    localRoot: env.BACKUP_ROOT,
   };
   const v = validateRequest(request, ctx);
   if (!v.ok) {
@@ -519,12 +528,12 @@ function applyRequest(env) {
     );
     try {
       execFileSync("systemctl", ["daemon-reload"]);
-      execFileSync("systemctl", ["restart", "featherspress-backup.timer"]);
+      execFileSync("systemctl", ["restart", `${env.BACKUP_UNIT}.timer`]);
     } catch {}
   }
   if (v.config.action === "run-now") {
     try {
-      execFileSync("systemctl", ["start", "--no-block", "featherspress-backup.service"]);
+      execFileSync("systemctl", ["start", "--no-block", `${env.BACKUP_UNIT}.service`]);
     } catch {}
   }
   env._appliedRequestId = request.requestId;
@@ -624,13 +633,20 @@ function applyRestoredSettings(env, settings) {
     else skipped.push("the archive's backup encryption key was not a valid age recipient");
   }
 
+  // A local folder from the source box is only kept when it is inside this
+  // site's own backup folder; anything else (the old single-site
+  // /var/backups/featherspress, another site's folder) becomes that folder.
+  const localDir =
+    typeof b.localDir === "string" && env.BACKUP_ROOT && isInside(env.BACKUP_ROOT, path.normalize(b.localDir))
+      ? b.localDir
+      : env.BACKUP_ROOT;
   const req = {
     requestId: Number.MAX_SAFE_INTEGER - 1, // not persisted; this is a direct apply
     action: "apply",
     destination:
       b.destType === "rclone"
         ? { type: "rclone", remote: b.remote, remotePath: b.remotePath }
-        : { type: "local", localDir: b.localDir || "/var/backups/featherspress" },
+        : { type: "local", localDir },
     keepLast: Number.isInteger(b.keepLast) ? b.keepLast : 14,
     schedule: b.schedule || { preset: "daily", timeOfDay: DEFAULT_BACKUP_TIME, weekday: null },
     sections: Array.isArray(b.sections) ? b.sections : undefined,
@@ -639,6 +655,7 @@ function applyRestoredSettings(env, settings) {
     availableRemotes: listRemotes(),
     ageRecipientSet: !!conf.AGE_RECIPIENT,
     appliedRequestId: 0,
+    localRoot: env.BACKUP_ROOT,
   });
   if (!v.ok) {
     skipped.push(v.error);
@@ -653,7 +670,7 @@ function applyRestoredSettings(env, settings) {
       `[Timer]\nOnCalendar=\nOnCalendar=${buildOnCalendar(v.config.schedule)}\n`
     );
     execFileSync("systemctl", ["daemon-reload"]);
-    execFileSync("systemctl", ["restart", "featherspress-backup.timer"]);
+    execFileSync("systemctl", ["restart", `${env.BACKUP_UNIT}.timer`]);
   } catch {
     skipped.push("could not apply restored backup settings");
   }
@@ -697,7 +714,7 @@ function restoreRequest(env) {
   const conf = parseEnvFile(env.BACKUP_ENV);
   const node = conf.NODE_BIN || env.NODE_BIN;
   const pkgTool = path.join(env.ENGINE_DIR, "tools", "site-package.js");
-  const port = parseEnvFile(env.FP_ENV).PORT || "8787";
+  const port = parseEnvFile(env.FP_ENV).PORT || "3000"; // config.js's default
   const cleanup = () => {
     fs.rmSync(staged, { force: true });
     finish();
@@ -788,21 +805,28 @@ function restoreRequest(env) {
   cleanup();
 }
 
+// Every path and unit comes from this instance (tools/agent-lib.js); each can
+// still be overridden from the environment, which the tests do.
 function envFromProcess() {
+  const i = instance(process.env);
+  const e = (k, fallback) => process.env[k] || fallback;
+  const data = (f) => path.join(i.dataDir, f);
   return {
-    BACKUP_ENV: process.env.BACKUP_ENV || "/etc/featherspress/backup.env",
-    RESTORE_REQUEST: process.env.RESTORE_REQUEST || "/var/lib/featherspress/restore-request.json",
-    IMPORT_STAGING: process.env.IMPORT_STAGING || "/var/lib/featherspress/import-staging",
-    FP_ENV: process.env.FP_ENV || "/etc/featherspress/featherspress.env",
-    ENGINE_DIR: process.env.ENGINE_DIR || "/opt/featherspress",
-    SERVICE: process.env.SERVICE || "featherspress",
-    NODE_BIN: process.env.NODE_BIN || process.execPath,
-    BACKUP_REQUEST: process.env.BACKUP_REQUEST || "/var/lib/featherspress/backup-request.json",
-    BACKUP_STATUS: process.env.BACKUP_STATUS || "/var/lib/featherspress/backup-status.json",
-    LAST_RUN_FILE: process.env.LAST_RUN_FILE || "/var/lib/featherspress/backup-last-run.json",
-    SCHEDULE_DROPIN:
-      process.env.SCHEDULE_DROPIN || "/etc/systemd/system/featherspress-backup.timer.d/schedule.conf",
-    UPDATE_CONF: process.env.UPDATE_CONF || "/etc/featherspress/update.conf",
+    INSTANCE: i.name,
+    BACKUP_ENV: e("BACKUP_ENV", path.join(i.confDir, "backup.env")),
+    RESTORE_REQUEST: e("RESTORE_REQUEST", data("restore-request.json")),
+    IMPORT_STAGING: e("IMPORT_STAGING", data("import-staging")),
+    FP_ENV: e("FP_ENV", path.join(i.confDir, "featherspress.env")),
+    ENGINE_DIR: i.engineDir,
+    SERVICE: e("SERVICE", i.service),
+    BACKUP_UNIT: i.backupUnit,
+    BACKUP_ROOT: i.backupRoot,
+    NODE_BIN: e("NODE_BIN", process.execPath),
+    BACKUP_REQUEST: e("BACKUP_REQUEST", data("backup-request.json")),
+    BACKUP_STATUS: e("BACKUP_STATUS", data("backup-status.json")),
+    LAST_RUN_FILE: e("LAST_RUN_FILE", data("backup-last-run.json")),
+    SCHEDULE_DROPIN: e("SCHEDULE_DROPIN", `/etc/systemd/system/${i.backupUnit}.timer.d/schedule.conf`),
+    UPDATE_CONF: e("UPDATE_CONF", path.join(i.confDir, "update.conf")),
   };
 }
 

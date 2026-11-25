@@ -13,7 +13,11 @@ const path = require("node:path");
 const bc = require("../tools/backup-control");
 const { parseEnvFile } = require("../tools/agent-lib");
 
-const CTX = { availableRemotes: ["mys3", "bbz"], ageRecipientSet: true, appliedRequestId: 3 };
+// localRoot: this site's own backup folder (see "named instances" below).
+const CTX = {
+  availableRemotes: ["mys3", "bbz"], ageRecipientSet: true, appliedRequestId: 3,
+  localRoot: "/var/backups/featherspress",
+};
 const base = {
   requestId: 4,
   action: "apply",
@@ -362,6 +366,7 @@ test("a run-now request does not rewrite the schedule drop-in", () => {
     BACKUP_STATUS: path.join(dir, "backup-status.json"),
     LAST_RUN_FILE: path.join(dir, "last-run.json"),
     SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress",
   };
   fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
   fs.writeFileSync(env.SCHEDULE_DROPIN, "[Timer]\nOnCalendar=\nOnCalendar=Sun *-*-* 03:00:00\n");
@@ -395,6 +400,7 @@ test("a poisoned preserved AGE_RECIPIENT is reported, not left wedged", () => {
     BACKUP_STATUS: path.join(dir, "backup-status.json"),
     LAST_RUN_FILE: path.join(dir, "last-run.json"),
     SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress",
   };
   // Trailing comment on AGE_RECIPIENT parses to a value containing spaces,
   // which fails assertEnvSafe's character class.
@@ -412,7 +418,7 @@ test("a poisoned preserved AGE_RECIPIENT is reported, not left wedged", () => {
   const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
   assert.strictEqual(status.appliedRequestId, 5, "appliedRequestId must still advance");
   assert.strictEqual(status.lastRequestOk, false);
-  assert.ok(status.lastRequestError, "must report an error, not just wedge silently");
+  assert.match(status.lastRequestError || "", /backup\.env/, "must report the render failure, not just wedge silently");
   assert.ok(
     !status.lastRequestError.includes("age1xxx"),
     "must never echo the offending value"
@@ -497,6 +503,7 @@ function restoreSettingsEnv(name, existingEnv) {
   const env = {
     BACKUP_ENV: path.join(dir, "backup.env"),
     SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress",
   };
   if (existingEnv !== undefined) fs.writeFileSync(env.BACKUP_ENV, existingEnv);
   return env;
@@ -569,6 +576,7 @@ function applyEnv(name) {
     BACKUP_STATUS: path.join(dir, "backup-status.json"),
     LAST_RUN_FILE: path.join(dir, "last-run.json"),
     SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress",
   };
 }
 
@@ -768,4 +776,135 @@ test("a schedule with no time of day defaults to 00:20, the shipped timer's time
   assert.ok(r.ok, r.error);
   assert.strictEqual(r.config.schedule.timeOfDay, "00:20");
   assert.strictEqual(bc.buildOnCalendar({ preset: "daily" }), "*-*-* 00:20:00");
+});
+
+// ---- named instances --------------------------------------------------------
+// One server runs several sites. A site's /admin can only ever aim its own
+// agent at its own backup folder, timer and service.
+
+const ALPHA = { ...CTX, localRoot: "/var/backups/featherspress/alpha" };
+const toDir = (localDir) => ({ ...base, destination: { type: "local", localDir } });
+
+test("localDir must stay inside this site's own backup folder", () => {
+  assert.ok(bc.validateRequest(toDir("/var/backups/featherspress/alpha"), ALPHA).ok);
+  assert.ok(bc.validateRequest(toDir("/var/backups/featherspress/alpha/weekly"), ALPHA).ok);
+  for (const other of [
+    "/var/backups/featherspress/beta",      // another site's backups (and its pruning)
+    "/var/backups/featherspress",           // the parent of every site
+    "/var/backups/featherspress/alphabet",  // a name that merely starts the same
+    "/var/backups/featherspress/alpha/../beta",
+  ]) {
+    const r = bc.validateRequest(toDir(other), ALPHA);
+    assert.strictEqual(r.ok, false, other);
+    assert.match(r.error, /localDir/);
+  }
+});
+
+test("without a known backup folder, every local destination is refused", () => {
+  const r = bc.validateRequest(toDir("/var/backups/featherspress/alpha"), { ...CTX, localRoot: undefined });
+  assert.strictEqual(r.ok, false);
+});
+
+test("the status tells /admin which folder local backups must live under", () => {
+  assert.strictEqual(bc.buildStatus({ localRoot: "/var/backups/featherspress/alpha" }).localRoot,
+    "/var/backups/featherspress/alpha");
+});
+
+test("envFromProcess points every file and unit at this instance", () => {
+  const saved = { ...process.env };
+  try {
+    for (const k of ["BACKUP_ENV", "RESTORE_REQUEST", "IMPORT_STAGING", "FP_ENV", "ENGINE_DIR", "SERVICE",
+      "BACKUP_REQUEST", "BACKUP_STATUS", "LAST_RUN_FILE", "SCHEDULE_DROPIN", "UPDATE_CONF",
+      "CONF_DIR", "DATA_DIR", "BACKUP_ROOT"]) delete process.env[k];
+    process.env.INSTANCE = "alpha";
+    const e = bc.envFromProcess();
+    assert.strictEqual(e.SERVICE, "featherspress@alpha");
+    assert.strictEqual(e.BACKUP_UNIT, "featherspress-backup@alpha");
+    assert.strictEqual(e.BACKUP_ROOT, "/var/backups/featherspress/alpha");
+    assert.strictEqual(e.SCHEDULE_DROPIN, "/etc/systemd/system/featherspress-backup@alpha.timer.d/schedule.conf");
+    assert.strictEqual(e.ENGINE_DIR, path.join(__dirname, ".."));
+    for (const k of ["BACKUP_ENV", "FP_ENV", "UPDATE_CONF"]) {
+      assert.strictEqual(path.dirname(e[k]), "/etc/featherspress/alpha", k);
+    }
+    for (const k of ["RESTORE_REQUEST", "IMPORT_STAGING", "BACKUP_REQUEST", "BACKUP_STATUS", "LAST_RUN_FILE"]) {
+      assert.strictEqual(path.dirname(e[k]), "/var/lib/featherspress/alpha", k);
+    }
+  } finally {
+    process.env = saved;
+  }
+});
+
+// systemctl stubbed on PATH, logging what the agent asked of it.
+function withSystemctlLog(fn) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-bin-"));
+  const log = path.join(bin, "calls.log");
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/bin/sh\necho "$*" >> "${log}"\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + savedPath;
+  try {
+    fn();
+    return fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+function alphaEnv() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-alpha-"));
+  const env = {
+    BACKUP_ENV: path.join(dir, "backup.env"),
+    BACKUP_REQUEST: path.join(dir, "backup-request.json"),
+    BACKUP_STATUS: path.join(dir, "backup-status.json"),
+    LAST_RUN_FILE: path.join(dir, "last-run.json"),
+    SCHEDULE_DROPIN: path.join(dir, "dropin", "schedule.conf"),
+    BACKUP_ROOT: "/var/backups/featherspress/alpha",
+    BACKUP_UNIT: "featherspress-backup@alpha",
+  };
+  fs.writeFileSync(env.BACKUP_ENV, "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress/alpha\nKEEP_LAST=7\n");
+  return env;
+}
+
+test("a schedule change restarts this site's backup timer and no other", () => {
+  const env = alphaEnv();
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({
+    requestId: 1, action: "apply",
+    destination: { type: "local", localDir: "/var/backups/featherspress/alpha" },
+    keepLast: 14, schedule: { preset: "daily", timeOfDay: "01:00" },
+  }));
+  const calls = withSystemctlLog(() => bc.applyRequest(env));
+  assert.ok(calls.includes("restart featherspress-backup@alpha.timer"), calls.join("\n"));
+  assert.deepStrictEqual(calls.filter((c) => /restart|start /.test(c) && !/@alpha\./.test(c)), []);
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.lastRequestOk, true, status.lastRequestError);
+  assert.strictEqual(status.localRoot, "/var/backups/featherspress/alpha");
+});
+
+test("Back up now starts this site's backup service and no other", () => {
+  const env = alphaEnv();
+  fs.writeFileSync(env.BACKUP_REQUEST, JSON.stringify({
+    requestId: 1, action: "run-now",
+    destination: { type: "local", localDir: "/var/backups/featherspress/alpha" },
+    keepLast: 14, schedule: { preset: "daily", timeOfDay: "01:00" },
+  }));
+  const calls = withSystemctlLog(() => bc.applyRequest(env));
+  assert.ok(calls.includes("start --no-block featherspress-backup@alpha.service"), calls.join("\n"));
+});
+
+test("a restored backup folder from another box lands in this site's own folder", () => {
+  const env = alphaEnv();
+  fs.rmSync(env.BACKUP_ENV);
+  const calls = withSystemctlLog(() => {
+    const skipped = bc.applyRestoredSettings(env, migrateSettings({ localDir: "/var/backups/featherspress" }));
+    assert.deepStrictEqual(skipped, []);
+  });
+  assert.match(fs.readFileSync(env.BACKUP_ENV, "utf8"), /^LOCAL_DIR=\/var\/backups\/featherspress\/alpha$/m);
+  assert.ok(calls.includes("restart featherspress-backup@alpha.timer"), calls.join("\n"));
+});
+
+test("a restored backup folder already inside this site's folder is kept", () => {
+  const env = alphaEnv();
+  withSystemctlLog(() =>
+    bc.applyRestoredSettings(env, migrateSettings({ localDir: "/var/backups/featherspress/alpha/old" })));
+  assert.match(fs.readFileSync(env.BACKUP_ENV, "utf8"), /^LOCAL_DIR=\/var\/backups\/featherspress\/alpha\/old$/m);
 });

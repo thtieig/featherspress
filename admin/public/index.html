@@ -291,8 +291,8 @@
       </div>
 
       <div id="bk-local-row" style="margin-bottom:14px;">
-        <label>Local directory <span class="hint">under /var/backups</span></label>
-        <input type="text" id="bk-localdir" value="/var/backups/featherspress">
+        <label>Local directory <span class="hint" id="bk-localroot"></span></label>
+        <input type="text" id="bk-localdir" value="">
       </div>
 
       <div id="bk-rclone-row" hidden style="margin-bottom:14px;">
@@ -1139,8 +1139,8 @@
     if (noAgent) {
       el('rs-noagent').textContent =
         'The backup/restore agent is not installed on this server, so a restore would never be ' +
-        'applied. Install it first (see DEPLOY.md): copy deploy/featherspress-backup-control.* to ' +
-        '/etc/systemd/system, then enable featherspress-backup-control.path and .timer.';
+        'applied. Set this site up with deploy/add-instance.sh (see DEPLOY.md), which enables ' +
+        'featherspress-backup-control@<name>.path and .timer.';
     }
     if (noAgent) {
       el('bk-status').textContent = 'Backups are not configured on this server yet.';
@@ -1178,7 +1178,8 @@
     var c = s.config || {};
     var dest = c.destType || 'local';
     document.querySelectorAll('input[name=bk-dest]').forEach(function (r) { r.checked = r.value === dest; });
-    if (c.localDir) el('bk-localdir').value = c.localDir;
+    if (s.localRoot) el('bk-localroot').textContent = 'inside ' + s.localRoot;
+    if (c.localDir || s.localRoot) el('bk-localdir').value = c.localDir || s.localRoot;
     if (typeof c.keepLast === 'number') el('bk-keeplast').value = c.keepLast;
     // c.sections is null on a box that has never set a scope — that means
     // ALL FIVE sections, matching deploy/backup.sh's empty-means-all. Treat
