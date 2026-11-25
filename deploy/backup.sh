@@ -15,16 +15,43 @@ FP_ENV="${FP_ENV:-/etc/featherspress/featherspress.env}"
 BACKUP_ENV="${BACKUP_ENV:-/etc/featherspress/backup.env}"
 ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
 NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
+LAST_RUN_FILE="${LAST_RUN_FILE:-/var/lib/featherspress/backup-last-run.json}"
+BACKUP_LOCK="${BACKUP_LOCK:-/run/featherspress-backup.lock}"
 
-[ -f "$FP_ENV" ] || { echo "missing $FP_ENV (needed so the exporter finds the data dir)" >&2; exit 1; }
-[ -f "$BACKUP_ENV" ] || { echo "missing $BACKUP_ENV (copy deploy/backup.env.example there)" >&2; exit 1; }
+# Record the outcome for the /admin Backups panel (via backup-control.js status).
+record_run() {
+  local ok="$1" err="$2" bytes="${3:-0}"
+  printf '{"at":"%s","ok":%s,"error":%s,"artifactBytes":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$err" "$bytes" > "$LAST_RUN_FILE" 2>/dev/null || true
+  "$NODE_BIN" "$ENGINE_DIR/tools/backup-control.js" status 2>/dev/null || true
+}
+
+# Every way this script can fail is recorded as a failed run, so the panel
+# shows it. refuse() sets the message the panel shows (fixed text: no quotes,
+# no values) and logs the detail; anything else that stops the script (set -e,
+# an unset ${VAR:?}) shows the generic one.
+FAIL_MSG="backup run failed"
+refuse() {
+  FAIL_MSG="$1"
+  echo "[backup] refusing: $1${2:+ ($2)}" >&2
+  exit 1
+}
+WORK=""
+on_exit() {
+  local rc=$?
+  [ -n "$WORK" ] && rm -rf "$WORK"
+  [ "$rc" -eq 0 ] || record_run false "\"$FAIL_MSG\"" 0
+}
+trap on_exit EXIT
+
+[ -f "$FP_ENV" ] || refuse "featherspress.env is missing; the exporter needs it to find the site" "$FP_ENV"
+[ -f "$BACKUP_ENV" ] || refuse "backup.env is missing; copy deploy/backup.env.example there" "$BACKUP_ENV"
 
 # Serialize with any other backup run — the /admin "back up now" button and the
 # scheduled timer can otherwise overlap and race the prune step. Second run bows
 # out cleanly rather than corrupting the destination.
-if ! exec 9>"/run/featherspress-backup.lock"; then
-  echo "[backup] refusing: cannot open the lock file /run/featherspress-backup.lock" >&2
-  exit 1
+if ! exec 9>"$BACKUP_LOCK"; then
+  refuse "cannot open the backup lock file" "$BACKUP_LOCK"
 fi
 if command -v flock >/dev/null 2>&1; then
   if ! flock -n 9; then
@@ -35,17 +62,6 @@ else
   echo "[backup] warning: flock not found; concurrent backup runs will NOT be serialized" >&2
 fi
 
-# Record the outcome for the /admin Backups panel (via backup-control.js status).
-LAST_RUN_FILE="${LAST_RUN_FILE:-/var/lib/featherspress/backup-last-run.json}"
-record_run() {
-  local ok="$1" err="$2" bytes="${3:-0}"
-  printf '{"at":"%s","ok":%s,"error":%s,"artifactBytes":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$err" "$bytes" > "$LAST_RUN_FILE" 2>/dev/null || true
-  "${NODE_BIN:-/opt/node/bin/node}" "${ENGINE_DIR:-/opt/featherspress}/tools/backup-control.js" status 2>/dev/null || true
-}
-# On ANY failure below, record it (with a fixed message — never the raw error).
-trap 'record_run false "\"backup run failed\"" 0' ERR
-
 # Export the app's data-dir vars so `node tools/site-package.js` resolves them.
 set -a
 # shellcheck disable=SC1090
@@ -55,13 +71,23 @@ set -a
 set +a
 
 DEST_TYPE="${DEST_TYPE:-local}"
+case "$DEST_TYPE" in
+  local|rclone) : ;;
+  *) refuse "unknown DEST_TYPE in backup.env; use local or rclone" "got '$DEST_TYPE'" ;;
+esac
 KEEP_LAST="${KEEP_LAST:-14}"
 # KEEP_LAST=0 prunes the artifact this run just made, so the job "succeeds" and
 # leaves you with NO backups at all. Refuse rather than quietly delete the lot.
 case "$KEEP_LAST" in
-  ''|*[!0-9]*) echo "[backup] refusing: KEEP_LAST must be a positive integer (got '$KEEP_LAST')" >&2; exit 1 ;;
+  ''|*[!0-9]*) refuse "KEEP_LAST must be a whole number of at least 1" "got '$KEEP_LAST'" ;;
 esac
-[ "$KEEP_LAST" -ge 1 ] || { echo "[backup] refusing: KEEP_LAST must be >= 1 (got $KEEP_LAST) — 0 would delete every backup, including the one just taken" >&2; exit 1; }
+[ "$KEEP_LAST" -ge 1 ] || refuse "KEEP_LAST must be at least 1; 0 would delete every backup, including this one"
+
+# Encryption is MANDATORY off-box (the full artifact carries the TOTP secret and
+# password hash). Local stays plaintext (same trust boundary as the machine).
+if [ "$DEST_TYPE" != "local" ] && [ -z "${AGE_RECIPIENT:-}" ]; then
+  refuse "an off-box destination needs encryption; set up an encryption key first" "DEST_TYPE=$DEST_TYPE, no AGE_RECIPIENT"
+fi
 
 # Which sections the scheduled backup captures (set from /admin). Empty = all.
 # A bash array is used so that an empty BACKUP_SECTIONS passes NO --sections
@@ -77,27 +103,15 @@ STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BASENAME="featherspress-full-${STAMP}.tar.gz"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 ARTIFACT="$WORK/$BASENAME"
 
 echo "[backup] exporting full Site Package…"
 "$NODE_BIN" "$ENGINE_DIR/tools/site-package.js" export --profile full "${SECTION_ARGS[@]}" --out "$ARTIFACT"
 
-# Encryption is MANDATORY off-box (the full artifact carries the TOTP secret and
-# password hash). Local stays plaintext (same trust boundary as the machine).
-if [ "$DEST_TYPE" != "local" ]; then
-  if [ -z "${AGE_RECIPIENT:-}" ]; then
-    echo "[backup] refusing: DEST_TYPE=$DEST_TYPE requires AGE_RECIPIENT (age public key) to encrypt off-box" >&2
-    exit 1
-  fi
+# Off-box copies are always encrypted (checked above); local ones only when a
+# recipient is configured.
+if [ -n "${AGE_RECIPIENT:-}" ]; then
   echo "[backup] encrypting with age…"
-  age -r "$AGE_RECIPIENT" -o "$ARTIFACT.age" "$ARTIFACT"
-  rm -f "$ARTIFACT"
-  ARTIFACT="$ARTIFACT.age"
-  BASENAME="$BASENAME.age"
-elif [ -n "${AGE_RECIPIENT:-}" ]; then
-  # Encrypt local copies too if a recipient is configured (optional).
-  echo "[backup] encrypting local copy with age…"
   age -r "$AGE_RECIPIENT" -o "$ARTIFACT.age" "$ARTIFACT"
   rm -f "$ARTIFACT"
   ARTIFACT="$ARTIFACT.age"
@@ -149,10 +163,6 @@ case "$DEST_TYPE" in
     # Prune: keep newest N at the remote.
     mapfile -t OLD < <(rclone lsf "$RCLONE_REMOTE" --include 'featherspress-full-*' 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
     for f in "${OLD[@]:-}"; do [ -n "$f" ] && rclone deletefile "$RCLONE_REMOTE/$f" && echo "[backup] pruned $f"; done
-    ;;
-  *)
-    echo "[backup] unknown DEST_TYPE: $DEST_TYPE (use local|rclone)" >&2
-    exit 1
     ;;
 esac
 
