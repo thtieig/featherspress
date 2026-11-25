@@ -99,7 +99,7 @@ test("writeAuthConfigAtomic: writes JSON at 0600 and leaves no .tmp file behind"
   assert.ok(!fs.existsSync(configPath + ".tmp"));
 });
 
-// ---- ownership preservation (review fix) --------------------------------
+// ---- ownership preservation ---------------------------------------------
 // Recovery (docs/DEPLOY.md "Account recovery": setup.js --password-only run
 // over SSH as root, or by an operator who gets the invoked user wrong) can
 // rewrite auth-config.json as a different OS user than the one that owns it.

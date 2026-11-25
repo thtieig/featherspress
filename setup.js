@@ -5,9 +5,6 @@
 // secret for 2FA, and generate 8 one-time recovery codes -- all written to
 // auth-config.json (gitignored, never committed). Run this once before
 // starting the server for the first time:  node setup.js
-//
-// Lifted from the legacy authoring/setup.js; only the config path and issuer
-// string differ.
 
 const bcrypt = require("bcryptjs");
 const { generateSecret, generateURI } = require("otplib");

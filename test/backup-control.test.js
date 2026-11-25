@@ -1,9 +1,9 @@
 "use strict";
 
 // The root backup-control agent's PURE logic: request validation and OnCalendar
-// building. The imperative IO (apply to backup.env, systemctl, O_NOFOLLOW read)
-// is exercised end-to-end on the test VPS; here we pin the security-critical
-// validation precisely.
+// building. The imperative IO (apply to backup.env, systemctl) is exercised
+// end-to-end on the test VPS; here we pin the security-critical validation
+// precisely.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -123,7 +123,7 @@ test("action must be apply or run-now", () => {
   assert.strictEqual(bc.validateRequest({ ...base, action: "rm" }, CTX).ok, false);
 });
 
-// ---- Task 10: configurable backup sections ---------------------------------
+// ---- configurable backup sections ------------------------------------------
 
 test("accepts a valid sections list", () => {
   const r = bc.validateRequest({ ...base, sections: ["content", "media"] }, CTX);
@@ -143,7 +143,7 @@ test("defaults to all sections when none are given", () => {
     ["content", "media", "site", "settings", "credentials"]);
 });
 
-// ---- Task 2: status assembler --------------------------------------------
+// ---- status assembler ----------------------------------------------------
 
 test("buildStatus produces the documented shape with no secrets", () => {
   const s = bc.buildStatus({
@@ -172,7 +172,7 @@ test("buildStatus produces the documented shape with no secrets", () => {
   assert.strictEqual(s.config.keepLast, 14);
 });
 
-// ---- Task 7: settings travel via backup-status.json -----------------------
+// ---- settings travel via backup-status.json -------------------------------
 
 test("buildStatus carries the update config and the age recipient", () => {
   const s = bc.buildStatus({
@@ -191,7 +191,7 @@ test("buildStatus defaults ageRecipient/update to null when not supplied", () =>
   assert.strictEqual(s.update, null);
 });
 
-// ---- Task 9c: honest schedule reporting on upgraded boxes ------------------
+// ---- honest schedule reporting on upgraded boxes --------------------------
 // A box upgraded from older code has no BACKUP_SCHEDULE_* in backup.env, so
 // `preset` is null even though systemd is actually running a real schedule
 // (the shipped .timer, or an old drop-in). `effective` — read straight off
@@ -229,7 +229,7 @@ test("parseTimersCalendar returns null for malformed or empty values", () => {
   assert.strictEqual(bc.parseTimersCalendar("garbage output"), null);
 });
 
-// ---- Task 3: IO helpers ---------------------------------------------------
+// ---- IO helpers -----------------------------------------------------------
 
 test("renderBackupEnv writes the validated config and preserves NODE_BIN/AGE_RECIPIENT", () => {
   const env = bc.renderBackupEnv(
@@ -352,7 +352,7 @@ test("hourly preset with omitted timeOfDay still works", () => {
   assert.ok(r.ok, r.error);
 });
 
-// ---- Task 2: run-now must not touch the schedule --------------------------
+// ---- run-now must not touch the schedule ----------------------------------
 
 test("a run-now request does not rewrite the schedule drop-in", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-bc-"));
@@ -624,7 +624,7 @@ test("a save that lands mid-apply is left for the next run, not dropped", () => 
   assert.strictEqual(JSON.parse(fs.readFileSync(env.BACKUP_REQUEST, "utf8")).requestId, 99);
 });
 
-// ---- Task 15: age keygen through the root agent ---------------------------
+// ---- age keygen through the root agent ------------------------------------
 // The app must never hold the private key. Root generates it, keeps only the
 // PUBLIC half in backup.env, and hands the private half over exactly once
 // through a 0600 file the app unlinks as it reads it.

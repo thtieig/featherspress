@@ -1,10 +1,9 @@
 "use strict";
 
-// In-memory search over published posts, replacing Pagefind. The corpus is 208
-// small posts already in RAM, so a linear scan per query is instant. Matches on
-// title, tag names, and body text (case-insensitive substring); returns results
-// shaped like the old Pagefind client expected: {url, title, excerpt} with the
-// matched term wrapped in <mark>.
+// In-memory search over published posts. The posts are already in RAM and a
+// blog is small, so a linear scan per query is instant. Matches on title, tag
+// names, and body text (case-insensitive substring); returns {url, title,
+// excerpt} with the matched term wrapped in <mark>.
 
 const posts = require("./posts");
 

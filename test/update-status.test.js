@@ -130,7 +130,7 @@ test("update-status merges lastOk/lastErr/appliedAt once an apply status file ex
   assert.strictEqual(body.appliedAt, "2026-07-21T00:05:00Z");
 });
 
-// ---- agentSeenAt (review fix) ------------------------------------------
+// ---- agentSeenAt ------------------------------------------------------
 // The update-control agent (tools/update-control.js) is an optional,
 // separately-installed piece (docs/DEPLOY.md) layered on top of the
 // always-installed daily checker that writes UPDATE_STATUS_FILE. Before

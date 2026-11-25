@@ -1,39 +1,21 @@
 "use strict";
 
-// End-to-end reproduction for bugs #1/#2: "Back up now" (and "Save") reset
-// the backup schedule. This drives the FULL loop — the same one a real
-// "Back up now" click drives — not just the router in isolation:
+// "Back up now" (and "Save") must not change the backup schedule. This drives
+// the full loop a real "Back up now" click drives, not just the router:
 //
 //   1. seed backup-status.json (what the app/router read) describing a
 //      configured weekly Sunday 03:00 schedule;
 //   2. log in and POST /api/backup-run, exactly as the "Back up now" button
 //      does — the router forwards whatever status says;
-//   3. take the request the (unprivileged) app just wrote and feed it to the
-//      real root-side bc.applyRequest(), the same way
-//      test/backup-control.test.js drives it — but pointed at agent-owned
-//      files (timer drop-in + backup.env) seeded with a DIFFERENT schedule
-//      (daily 09:15);
-//   4. assert the drop-in STILL reads the original daily 09:15, i.e.
-//      unaffected by what the run-now request carried.
+//   3. feed the request the app just wrote to the real root-side
+//      bc.applyRequest(), pointed at agent-owned files (timer drop-in +
+//      backup.env) seeded with a DIFFERENT schedule (daily 09:15);
+//   4. assert the drop-in STILL reads daily 09:15.
 //
-// Step 3's seeded mismatch is deliberate, not an oversight: if the agent's
-// files were seeded to already match the request's schedule (both weekly Sun
-// 03:00), rewriting them for run-now would be a byte-identical no-op whether
-// or not the applyRequest guard exists — verified by hand: removing the
-// `if (v.config.action === "apply")` guard and reseeding with matching
-// values still left this test green. Only a genuine mismatch makes "the
-// drop-in is unchanged" a meaningful, guard-dependent assertion: if the
-// guard regresses, applyRequest overwrites the drop-in with the *request's*
-// schedule (weekly Sun 03:00) and this test fails.
-//
-// The router alone forwarding the right schedule is not, by itself, the bug
-// fix — cur.schedule && cur.schedule.preset ? cur.schedule : ... already
-// forwarded the right thing once Task 1 gave status a structured schedule,
-// with or without this task's router edit. The actual bug is in
-// applyRequest, which used to rewrite the systemd drop-in for EVERY valid
-// request including run-now; that's what steps 3-4 above pin. We also pin
-// the router's request shape (no stray `raw` key leaking from status into
-// the request) since that's a real, if lesser, cleanup this task made.
+// The mismatch in step 3 is deliberate: if the agent's files already matched
+// the request, rewriting them for run-now would be a byte-identical no-op and
+// the test would pass even without applyRequest's `action === "apply"` guard.
+// We also pin the request's shape: no `raw` key leaking from status into it.
 //
 // Isolated content/media/auth/backup files, own recovery code, so this cannot
 // interfere with test/admin.test.js's login state or backup files.

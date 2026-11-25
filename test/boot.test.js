@@ -1,6 +1,6 @@
 "use strict";
 
-// Task 0 smoke test: the app module loads and answers a health check without
+// Smoke test: the app module loads and answers a health check without
 // binding a port (Express app is exported; we call it via a throwaway server).
 
 const test = require("node:test");

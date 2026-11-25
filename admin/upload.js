@@ -1,7 +1,6 @@
-// Media upload handling, lifted verbatim from the legacy authoring/upload.js
-// (magic-byte validation, filename sanitization, collision-safe writes). The
-// only Featherspress change: saved files are returned as /media/... URLs and
-// callers pass MEDIA_DIR as `uploadsRoot`.
+// Media upload handling: magic-byte validation, filename sanitization and
+// collision-safe writes into uploadsRoot/YYYY/MM. Saved files are returned as
+// /media/... URLs; callers pass MEDIA_DIR as `uploadsRoot`.
 
 const fs = require("fs");
 const path = require("path");

@@ -2,7 +2,7 @@
 
 // In-memory content store. Reads posts/*.md and pages/*.md with gray-matter at
 // boot into a plain array; the public site and admin share this one list.
-// 208 files is tiny, so a full re-read on admin writes is cheap and avoids any
+// A blog is small, so a full re-read on admin writes is cheap and avoids any
 // incremental-update bugs.
 //
 // A post is a DRAFT only when its frontmatter says `status: draft`. Anything

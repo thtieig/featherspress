@@ -1,8 +1,8 @@
 "use strict";
 
-// Featherspress: a single Node process serving the public blog (and /admin,
-// added in Task 5) from one shared in-memory post list. Render on request,
-// no build step, no cache.
+// Featherspress: a single Node process serving the public blog and /admin
+// from one shared in-memory post list. Render on request, no build step, no
+// cache.
 
 const fs = require("fs");
 const path = require("path");

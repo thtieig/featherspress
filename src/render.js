@@ -1,8 +1,7 @@
 "use strict";
 
-// Markdown → HTML renderer. The Shiki fence renderer, language map, theme, and
-// `html: false` setting are lifted VERBATIM from the legacy site/.eleventy.js so
-// rendered post bodies are visually identical to the old static build.
+// Markdown → HTML renderer: markdown-it with raw HTML off, plus a Shiki fence
+// renderer for code blocks (language map, theme, caption and copy button).
 //
 // No cache: rendering a post is ~milliseconds and this is a personal-scale blog.
 // The Shiki highlighter is created once at boot (initHighlighter) and reused.
@@ -83,10 +82,8 @@ function renderFence(tokens, idx) {
   return `<div class="code-block">${cap}${highlighted}</div>`;
 }
 
-// Eleventy's markdown-it had raw-HTML passthrough disabled (`html: false`)
-// because 45 posts use angle-bracket placeholder text in prose that would
-// otherwise be swallowed. markdown-it's other defaults (linkify/typographer off) match
-// Eleventy's, so a plain instance + the fence rule reproduces the old output.
+// Raw HTML is off (`html: false`): posts use angle-bracket placeholders such
+// as <hostname> in prose, which must show as text rather than be swallowed.
 const md = new MarkdownIt({ html: false });
 md.renderer.rules.fence = renderFence;
 

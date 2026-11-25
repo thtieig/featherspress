@@ -1,15 +1,15 @@
 "use strict";
 
 // The SITE MANIFEST is a blog's "ID card". It carries everything site-specific
-// that used to be hardcoded in the engine: title, tagline, url, which skin to
+// that the engine does not hardcode: title, tagline, url, which skin to
 // wear, the home mode, and the nav menu. The engine reads it once at boot; the
 // active skin receives it as `site` on every render.
 //
 // Resolution order (first hit wins):
 //   1. config.SITE_MANIFEST                     (explicit path, incl. a package's site.json)
 //   2. <CONTENT_DIR>/../site.json               (sits beside content/ + media/)
-//   3. synthesized from SITE_TITLE/TAGLINE/URL env  (back-compat: the live box
-//      has no site.json yet, so it keeps rendering with the notepad skin)
+//   3. synthesized from SITE_TITLE/TAGLINE/URL env  (a site with no site.json
+//      still renders, with the default skin)
 
 const fs = require("fs");
 const path = require("path");

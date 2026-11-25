@@ -1,9 +1,8 @@
 "use strict";
 
-// The root update-control agent's PURE logic: request validation and the
-// O_NOFOLLOW/size-capped request read. The imperative IO (running
-// deploy/update.sh, consuming the request file) is exercised end-to-end on
-// the test VPS, same disclaimer as test/backup-control.test.js.
+// The root update-control agent: request validation, the heartbeat, and
+// applyRequest against a stub update.sh. The real update.sh is covered by
+// test/update-sh.test.js.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -52,14 +51,11 @@ test("rejects a malformed request", () => {
   assert.strictEqual(uc.validateRequest(undefined, CTX).ok, false);
 });
 
-// ---- heartbeat (review fix) -------------------------------------------
-// The three featherspress-update-control.* units are an optional, separately
-// -installed agent (docs/DEPLOY.md). Without some signal that this agent has
-// actually run, the admin UI cannot tell "installed, idle" apart from "never
-// installed", and used to show an Apply now button that silently did nothing
-// on every box lacking the agent. applyRequest's no-request path — hit by
-// both the .path unit firing empty and the periodic safety timer — must now
-// heartbeat UPDATE_APPLY_STATUS_FILE instead of no-op'ing entirely.
+// ---- heartbeat --------------------------------------------------------
+// The update-control units are an optional, separately installed agent
+// (docs/DEPLOY.md). The admin UI shows Apply now only once the agent has
+// checked in, so applyRequest's no-request path (the .path unit firing empty,
+// or the safety timer) must heartbeat UPDATE_APPLY_STATUS_FILE.
 
 test("applyRequest heartbeats UPDATE_APPLY_STATUS when there is no request file", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
@@ -165,9 +161,8 @@ test("applyRequest runs update.sh with AUTO_APPLY=1, the real update.conf and no
   }
 });
 
-// Regression guard for the review fix: a rejected request must never LOWER
-// the recorded watermark, or a previously-superseded requestId could
-// validate again on a later run.
+// A rejected request must never LOWER the recorded watermark, or a
+// previously superseded requestId could validate again on a later run.
 test("applyRequest never lowers the recorded watermark on a rejected request", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uc-"));
   try {

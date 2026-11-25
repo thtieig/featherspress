@@ -1,15 +1,13 @@
 "use strict";
 
-// Admin router, mounted at /admin. Adapted from the legacy authoring/server.js:
-//   - No build step. After every write we call posts.reload() so the public
-//     site's in-memory list reflects the change immediately (publishing is
-//     instant: just write the .md).
-//   - Content dirs / media dir / auth config come from config.
-//   - Media lives at /media/ (was /wp-content/uploads/).
-//   - Drafts: a `status: draft` field; drafts 404 on the public site and are
+// Admin router, mounted at /admin: sign-in (password + TOTP, or a one-time
+// recovery code), the post/page editor, the media library, and the backup,
+// restore and update panels, whose privileged work is done by the root agents
+// in tools/.
+//   - No build step: every content write re-reads the posts (posts.load()),
+//     so the public site shows the change at once.
+//   - Drafts carry `status: draft`; they 404 on the public site and are
 //     viewable only via the authenticated /admin/preview/:type/:slug route.
-// Auth (password + TOTP + one-time recovery codes), rate limiting, sessions,
-// upload validation, and the media usage/orphan logic are kept verbatim.
 
 const express = require("express");
 const session = require("express-session");
@@ -290,11 +288,10 @@ router.post("/api/backup-run", (req, res) => {
     destination,
     keepLast: cur.keepLast || 14,
     // Forward the current scope so "Back up now" never widens it back to
-    // all five sections. `cur.sections` is null on any box that has never
-    // set a scope (both production boxes as of this writing) — that MUST
-    // become `undefined`, not null, so validateRequest's absent-field
-    // back-compat default (all sections) applies instead of the array
-    // check rejecting the whole run-now request.
+    // all five sections. `cur.sections` is null on a box that has never set
+    // a scope; that must become `undefined`, not null, so the agent's
+    // absent-field default (all sections) applies instead of its array check
+    // rejecting the whole run-now request.
     sections: Array.isArray(cur.sections) ? cur.sections : undefined,
     schedule:
       cur.schedule && cur.schedule.preset
@@ -518,8 +515,7 @@ function termList(namesCsv) {
 }
 
 // Apply a status value to a frontmatter data object: draft is stored
-// explicitly; published removes the key so files match the 208 legacy posts
-// (missing status = published).
+// explicitly; published removes the key (missing status = published).
 function applyStatus(data, status) {
   if (status === "draft") data.status = "draft";
   else delete data.status;
