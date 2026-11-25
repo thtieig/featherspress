@@ -20,7 +20,6 @@ node_modules/
 
 # Python virtualenv for the converter (created per the migration guide).
 .venv/
-/converter/.venv/
 
 # Editor / OS cruft.
 *.log
@@ -30,8 +29,10 @@ node_modules/
 
 # Scratch
 *.tmp
-/wp-content/
-/plans/
+
+# Private area: live sites' backups, age keys, server snapshots, notes.
+# Never commit anything under it (this repo is public).
+/private/
 
 # Python bytecode
 __pycache__/
