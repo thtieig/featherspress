@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily Featherspress engine update check
+Description=Daily Featherspress engine update check for %i
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

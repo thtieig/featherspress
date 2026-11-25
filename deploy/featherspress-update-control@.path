@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch the Featherspress update request file for %i (/admin -> root agent)
+
+[Path]
+# Fires the control agent when /admin writes an update-apply request. A
+# 5-minute safety timer backstops any missed event; the agent is idempotent
+# via requestId.
+PathModified=/var/lib/featherspress/%i/update-request.json
+Unit=featherspress-update-control@%i.service
+
+[Install]
+WantedBy=multi-user.target

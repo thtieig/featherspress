@@ -1,0 +1,13 @@
+[Unit]
+Description=Featherspress backup control agent for %i (applies /admin backup requests as root)
+# Runs the root-side validator that turns an /admin request into backup.env +
+# a timer drop-in, or restores an uploaded archive. The unprivileged app can
+# only WRITE the request file; this, as root, decides whether to honour it.
+# It works on instance %i only. See tools/backup-control.js.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/node/bin/node /opt/featherspress/%i/tools/backup-control.js apply
+# A second oneshot step: the same unit serves both request files, so one
+# .path trigger covers a backup-config change and a restore.
+ExecStart=/opt/node/bin/node /opt/featherspress/%i/tools/backup-control.js restore

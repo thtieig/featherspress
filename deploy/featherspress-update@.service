@@ -1,0 +1,12 @@
+[Unit]
+Description=Featherspress engine update check for %i (and apply if AUTO_APPLY=1)
+# Commented out deliberately — see the note in featherspress-backup@.service:
+# an OnFailure= naming a unit you have not installed is silently ignored.
+#OnFailure=status-email@%n.service
+
+[Service]
+Type=oneshot
+# Root: writes this site's code dir (on apply) and restarts featherspress@%i.
+# Whether it applies or only notifies is AUTO_APPLY in
+# /etc/featherspress/%i/update.conf.
+ExecStart=/opt/featherspress/%i/deploy/update.sh

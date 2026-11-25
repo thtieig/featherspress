@@ -2,8 +2,8 @@
 
 // site-package: the ONE pack/unpack primitive for Featherspress.
 //
-// A Site Package is one self-contained blog, laid out exactly like the data dir
-// (/var/lib/featherspress):
+// A Site Package is one self-contained blog, laid out exactly like a site's
+// data dir (/var/lib/featherspress/<name>):
 //
 //   site.json            manifest (identity + skin + nav + home mode)
 //   content/posts|pages/  Markdown with front matter
@@ -475,8 +475,8 @@ function assertNotEngineDir(contentDir, engineRoot, allow) {
         `  engine dir:         ${engineRoot}\n` +
         `This means no deployment config was loaded, so the paths fell back to the\n` +
         `bundled example-site. Point the tool at your deployment's env file:\n` +
-        `  --env-file /etc/featherspress/featherspress.env\n` +
-        `(or pass CONTENT_DIR/MEDIA_DIR/AUTH_CONFIG/FAVICON_DIR in the environment).\n` +
+        `  --env-file /etc/featherspress/<name>/featherspress.env\n` +
+        `(or set SITE_PACKAGE=/var/lib/featherspress/<name> in the environment).\n` +
         `If you really do mean the engine dir, pass --allow-engine-dir.`
     );
   }

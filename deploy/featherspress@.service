@@ -1,0 +1,39 @@
+[Unit]
+Description=Featherspress site %i
+After=network.target
+
+[Service]
+Type=simple
+
+# One system user per site (fp-<name>, made by deploy/add-instance.sh). It
+# reads its own code checkout and reads/writes its own data dir, nothing else.
+User=fp-%i
+Group=fp-%i
+
+# This site's own git checkout. Code only: no content, no media, no secrets.
+WorkingDirectory=/opt/featherspress/%i
+
+# The server's one shared Node runtime (tools/install-node.sh /opt/node).
+ExecStart=/opt/node/bin/node server.js
+
+# PORT, SESSION_SECRET and SITE_PACKAGE=/var/lib/featherspress/%i live here,
+# so the unit carries no site-specific values or secrets.
+EnvironmentFile=/etc/featherspress/%i/featherspress.env
+Environment=PATH=/opt/node/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening (the process only needs to read code + write its data dir) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/featherspress/%i
+
+# The engine binds to 127.0.0.1:PORT; the internet reaches it only through
+# this site's Apache vhost.
+
+[Install]
+WantedBy=multi-user.target

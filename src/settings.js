@@ -8,7 +8,7 @@
 // code just to build a settings object.
 
 // When backups run if nothing else says: the time in the shipped
-// deploy/featherspress-backup.timer.
+// deploy/featherspress-backup@.timer.
 const DEFAULT_BACKUP_TIME = "00:20";
 
 // The portable half of the box's configuration. Box-specific facts (paths,

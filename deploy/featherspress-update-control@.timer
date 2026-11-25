@@ -1,0 +1,12 @@
+[Unit]
+Description=Safety net for the Featherspress update control agent for %i
+
+[Timer]
+# Backstop for any inotify event the .path unit misses. It also heartbeats,
+# which is how /admin knows the agent is there and shows Apply now.
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=featherspress-update-control@%i.service
+
+[Install]
+WantedBy=timers.target

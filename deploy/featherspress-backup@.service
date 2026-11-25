@@ -1,0 +1,21 @@
+[Unit]
+Description=Featherspress data backup for %i (Site Package, full profile)
+# A silent backup failure means no backup when you need one — so wire up a
+# notifier. Left COMMENTED OUT on purpose: with no such unit installed, systemd
+# just logs "Failed to enqueue OnFailure= job" and every failure passes in
+# silence. An OnFailure= pointing at nothing reads like failures are covered.
+#
+# Uncomment once you have a handler (email/ntfy/…), and TEST it by forcing a
+# failure: point RCLONE_REMOTE at a bad name and `systemctl start` this unit.
+#OnFailure=status-email@%n.service
+#
+# Until then, check on it yourself:
+#   systemctl is-failed featherspress-backup@<name>.service
+#   systemctl list-timers 'featherspress-backup@*'
+#   journalctl -u featherspress-backup@<name>.service --since -7d
+
+[Service]
+Type=oneshot
+# Root: the backup reads auth-config.json and writes/prunes the destination.
+# Config: /etc/featherspress/%i/backup.env (see deploy/backup.env.example).
+ExecStart=/opt/featherspress/%i/deploy/backup.sh

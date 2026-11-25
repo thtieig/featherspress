@@ -1,8 +1,9 @@
 [Unit]
-Description=Daily Featherspress data backup
+Description=Daily Featherspress data backup for %i
 
 [Timer]
 # Daily, a few minutes after midnight, with jitter; catch up if the box was off.
+# /admin changes this through a drop-in, featherspress-backup@%i.timer.d/.
 OnCalendar=*-*-* 00:20:00
 RandomizedDelaySec=900
 Persistent=true

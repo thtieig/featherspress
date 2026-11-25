@@ -1,25 +1,22 @@
-# Featherspress update configuration.
-# Install to /etc/featherspress/update.conf  (root:root, chmod 600).
-# Read ONLY by root's deploy/update.sh — NOT by the app (the unprivileged app
-# cannot apply updates), so this operator toggle stays out of the app's env.
-# A value set in update.sh's environment wins over this file, e.g.
-#   sudo env AUTO_APPLY=1 /opt/featherspress/deploy/update.sh
+# Featherspress update configuration for ONE site, instance @INSTANCE@.
+# Lives at /etc/featherspress/@INSTANCE@/update.conf (root:root, chmod 600).
+# deploy/add-instance.sh writes it from this file. Read ONLY by root's
+# /opt/featherspress/@INSTANCE@/deploy/update.sh — NOT by the app (the
+# unprivileged app cannot apply updates). A value set in update.sh's
+# environment wins over this file, e.g.
+#   sudo env AUTO_APPLY=1 /opt/featherspress/@INSTANCE@/deploy/update.sh
 
 # Auto-apply updates?
 #   0 = notify only (default): the timer checks and writes update-status.json;
-#       the admin banner tells you an update is available; you apply it yourself
-#       (see docs/DEPLOY.md).
+#       /admin shows "update available" and an Apply now button.
 #   1 = fully automatic: the timer also pulls, reinstalls deps, restarts, health-
 #       checks, and rolls back on failure. Convenient, but a compromised upstream
-#       commit auto-executes within one timer tick — opt in per box, knowingly.
+#       commit auto-executes within one timer tick — opt in per site, knowingly.
 AUTO_APPLY=0
 
 # Git ref (branch) to track.
 REPO_REF=main
 
 # Overrides (defaults shown; usually leave commented):
-#ENGINE_DIR=/opt/featherspress
 #NODE_BIN=/opt/node/bin/node
 #NPM_BIN=/opt/node/bin/npm
-#SERVICE=featherspress
-#FP_USER=featherspress

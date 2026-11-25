@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch the Featherspress backup request files for %i (/admin -> root agent)
+
+[Path]
+# Fires the control agent when /admin writes a new request. A rename-into-place
+# may not always emit PathModified, so a 2-minute safety timer backstops any
+# missed event; the agent is idempotent via requestId.
+PathModified=/var/lib/featherspress/%i/backup-request.json
+PathModified=/var/lib/featherspress/%i/restore-request.json
+Unit=featherspress-backup-control@%i.service
+
+[Install]
+WantedBy=multi-user.target

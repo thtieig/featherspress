@@ -1,0 +1,13 @@
+[Unit]
+Description=Featherspress update control agent for %i (applies /admin update-apply requests as root)
+# Turns a GUI "Apply now" click into git pull + npm ci + restart of this one
+# site, via its own deploy/update.sh. The unprivileged app can only WRITE the
+# request file; this, as root, decides whether to honour it.
+# See tools/update-control.js.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/node/bin/node /opt/featherspress/%i/tools/update-control.js apply
+# update.sh's npm-ci/restart/health-check cycle can take a few minutes on a
+# small VPS; this bounds a genuine hang.
+TimeoutStartSec=1800
