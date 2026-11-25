@@ -167,7 +167,8 @@ exactly what does and doesn't migrate: [docs/MIGRATING-FROM-WORDPRESS.md](docs/M
 
 `/admin` is an authenticated area to write, edit, and delete **posts and pages**
 (and manage media). Site identity (nav, skin, home mode) lives in `site.json`,
-not the UI. Run `npm run setup` once to create the admin login (password + TOTP).
+not the UI. Run `npm run setup` once to create the admin login (password + TOTP),
+and set `SESSION_SECRET` (see below).
 
 ## Configuration
 
@@ -180,7 +181,7 @@ All optional; sensible defaults for local dev.
 | `SITE_MANIFEST` | Explicit path to `site.json`. |
 | `SKINS_DIR` / `DEFAULT_SKIN` | Where skins live / fallback skin. |
 | `PORT` / `HOST` | Bind address (default `127.0.0.1:3000`). |
-| `SESSION_SECRET` | Set a real value in production. |
+| `SESSION_SECRET` | Required for `/admin`: 32+ random characters (`openssl rand -hex 32`). Without it `/admin` answers 503; the public site still runs. |
 
 ## Deploying
 

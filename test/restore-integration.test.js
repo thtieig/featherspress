@@ -50,6 +50,7 @@ fs.writeFileSync(path.join(LIVE, "auth-config.json"), JSON.stringify({
 process.env.CONTENT_DIR = path.join(LIVE, "content");
 process.env.MEDIA_DIR = path.join(LIVE, "media");
 process.env.AUTH_CONFIG = path.join(LIVE, "auth-config.json");
+process.env.SESSION_SECRET = "test-session-secret-at-least-32-chars";
 process.env.SITE_MANIFEST = path.join(LIVE, "site.json");
 process.env.IMPORT_STAGING_DIR = STAGING;
 process.env.BACKUP_STATUS_FILE = path.join(LIVE, "backup-status.json");

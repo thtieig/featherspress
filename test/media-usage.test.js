@@ -84,6 +84,7 @@ fs.writeFileSync(
 
 process.env.SITE_PACKAGE = PKG;
 process.env.AUTH_CONFIG = AUTH;
+process.env.SESSION_SECRET = "test-session-secret-at-least-32-chars";
 // Clear per-dir overrides a sibling test file might have left in this env.
 delete process.env.CONTENT_DIR;
 delete process.env.MEDIA_DIR;

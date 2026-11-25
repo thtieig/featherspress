@@ -20,6 +20,7 @@ fs.mkdirSync(path.join(TMP, "media"), { recursive: true });
 process.env.CONTENT_DIR = path.join(TMP, "content");
 process.env.MEDIA_DIR = path.join(TMP, "media");
 process.env.AUTH_CONFIG = path.join(TMP, "auth-config.json");
+process.env.SESSION_SECRET = "test-session-secret-at-least-32-chars";
 process.env.UPDATE_STATUS_FILE = path.join(TMP, "update-status.json");
 process.env.UPDATE_APPLY_STATUS_FILE = path.join(TMP, "update-apply-status.json");
 

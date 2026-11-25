@@ -41,6 +41,23 @@ const AUTH_CONFIG_PATH = config.AUTH_CONFIG;
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const router = express.Router();
+
+// The session cookie is signed with SESSION_SECRET, so a missing, placeholder
+// or short one is refused: /admin answers 503 on every route and says why. The
+// public site keeps running.
+function sessionSecretProblem(secret) {
+  if (!secret || secret === "dev-insecure-change-me") return "SESSION_SECRET is not set";
+  if (secret.startsWith("CHANGE_ME")) return "SESSION_SECRET is still the CHANGE_ME placeholder";
+  if (secret.length < 32) return "SESSION_SECRET is shorter than 32 characters";
+  return null;
+}
+const secretProblem = sessionSecretProblem(config.SESSION_SECRET);
+if (secretProblem) {
+  const msg = `Featherspress /admin is disabled: ${secretProblem}. Generate one with: openssl rand -hex 32`;
+  console.error(msg);
+  router.use((req, res) => res.status(503).type("text/plain").send(msg + "\n"));
+}
+
 router.use(express.json());
 
 const loginLimiter = rateLimit({
@@ -63,17 +80,11 @@ const updateApplyLimiter = rateLimit({
   message: { error: "Too many update-apply attempts. Try again in a few minutes." },
 });
 
-// Use a stable secret from config when one is set (production), else a random
-// per-start secret (dev). Either way the session STORE is in-memory, so a
-// restart still requires signing in again, which is fine for a single-author tool.
-const SESSION_SECRET =
-  config.SESSION_SECRET && config.SESSION_SECRET !== "dev-insecure-change-me"
-    ? config.SESSION_SECRET
-    : crypto.randomBytes(32).toString("hex");
-
+// The session STORE is in-memory, so a restart still requires signing in
+// again, which is fine for a single-author tool.
 router.use(
   session({
-    secret: SESSION_SECRET,
+    secret: config.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {

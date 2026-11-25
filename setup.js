@@ -125,7 +125,8 @@ async function main() {
   console.log("\nRunning low on unused codes later? Just re-run this script to get a fresh set.");
 
   console.log("\nSaved to " + AUTH_CONFIG_PATH + " (gitignored -- keep it private).");
-  console.log("Start the server with: node server.js");
+  console.log("Start the server with: SESSION_SECRET=$(openssl rand -hex 32) node server.js");
+  console.log("(production: set SESSION_SECRET once in the env file, see docs/DEPLOY.md)");
 }
 
 main();

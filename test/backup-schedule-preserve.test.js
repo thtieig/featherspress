@@ -54,6 +54,7 @@ fs.mkdirSync(path.join(TMP, "media"), { recursive: true });
 process.env.CONTENT_DIR = path.join(TMP, "content");
 process.env.MEDIA_DIR = path.join(TMP, "media");
 process.env.AUTH_CONFIG = path.join(TMP, "auth-config.json");
+process.env.SESSION_SECRET = "test-session-secret-at-least-32-chars";
 
 const PASSWORD = "scheduletestpw456";
 const RECOVERY = "wxyz-9876";
