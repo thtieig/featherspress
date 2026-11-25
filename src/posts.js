@@ -28,7 +28,9 @@ function coerceDate(value) {
 
 function parseFile(dir, filename, type) {
   const raw = fs.readFileSync(path.join(dir, filename), "utf8");
-  const { data, content } = matter(raw);
+  // Options ({}) bypass gray-matter's cache, which stores a file BEFORE parsing
+  // it: without this a broken file throws once, then "parses" on the next read.
+  const { data, content } = matter(raw, {});
   const slug = data.slug || path.basename(filename, ".md");
   return {
     type, // "post" | "page"
@@ -49,10 +51,16 @@ function parseFile(dir, filename, type) {
 function loadDir(sub, type) {
   const dir = path.join(contentDir, sub);
   if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".md"))
-    .map((f) => parseFile(dir, f, type));
+  const items = [];
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+    // One file with broken front matter must not stop the whole site.
+    try {
+      items.push(parseFile(dir, f, type));
+    } catch (err) {
+      console.warn(`Skipping ${path.join(dir, f)}: ${err.message}`);
+    }
+  }
+  return items;
 }
 
 function byDateDesc(a, b) {

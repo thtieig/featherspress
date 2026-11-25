@@ -439,23 +439,32 @@ function statusOf(data) {
   return data.status === "draft" ? "draft" : "published";
 }
 
-function readContentDir(dir, type) {
+// A file whose front matter won't parse is skipped with a warning (and pushed
+// onto `unreadable` when given), so one bad file can't break the whole admin.
+function readContentDir(dir, type, unreadable) {
   fs.mkdirSync(dir, { recursive: true });
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(".md"))
-    .map((f) => {
-      const file = matter.read(path.join(dir, f));
-      return {
-        type,
-        slug: file.data.slug || f.replace(/\.md$/, ""),
-        title: file.data.title || "(untitled)",
-        date: file.data.date || "",
-        postTags: file.data.postTags || [],
-        status: statusOf(file.data),
-        filename: f,
-      };
+  const items = [];
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+    let file;
+    try {
+      // Options ({}) bypass gray-matter's cache; see src/posts.js.
+      file = matter.read(path.join(dir, f), {});
+    } catch (err) {
+      console.warn(`Skipping ${path.join(dir, f)}: ${err.message}`);
+      if (unreadable) unreadable.push({ type, dir, filename: f });
+      continue;
+    }
+    items.push({
+      type,
+      slug: file.data.slug || f.replace(/\.md$/, ""),
+      title: file.data.title || "(untitled)",
+      date: file.data.date || "",
+      postTags: file.data.postTags || [],
+      status: statusOf(file.data),
+      filename: f,
     });
+  }
+  return items;
 }
 
 function readAllPosts() {
@@ -590,10 +599,18 @@ function buildUsageIndex() {
   const usage = new Map();
 
   // 1 + 2. Every post and page: frontmatter (a cover/hero field) and body.
-  for (const item of readAllContent()) {
+  const unreadable = [];
+  const items = [...readContentDir(POSTS_DIR, "post", unreadable), ...readContentDir(PAGES_DIR, "page", unreadable)];
+  for (const item of items) {
     const file = matter.read(path.join(DIR_FOR[item.type], item.filename));
     const ref = { type: item.type, slug: item.slug, title: item.title };
     addRefs(usage, JSON.stringify(file.data) + "\n" + file.content, ref);
+  }
+  // A file whose front matter won't parse is in no list, but the media it uses
+  // must still count: scan its raw text.
+  for (const { type, dir, filename } of unreadable) {
+    const ref = { type, slug: filename.replace(/\.md$/, ""), title: filename };
+    addRefs(usage, fs.readFileSync(path.join(dir, filename), "utf8"), ref);
   }
 
   // 3. The site manifest. Missing file = nothing to scan; anything else
