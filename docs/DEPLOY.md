@@ -81,7 +81,8 @@ dependencies, the three config files (with a new random `SESSION_SECRET`), and
 the Apache vhost, then starts the site and all its timers. It refuses a port or
 domain another instance already uses. Running it again is safe: it keeps the
 existing checkout, config and login. `RELOAD_APACHE=1` makes it reload Apache
-for you.
+for you. `ALIASES="www.blog.example.org"` (space-separated) adds other names
+the vhost answers to; pass them to certbot as extra `-d` names too.
 
 ## 4. Admin login, or restore
 

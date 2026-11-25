@@ -15,6 +15,7 @@
 # Node must already be in /opt/node (tools/install-node.sh /opt/node). Safe to
 # re-run: it keeps an existing checkout, config and login. Apache is only
 # reloaded when RELOAD_APACHE=1. repo-url may be a local path or git bundle.
+# ALIASES="www.example.org ..." adds ServerAlias names to a new vhost.
 set -euo pipefail
 
 die() { echo "add-instance: $*" >&2; exit 1; }
@@ -31,8 +32,14 @@ INSTANCE="$NAME" ENGINE_DIR="/opt/featherspress/$NAME"
 . "$HERE/instance.sh"
 CODE="$ENGINE_DIR" BACKUPS="$BACKUP_ROOT" FP_USER="fp-$NAME"
 
-[[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] ||
+DOMAIN_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+[[ "$DOMAIN" =~ $DOMAIN_RE ]] ||
   die "'$DOMAIN' is not a domain name (lowercase, like blog.example.org)"
+read -ra ALIAS_LIST <<<"${ALIASES:-}"
+for a in "${ALIAS_LIST[@]}"; do
+  [[ "$a" =~ $DOMAIN_RE ]] || die "alias '$a' is not a domain name (lowercase, like www.blog.example.org)"
+  [ "$a" != "$DOMAIN" ] || die "alias '$a' is the domain itself"
+done
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] ||
   die "port must be a number from 1024 to 65535"
 
@@ -54,7 +61,9 @@ for f in "$ETC"/apache2/sites-available/*.conf; do
     "featherspress-$NAME.conf" | "featherspress-$NAME-le-ssl.conf")
       grep -qxF "$DOMAIN" <<<"$names" || die "$NAME already serves $(head -n1 <<<"$names"), not $DOMAIN" ;;
     *)
-      ! grep -qxF "$DOMAIN" <<<"$names" || die "$DOMAIN is already served by $(basename "$f")" ;;
+      for n in "$DOMAIN" "${ALIAS_LIST[@]}"; do
+        ! grep -qxF "$n" <<<"$names" || die "$n is already served by $(basename "$f")"
+      done ;;
   esac
 done
 
@@ -116,8 +125,11 @@ systemctl enable --now --quiet "featherspress@$NAME.service" \
 # --- Apache --------------------------------------------------------------------
 VHOST="/etc/apache2/sites-available/featherspress-$NAME.conf"
 if [ -d /etc/apache2/sites-available ]; then
+  # No aliases: drop the template's ServerAlias line.
+  alias_line='^[[:space:]]*ServerAlias @ALIASES@$'
+  if [ ${#ALIAS_LIST[@]} -gt 0 ]; then aliases="/$alias_line/s|@ALIASES@|${ALIAS_LIST[*]}|"; else aliases="/$alias_line/d"; fi
   [ -e "$VHOST" ] ||
-    sed -e "s|@INSTANCE@|$NAME|g; s|@DOMAIN@|$DOMAIN|g; s|@PORT@|$PORT|g" \
+    sed -e "s|@INSTANCE@|$NAME|g; s|@DOMAIN@|$DOMAIN|g; s|@PORT@|$PORT|g; $aliases" \
       "$CODE/deploy/apache/featherspress.conf" > "$VHOST"
   a2enmod -q proxy proxy_http headers rewrite >/dev/null
   a2ensite -q "featherspress-$NAME" >/dev/null

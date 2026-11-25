@@ -27,7 +27,11 @@ function server() {
 }
 
 function run(etc, ...args) {
-  return spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, FP_ETC: etc } });
+  return runWith({}, etc, ...args);
+}
+
+function runWith(env, etc, ...args) {
+  return spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, ...env, FP_ETC: etc } });
 }
 
 function refuses(r, re) {
@@ -94,4 +98,37 @@ test("add-instance.sh accepts a new instance, and a re-run of an existing one, t
   } finally {
     fs.rmSync(etc, { recursive: true, force: true });
   }
+});
+
+test("add-instance.sh refuses a bad alias, or one another instance already serves", () => {
+  const etc = server();
+  try {
+    const args = ["alpha", "alpha.example.org", "8801"];
+    refuses(runWith({ ALIASES: "WWW.alpha.example.org" }, etc, ...args), /alias 'WWW/);
+    refuses(runWith({ ALIASES: "www.alpha.example.org not/a/domain" }, etc, ...args), /alias 'not\/a\/domain'/);
+    refuses(runWith({ ALIASES: "alpha.example.org" }, etc, ...args), /the domain itself/);
+    refuses(runWith({ ALIASES: "www.alpha.example.org www.beta.example.org" }, etc, ...args),
+      /www\.beta\.example\.org .*featherspress-beta/);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});
+
+test("add-instance.sh accepts free aliases, then wants root", () => {
+  if (process.getuid() === 0) return;
+  const etc = server();
+  try {
+    const r = runWith({ ALIASES: "www.alpha.example.org  alpha.example.net" }, etc, "alpha", "alpha.example.org", "8801");
+    assert.strictEqual(r.status, 1, r.stderr);
+    assert.match(r.stderr, /as root/);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});
+
+test("the vhost template has the one ServerAlias line add-instance.sh fills in or drops", () => {
+  const tpl = fs.readFileSync(path.join(__dirname, "..", "deploy", "apache", "featherspress.conf"), "utf8");
+  const lines = tpl.split("\n").filter((l) => l.includes("@ALIASES@"));
+  assert.deepStrictEqual(lines, ["    ServerAlias @ALIASES@"]);
+  assert.match(fs.readFileSync(SCRIPT, "utf8"), /ServerAlias @ALIASES@\$/);
 });
