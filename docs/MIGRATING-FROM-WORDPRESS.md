@@ -66,6 +66,10 @@ copied).
 
 ## Step 3: Run the converter
 
+On Debian/Ubuntu, `python3 -m venv` needs the `python3-venv` package first
+(`sudo apt install python3-venv`); without it the venv step fails with
+"ensurepip is not available".
+
 ```sh
 python3 -m venv converter/.venv
 converter/.venv/bin/pip install -r converter/requirements.txt
@@ -161,7 +165,8 @@ An existing `site.json` is **never overwritten**, so hand-edits survive re-runs.
 - **Any skin options**, e.g. a hero image for a magazine-style skin
   (`"options": { "heroImage": "/media/…" }`).
 - **Hosting & DNS.** See [DEPLOY.md](DEPLOY.md).
-- **Your admin login.** Run `npm run setup` to set a password + 2FA.
+- **Your admin login.** Run `npm run setup` to set a password + 2FA (on a
+  server: DEPLOY.md step 4's `setup.js`).
 - **A review pass.** Skim the converted Markdown, especially code blocks and
   any posts that used unusual shortcodes or blocks.
 
@@ -172,4 +177,15 @@ An existing `site.json` is **never overwritten**, so hand-edits survive re-runs.
 2. Edit `site.json`: title, tagline, nav, skin, home mode.
 3. Spot-check code blocks and any shortcode-heavy posts.
 4. `npm run setup` to create your admin login, then write/fix from `/admin`.
-5. Deploy, following [DEPLOY.md](DEPLOY.md).
+5. Deploy, following [DEPLOY.md](DEPLOY.md): steps 1 to 3 make an empty
+   site, then load the package into it and restart (as root; the package
+   folder must be readable by root):
+
+   ```sh
+   sudo /opt/node/bin/node /opt/featherspress/blog/tools/site-package.js import \
+     --env-file /etc/featherspress/blog/featherspress.env /path/to/your-package --force
+   sudo systemctl restart featherspress@blog
+   ```
+
+   Then step 4's `setup.js` for the login (a converted package has none),
+   and on from step 5 (HTTPS).

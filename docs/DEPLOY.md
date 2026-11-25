@@ -223,10 +223,18 @@ the backup in **Backups on this server** and press Restore.
 
    Then delete `/root/restore.tar.gz` and the `/tmp/featherspress-prerestore-*`
    snapshot: both hold your credentials. This route does not bring the backup
-   settings back; set them in `/admin`.
+   settings back; set them in `/admin`. To keep encrypting to the **same**
+   key (not a new one from "Set up encryption"), print its public key on the
+   machine that holds it, `age-keygen -y key.txt`, and add that line to
+   `/etc/featherspress/blog/backup.env` as `AGE_RECIPIENT=age1...`.
 6. **HTTPS:** if you saved the old server's `/etc/letsencrypt`, copy it back
-   and run `sudo certbot install --apache --cert-name blog.example.org`.
-   Otherwise run step 5 for a new certificate (after DNS points here).
+   (`sudo tar -C / -xpf etc-letsencrypt.tar` for a tar of it), run step 5's
+   first two commands (`a2enmod ...` and `apt install ... certbot`), then
+   `sudo certbot install --apache --cert-name blog.example.org` and
+   `sudo systemctl reload apache2`. Several sites from different old servers
+   can share one `/etc/letsencrypt`: unpack each in turn. Renewal needs DNS
+   to point here (step 7). Otherwise run step 5 for a new certificate (after
+   DNS points here).
 7. **DNS:** point the domain at the new server.
 8. **Confirm the next nightly backup:** `systemctl list-timers
    'featherspress-backup@blog*'` shows it scheduled, and the next morning
