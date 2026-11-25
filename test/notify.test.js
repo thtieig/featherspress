@@ -303,3 +303,118 @@ test("CLI: an invalid notify.json is logged, not sent, and still exits 0", async
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- deploy/backup.sh: one email per failed run ----------------------------------
+
+const BACKUP_SH = path.join(ROOT, "deploy", "backup.sh");
+
+// A throwaway site and backup.env, and backup.sh run with its outputs moved
+// into the temp dir. Mail goes to the sink when `port` is given.
+function backupSite(backupEnv) {
+  const dir = tmp();
+  const pkg = path.join(dir, "site");
+  fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+  fs.writeFileSync(path.join(pkg, "content", "posts", "hello.md"), "---\ntitle: Hi\n---\nhi\n");
+  fs.writeFileSync(path.join(dir, "featherspress.env"), `SITE_PACKAGE=${pkg}\n`);
+  fs.writeFileSync(path.join(dir, "backup.env"), backupEnv.join("\n") + "\n");
+  return dir;
+}
+
+function runBackup(dir, { port, env = {} } = {}) {
+  const notifyCfg = port ? writeConfig(dir, smtpConfig(port)) : path.join(dir, "no-notify.json");
+  return runAsync("bash", [BACKUP_SH], {
+    env: {
+      INSTANCE: "alpha",
+      DATA_DIR: dir,
+      FP_ENV: path.join(dir, "featherspress.env"),
+      BACKUP_ENV: path.join(dir, "backup.env"),
+      BACKUP_LOCK: path.join(dir, "backup.lock"),
+      LAST_RUN_FILE: path.join(dir, "last-run.json"),
+      BACKUP_STATUS: path.join(dir, "backup-status.json"),
+      SCHEDULE_DROPIN: path.join(dir, "schedule.conf"),
+      UPDATE_CONF: path.join(dir, "no-update.conf"),
+      BACKUP_ROOT: path.join(dir, "backups"),
+      ENGINE_DIR: ROOT,
+      NODE_BIN: process.execPath,
+      NOTIFY_CONFIG: notifyCfg,
+      CONTENT_DIR: "",
+      MEDIA_DIR: "",
+      SITE_MANIFEST: "",
+      ...env,
+    },
+  });
+}
+
+const lastRun = (dir) => JSON.parse(fs.readFileSync(path.join(dir, "last-run.json"), "utf8"));
+
+test("backup.sh: a failed run sends one email saying why", async () => {
+  const sink = await smtpSink();
+  const dir = backupSite(["DEST_TYPE=local", "KEEP_LAST=0"]);
+  try {
+    const r = await runBackup(dir, { port: sink.port });
+    assert.strictEqual(r.status, 1, r.stderr);
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /^Subject: \[featherspress alpha\] Backup failed on /m);
+    assert.match(text, /KEEP_LAST must be at least 1/);
+    assert.match(text, /\[backup\] refusing/, "the log tail is in the body");
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backup.sh: a failed off-box copy sends one email, and the local backup is still made", async () => {
+  const sink = await smtpSink();
+  const recipient = require("node:child_process")
+    .execFileSync("age-keygen", [], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+    .match(/public key:\s*(age1[0-9a-z]+)/)[1];
+  const dir = backupSite(["DEST_TYPE=rclone", "RCLONE_REMOTE=offsite:bucket", "KEEP_LAST=2", `AGE_RECIPIENT=${recipient}`]);
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "rclone"), '#!/bin/sh\necho "Failed to copy: access denied" >&2\nexit 1\n', { mode: 0o755 });
+  try {
+    const r = await runBackup(dir, { port: sink.port, env: { PATH: bin + path.delimiter + process.env.PATH } });
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(fs.readdirSync(path.join(dir, "backups")).length, 1, "kept on this server");
+    assert.strictEqual(sink.messages.length, 1, r.stderr);
+    const text = readable(sink.messages[0].data);
+    assert.match(text, /off-box copy failed; this backup is kept on this server only/);
+    assert.match(text, /access denied/, "rclone's own words are in the log tail");
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backup.sh: a good run sends nothing", async () => {
+  const sink = await smtpSink();
+  const dir = backupSite(["DEST_TYPE=local", "KEEP_LAST=3"]);
+  try {
+    const r = await runBackup(dir, { port: sink.port });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(sink.messages.length, 0);
+  } finally {
+    sink.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backup.sh: with alerts not set up, or a mail server that refuses, the failure is recorded the same", async () => {
+  const closed = net.createServer();
+  await new Promise((r) => closed.listen(0, "127.0.0.1", r));
+  const deadPort = closed.address().port;
+  closed.close();
+  for (const port of [undefined, deadPort]) {
+    const dir = backupSite(["DEST_TYPE=local", "KEEP_LAST=0"]);
+    try {
+      const r = await runBackup(dir, { port });
+      assert.strictEqual(r.status, 1);
+      assert.strictEqual(lastRun(dir).ok, false);
+      assert.match(lastRun(dir).error, /KEEP_LAST/);
+      assert.match(r.stderr, port ? /could not send/ : /not set up/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

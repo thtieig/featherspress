@@ -28,20 +28,46 @@ record_run() {
 }
 
 # Every way this script can fail is recorded as a failed run, so the panel
-# shows it. refuse() sets the message the panel shows (fixed text: no quotes,
-# no values) and logs the detail; anything else that stops the script (set -e,
-# an unset ${VAR:?}) shows the generic one.
+# shows it, and emailed when /admin → Email alerts is set up. refuse() sets
+# the message the panel shows (fixed text: no quotes, no values) and logs the
+# detail; anything else that stops the script (set -e, an unset ${VAR:?})
+# shows the generic one, and the email's log tail says what it was.
 FAIL_MSG="backup run failed"
 refuse() {
   FAIL_MSG="$1"
   echo "[backup] refusing: $1${2:+ ($2)}" >&2
   exit 1
 }
+
+# A copy of this run's error output, for the failure email. It still goes to
+# the journal as before (fd 3 is the original stderr).
+ERR_LOG="$(mktemp)"
+exec 3>&2 2> >(tee -a "$ERR_LOG" >&3)
+TEE_PID=$!
+
+# One email per failed run (tools/notify.js; it sends nothing until email
+# alerts are set up, and never fails this script).
+send_alert() {
+  {
+    echo "The backup of this site failed: $FAIL_MSG."
+    echo
+    echo "The last lines it logged:"
+    tail -n 25 "$ERR_LOG"
+  } | "$NODE_BIN" "$ENGINE_DIR/tools/notify.js" --subject "Backup failed" || true
+}
+
 WORK=""
 on_exit() {
   local rc=$?
+  # Back to the plain stderr, and let tee finish, so the log copy is complete.
+  exec 2>&3
+  wait "$TEE_PID" 2>/dev/null || true
   [ -n "$WORK" ] && rm -rf "$WORK"
-  [ "$rc" -eq 0 ] || record_run false "\"$FAIL_MSG\"" 0
+  if [ "$rc" -ne 0 ]; then
+    record_run false "\"$FAIL_MSG\"" 0
+    send_alert
+  fi
+  rm -f "$ERR_LOG"
 }
 trap on_exit EXIT
 
