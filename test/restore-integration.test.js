@@ -363,3 +363,160 @@ test("the settings section carries the source's schedule and age recipient", asy
     "a migrated box that loses the recipient starts writing plaintext credentials");
   assert.match(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), /OnCalendar=Tue \*-\*-\* 05:45:00/);
 });
+
+// ---- the backups list: restore and download a backup kept on this server ----
+// The site's own backup folder is group-readable by the site user (0750
+// root:fp-<name>, files 0640), so the app lists and serves it directly; the
+// agent takes a plaintext backup straight from that folder by its bare name.
+const BACKUPS = path.join(TMP, "backups");
+fs.mkdirSync(BACKUPS, { recursive: true });
+const backupEnv = () => ({ ...agentEnv(), BACKUP_ROOT: BACKUPS });
+
+// The status the agent writes is where the app learns the folder.
+function refreshWithBackups() {
+  const env = backupEnv();
+  fs.writeFileSync(env.BACKUP_ENV, `DEST_TYPE=local\nLOCAL_DIR=${BACKUPS}\nKEEP_LAST=14\n`);
+  bc.applyRequest(env); // no request pending: it just refreshes the status
+}
+
+test("the backups list shows this site's backups, newest first", async () => {
+  const older = buildSourceArchive("featherspress-full-20261123-002000.tar.gz");
+  fs.copyFileSync(older, path.join(BACKUPS, "featherspress-full-20261123-002000.tar.gz"));
+  fs.writeFileSync(path.join(BACKUPS, "featherspress-full-20261124-002000-3dc6ab2.tar.gz.age"), "sealed");
+  fs.writeFileSync(path.join(BACKUPS, ".featherspress-full-20261125-002000.tar.gz.partial"), "half");
+  refreshWithBackups();
+
+  const res = await api("GET", "/admin/api/backups");
+  const body = await res.json();
+  assert.strictEqual(res.status, 200, JSON.stringify(body));
+  assert.deepStrictEqual(body.backups.map((b) => [b.name, b.encrypted, b.engine]), [
+    ["featherspress-full-20261124-002000-3dc6ab2.tar.gz.age", true, "3dc6ab2"],
+    ["featherspress-full-20261123-002000.tar.gz", false, null],
+  ]);
+  assert.strictEqual(body.backups[0].size, 6);
+  assert.strictEqual(body.backups[0].at, "2026-11-24T00:20:00Z");
+});
+
+test("Download streams a listed backup exactly as stored", async () => {
+  const name = "featherspress-full-20261123-002000.tar.gz";
+  const res = await api("GET", "/admin/api/backups/" + name);
+  assert.strictEqual(res.status, 200);
+  assert.match(res.headers.get("content-disposition") || "", new RegExp(name.replace(/\./g, "\\.")));
+  const got = Buffer.from(await res.arrayBuffer());
+  assert.ok(got.equals(fs.readFileSync(path.join(BACKUPS, name))), "the bytes must be the stored file's");
+});
+
+test("Download refuses anything that is not a listed backup", async () => {
+  fs.symlinkSync(process.env.AUTH_CONFIG, path.join(BACKUPS, "featherspress-full-20261120-002000.tar.gz"));
+  for (const bad of [
+    "featherspress-full-20261120-002000.tar.gz", // a symlink to the live login
+    ".featherspress-full-20261125-002000.tar.gz.partial",
+    "..%2Fauth-config.json",
+    "featherspress-full-20261101-002000.tar.gz", // not there
+  ]) {
+    const res = await api("GET", "/admin/api/backups/" + bad);
+    assert.strictEqual(res.status, 404, bad);
+  }
+  fs.rmSync(path.join(BACKUPS, "featherspress-full-20261120-002000.tar.gz"));
+});
+
+test("the backups list and Download require auth", async () => {
+  const saved = cookie;
+  cookie = "";
+  try {
+    assert.strictEqual((await api("GET", "/admin/api/backups")).status, 401);
+    assert.strictEqual((await api("GET", "/admin/api/backups/featherspress-full-20261123-002000.tar.gz")).status, 401);
+  } finally {
+    cookie = saved;
+  }
+});
+
+test("Restore from the list: a plaintext backup is restored in place and kept", async () => {
+  healthFails(0);
+  const name = "featherspress-full-20261123-002000.tar.gz";
+  const rq = await api("POST", "/admin/api/restore", { backupName: name, sections: ["content", "media", "site"] });
+  const rqBody = await rq.json();
+  assert.strictEqual(rq.status, 200, JSON.stringify(rqBody));
+  const req = JSON.parse(fs.readFileSync(config.RESTORE_REQUEST_FILE, "utf8"));
+  assert.strictEqual(req.backupName, name, "the request names the backup by its bare name");
+  assert.strictEqual(req.stagedName, undefined);
+  fs.writeFileSync(path.join(LIVE, "content", "posts", "later.md"), "---\ntitle: Later\ndate: 2026-04-04\n---\n\nx\n");
+
+  bc.restoreRequest(backupEnv());
+
+  const st = restoreState();
+  assert.strictEqual(st.state, "done", `restore said ${st.state}: ${st.error}`);
+  assert.strictEqual(st.appliedRequestId, rqBody.requestId);
+  assert.strictEqual(st.backupName, name);
+  assert.deepStrictEqual(livePosts(), ["migrated.md"]);
+  assert.ok(fs.existsSync(path.join(BACKUPS, name)), "restoring a backup must never delete it");
+});
+
+test("Restore from the list: an encrypted backup is decrypted with the pasted key", async () => {
+  healthFails(0);
+  const { execFileSync } = require("node:child_process");
+  const keyText = execFileSync("age-keygen", [], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const recipient = keyText.match(/public key:\s*(age1[0-9a-z]+)/)[1];
+  const plain = buildSourceArchive("enc-src.tar.gz", { title: "From An Encrypted Backup" });
+  const name = "featherspress-full-20261125-002000-3dc6ab2.tar.gz.age";
+  execFileSync("age", ["-r", recipient, "-o", path.join(BACKUPS, name), plain]);
+  const sealed = fs.readFileSync(path.join(BACKUPS, name));
+
+  const noKey = await api("POST", "/admin/api/restore", { backupName: name, sections: ["site"] });
+  assert.strictEqual(noKey.status, 400);
+  assert.match((await noKey.json()).error, /key/);
+  const wrongKey = await api("POST", "/admin/api/restore", {
+    backupName: name, sections: ["site"], identity: "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+  });
+  assert.strictEqual(wrongKey.status, 400);
+  assert.strictEqual(fs.existsSync(config.RESTORE_REQUEST_FILE), false, "a refused restore writes no request");
+
+  const rq = await api("POST", "/admin/api/restore", { backupName: name, sections: ["content", "site"], identity: keyText });
+  const rqBody = await rq.json();
+  assert.strictEqual(rq.status, 200, JSON.stringify(rqBody));
+  const req = JSON.parse(fs.readFileSync(config.RESTORE_REQUEST_FILE, "utf8"));
+  assert.ok(req.stagedName && !req.backupName, "the app decrypts into staging; the agent restores that");
+  assert.ok(!JSON.stringify(req).includes("AGE-SECRET-KEY"), "the key must never reach the request file");
+
+  bc.restoreRequest(backupEnv());
+
+  assert.strictEqual(restoreState().state, "done", restoreState().error);
+  assert.strictEqual(liveTitle(), "From An Encrypted Backup");
+  assert.ok(fs.readFileSync(path.join(BACKUPS, name)).equals(sealed), "the backup itself is untouched");
+  assert.deepStrictEqual(fs.readdirSync(STAGING), [], "the decrypted copy is cleaned up");
+});
+
+test("Restore from the list refuses a name that is not one of this site's backups", async () => {
+  for (const bad of ["../x.tar.gz", "featherspress-full-20261101-002000.tar.gz", "notes.txt"]) {
+    const rq = await api("POST", "/admin/api/restore", { backupName: bad, sections: ["content"] });
+    assert.strictEqual(rq.status, 400, bad);
+  }
+  // And the agent re-checks on its own: a forged request for a missing backup.
+  const before = livePosts();
+  fs.writeFileSync(config.RESTORE_REQUEST_FILE, JSON.stringify({
+    requestId: restoreState().appliedRequestId + 1,
+    backupName: "featherspress-full-20261101-002000.tar.gz", sections: ["content"],
+  }), { mode: 0o600 });
+  bc.restoreRequest(backupEnv());
+  assert.strictEqual(restoreState().state, "failed");
+  assert.match(restoreState().error, /not found/);
+  assert.deepStrictEqual(livePosts(), before);
+});
+
+test("the agent will not restore through a symlink planted in the backup folder", async () => {
+  const before = livePosts();
+  const target = buildSourceArchive("planted.tar.gz", { title: "Planted" });
+  const name = "featherspress-full-20261119-002000.tar.gz";
+  fs.symlinkSync(target, path.join(BACKUPS, name));
+  try {
+    fs.writeFileSync(config.RESTORE_REQUEST_FILE, JSON.stringify({
+      requestId: restoreState().appliedRequestId + 1, backupName: name, sections: ["content", "site"],
+    }), { mode: 0o600 });
+    bc.restoreRequest(backupEnv());
+    assert.strictEqual(restoreState().state, "failed");
+    assert.deepStrictEqual(livePosts(), before);
+    assert.notStrictEqual(liveTitle(), "Planted");
+  } finally {
+    fs.rmSync(path.join(BACKUPS, name));
+  }
+});

@@ -7,7 +7,7 @@
 #   code     /opt/featherspress/<name>          its own git checkout
 #   data     /var/lib/featherspress/<name>      content, media, login, status
 #   config   /etc/featherspress/<name>/         featherspress.env, backup.env, update.conf
-#   backups  /var/backups/featherspress/<name>
+#   backups  /var/backups/featherspress/<name>     root:fp-<name> 0750
 #   user     fp-<name>
 #   units    featherspress@<name> and its backup/update timers and agents
 #   vhost    /etc/apache2/sites-available/featherspress-<name>.conf (HTTP)
@@ -67,7 +67,11 @@ cd /   # the site user cannot read root's working directory
 id -u "$FP_USER" >/dev/null 2>&1 ||
   useradd --system --user-group --home-dir "$DATA_DIR" --no-create-home --shell /usr/sbin/nologin "$FP_USER"
 install -d -m 0755 /opt/featherspress /var/lib/featherspress /etc/featherspress
-install -d -m 0700 /var/backups/featherspress "$BACKUPS"
+# Backups: root writes them; the site user may read its own (the /admin list,
+# Download and Restore) and nobody else's. 0711 lets each site through to its
+# own folder without listing the others.
+install -d -m 0711 /var/backups/featherspress
+install -d -o root -g "$FP_USER" -m 0750 "$BACKUPS"
 install -d -o "$FP_USER" -g "$FP_USER" -m 0755 "$CODE"
 # 0751: Apache may pass through to media/, but nobody else can list the data.
 install -d -o "$FP_USER" -g "$FP_USER" -m 0751 "$DATA_DIR"

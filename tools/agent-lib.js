@@ -108,7 +108,80 @@ function consumeRequest(requestPath, requestId) {
   } catch {}
 }
 
+// ---- the backups in a site's own backup folder ------------------------------
+// deploy/backup.sh names every backup featherspress-full-<UTC stamp>[-<engine
+// commit>].tar.gz[.age]. The /admin list, its Download and its Restore all go
+// through these, so a name that does not match is never read, served or
+// restored, and a request can only ever name a file, never a path.
+const BACKUP_NAME_RE = /^featherspress-full-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:-([0-9a-f]{7,40}))?\.tar\.gz(\.age)?$/;
+
+function parseBackupName(name) {
+  const m = typeof name === "string" && name.match(BACKUP_NAME_RE);
+  if (!m) return null;
+  return {
+    at: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`,
+    engine: m[7] || null,
+    encrypted: !!m[8],
+  };
+}
+
+function isInside(root, p) {
+  const rel = path.relative(root, p);
+  return !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+// Where this site's local backups are: the configured folder when it is inside
+// the site's own backup root (the only place backup-control lets it be), else
+// the root itself.
+function backupDir(localDir, root) {
+  if (!root) return null;
+  return localDir && isInside(root, path.normalize(localDir)) ? path.normalize(localDir) : root;
+}
+
+// Regular files with a backup's name, newest first. A folder that does not
+// exist yet is an empty list; any other error (no permission) is thrown.
+function listBackups(dir) {
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+  const out = [];
+  for (const name of names) {
+    const meta = parseBackupName(name);
+    if (!meta) continue;
+    let st;
+    try {
+      st = fs.lstatSync(path.join(dir, name));
+    } catch {
+      continue;
+    }
+    if (!st.isFile()) continue; // never a symlink or a directory
+    out.push({ name, ...meta, size: st.size });
+  }
+  return out.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+}
+
+// The full path of one listed backup, or null when the name is not a backup's,
+// or the file is missing, a symlink or not a regular file.
+function backupFile(dir, name) {
+  if (!dir || !parseBackupName(name)) return null;
+  const p = path.join(dir, name);
+  try {
+    return fs.lstatSync(p).isFile() ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
+  BACKUP_NAME_RE,
+  parseBackupName,
+  backupDir,
+  listBackups,
+  backupFile,
   instance,
   fail,
   readRequestNoFollow,

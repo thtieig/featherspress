@@ -484,6 +484,43 @@ test("restoreAuth requires the credentials section", () => {
   assert.strictEqual(b.config.restoreAuth, true);
 });
 
+// A restore from the backups list names a backup in this site's own backup
+// folder instead of an upload. The agent can only decrypt nothing, so an
+// encrypted backup arrives decrypted by the app as an ordinary staged file;
+// a backupName is always a plaintext backup's bare file name.
+const bbase = { requestId: 5, backupName: "featherspress-full-20261125-002000-3dc6ab2.tar.gz", sections: ["content"] };
+
+test("accepts a restore of a backup from the list, by its bare name", () => {
+  const r = bc.validateRestoreRequest(bbase, RCTX);
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(r.config.backupName, bbase.backupName);
+  assert.strictEqual(r.config.stagedName, null);
+  const legacy = bc.validateRestoreRequest({ ...bbase, backupName: "featherspress-full-20261125-002000.tar.gz" }, RCTX);
+  assert.ok(legacy.ok, "a backup taken before names carried the engine is still restorable");
+});
+
+test("a backupName must be a plaintext backup's bare name", () => {
+  for (const bad of [
+    "../alpha/featherspress-full-20261125-002000.tar.gz",
+    "/var/backups/featherspress/beta/featherspress-full-20261125-002000.tar.gz",
+    "featherspress-full-20261125-002000.tar.gz.age",
+    ".featherspress-full-20261125-002000.tar.gz.partial",
+    "featherspress-full-20261125-002000.tar.gz/",
+    "auth-config.json",
+    "",
+    42,
+  ]) {
+    const r = bc.validateRestoreRequest({ ...bbase, backupName: bad }, RCTX);
+    assert.strictEqual(r.ok, false, `must reject ${JSON.stringify(bad)}`);
+    assert.doesNotMatch(r.error, /beta|alpha|auth/, "error must not echo the input");
+  }
+});
+
+test("a restore request names exactly one source", () => {
+  assert.strictEqual(bc.validateRestoreRequest({ ...bbase, stagedName: "abc.tar.gz" }, RCTX).ok, false);
+  assert.strictEqual(bc.validateRestoreRequest({ requestId: 5, sections: ["content"] }, RCTX).ok, false);
+});
+
 test("buildStatus carries the restore state", () => {
   const s = bc.buildStatus({
     writtenAt: "2026-07-25T00:00:00Z",

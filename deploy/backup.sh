@@ -122,23 +122,28 @@ case "$DEST_TYPE" in
   local)
     : "${LOCAL_DIR:?set LOCAL_DIR for DEST_TYPE=local}"
     # Every artifact here is a "full" export: password hash + TOTP secret. When
-    # no AGE_RECIPIENT is set it is PLAINTEXT, so the destination must not be
-    # world-readable. Tighten a directory we create ourselves; if one already
-    # exists with wider permissions, say so rather than silently re-permissioning
-    # a path the operator may share with other jobs.
+    # no AGE_RECIPIENT is set it is PLAINTEXT. The folder is root's, readable by
+    # its group only: deploy/add-instance.sh makes this site's folder 0750
+    # root:fp-<name>, so /admin can list, download and restore these backups
+    # while only root can write or delete them. The site user can already read
+    # the live login these carry, so this shows it nothing new. A folder we
+    # create takes its parent's group. If an existing one is wider than that,
+    # say so rather than silently re-permissioning a path the operator may
+    # share with other jobs.
     if [ -d "$LOCAL_DIR" ]; then
       MODE="$(stat -c %a "$LOCAL_DIR")"
       case "$MODE" in
-        700|750|*00) : ;;
+        *0) : ;; # nothing for "other"
         *)
-          echo "[backup] warning: $LOCAL_DIR is mode $MODE — readable beyond its owner." >&2
+          echo "[backup] warning: $LOCAL_DIR is mode $MODE — readable beyond its owner and group." >&2
           echo "[backup]          Backups contain your password hash and TOTP secret." >&2
-          echo "[backup]          Run: chmod 700 $LOCAL_DIR   (or set AGE_RECIPIENT to encrypt)" >&2
+          echo "[backup]          Run: chmod 750 $LOCAL_DIR   (or set AGE_RECIPIENT to encrypt)" >&2
           ;;
       esac
     else
       mkdir -p "$LOCAL_DIR"
-      chmod 0700 "$LOCAL_DIR"
+      chgrp --reference="$(dirname "$LOCAL_DIR")" "$LOCAL_DIR"
+      chmod 0750 "$LOCAL_DIR"
     fi
     # Sweep any truncated leftovers from a run that died mid-copy (see below).
     rm -f "$LOCAL_DIR"/.featherspress-full-*.partial
@@ -149,6 +154,12 @@ case "$DEST_TYPE" in
     cp -f "$ARTIFACT" "$LOCAL_DIR/.$BASENAME.partial"
     chmod 0600 "$LOCAL_DIR/.$BASENAME.partial"
     mv -f "$LOCAL_DIR/.$BASENAME.partial" "$LOCAL_DIR/$BASENAME"
+    # Open this backup, and any from before the list existed (0600 root:root),
+    # to the folder's group.
+    for f in "$LOCAL_DIR"/featherspress-full-*.tar.gz*; do
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
+      chgrp --reference="$LOCAL_DIR" "$f" && chmod 0640 "$f"
+    done
     STORED_BYTES="$(stat -c%s "$LOCAL_DIR/$BASENAME" 2>/dev/null || echo 0)"
     echo "[backup] stored $LOCAL_DIR/$BASENAME"
     # Prune: keep newest N (names sort chronologically by timestamp).

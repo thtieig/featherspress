@@ -161,6 +161,26 @@
   .media-actions button { margin: 0; padding: 5px 8px; font-size: 0.72rem; }
   .media-actions .insert-btn { flex: 1; }
 
+  /* Backups on this server */
+  .bk-list { border-top: 1px solid var(--rule); margin-bottom: 8px; }
+  .bk-row { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-bottom: 1px solid var(--rule);
+    border-left: 3px solid transparent; }
+  .bk-row.chosen { background: var(--bg-2); border-left-color: var(--accent); }
+  .bk-when { font-weight: 500; min-width: 0; flex: 1; }
+  .bk-when .bk-meta { display: block; color: var(--ink-faint); font-size: 0.78rem; font-weight: 400; }
+  .bk-badge { flex: none; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;
+    padding: 2px 7px; border-radius: 999px; background: var(--bg-2); color: var(--ink-soft); border: 1px solid var(--rule); }
+  .bk-row-actions { flex: none; display: flex; gap: 6px; }
+  .bk-row-actions a, .bk-row-actions button { margin: 0; padding: 5px 12px; font-size: 0.8rem; font-weight: 500;
+    border-radius: 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--ink-soft);
+    text-decoration: none; font-family: var(--sans); line-height: 1.4; }
+  .bk-row-actions a:hover, .bk-row-actions button:hover { color: var(--ink); border-color: var(--ink-faint); opacity: 1; }
+  .bk-empty { color: var(--ink-soft); font-size: 0.88rem; padding: 14px 0; }
+  .rs-source { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    background: var(--bg-2); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 6px;
+    padding: 10px 14px; margin-bottom: 12px; font-size: 0.88rem; }
+  .rs-source button { margin: 0; padding: 4px 10px; font-size: 0.8rem; font-weight: 500; }
+
   /* Confirm modal */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal { background: var(--bg); border-radius: 10px; padding: 24px; max-width: 440px; width: 90%; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
@@ -375,15 +395,25 @@
     <div class="actions"><button id="ex-download">Download archive</button></div>
 
     <hr style="margin:22px 0;">
-    <h3>Restore</h3>
+    <h3>Backups on this server</h3>
+    <div id="bk-list-note" class="hint" style="margin-bottom:10px;"></div>
+    <div id="bk-list" class="bk-list"></div>
+
+    <hr style="margin:22px 0;">
+    <h3 id="rs-heading">Restore</h3>
     <div class="hint" style="margin-bottom:10px;">
-      Upload a Featherspress archive (.tar.gz, or .tar.gz.age if encrypted) and choose what to bring back.
+      Pick a backup above, or upload a Featherspress archive (.tar.gz, or .tar.gz.age if encrypted), and
+      choose what to bring back.
       Restoring <strong>replaces</strong> the sections you pick &mdash; anything in them that is not in the
       archive is deleted. Your current site is snapshotted first, and put back automatically if the
       restored site fails to come up.
     </div>
     <div id="rs-noagent" hidden class="hint" style="margin-bottom:12px;color:#a33;font-weight:600;"></div>
-    <div style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
+    <div id="rs-source" class="rs-source" hidden>
+      <span id="rs-source-text"></span>
+      <button type="button" class="secondary" id="rs-source-clear">Upload a file instead</button>
+    </div>
+    <div id="rs-file-wrap" style="margin-bottom:12px;"><input type="file" id="rs-file" accept=".gz,.age,.tar"></div>
     <div id="rs-key-wrap" hidden style="margin-bottom:12px;">
       <label>Decryption key <span class="hint">the age private key you saved when you set up encryption</span></label>
       <textarea id="rs-key" rows="3" placeholder="AGE-SECRET-KEY-1..." style="width:100%;font-family:monospace;"></textarea>
@@ -1273,8 +1303,95 @@
   function loadBackups() {
     el('bk-msg').textContent = '';
     fetch('/admin/api/backup-status').then(function (r) { return r.json(); })
-      .then(renderBackupStatus)
+      .then(function (s) { renderBackupStatus(s); loadBackupList(); })
       .catch(function () { el('bk-status').textContent = 'Could not load backup status.'; });
+  }
+
+  // ---- Backups on this server ---------------------------------------------
+  // The app reads its own backup folder (group-readable, root-written). Each
+  // row downloads the file as stored, or picks it as the Restore source below.
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+    return (n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
+  }
+  function fmtWhen(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  function loadBackupList() {
+    fetch('/admin/api/backups').then(function (r) { return r.json(); })
+      .then(renderBackupList)
+      .catch(function () { el('bk-list-note').textContent = 'Could not load the list of backups.'; });
+  }
+  function renderBackupList(res) {
+    var list = el('bk-list');
+    list.innerHTML = '';
+    var rows = (res && res.backups) || [];
+    var note = el('bk-list-note');
+    if (res && res.readable === false) {
+      note.textContent = bkLastStatus && bkLastStatus.configured !== false
+        ? 'This site cannot read its backup folder yet. See "Upgrading a server set up before the backups list" in docs/DEPLOY.md.'
+        : 'Backups taken on this server appear here once the backup agent is installed.';
+      list.hidden = true;
+      return;
+    }
+    list.hidden = false;
+    note.textContent = rows.length
+      ? 'Newest first. Download saves the file exactly as stored; Restore brings it back using the form below.'
+      : '';
+    if (!rows.length) {
+      var empty = document.createElement('div');
+      empty.className = 'bk-empty';
+      empty.textContent = 'No backups on this server yet. Use Back up now, or wait for the schedule.';
+      list.appendChild(empty);
+      return;
+    }
+    // Keep a chosen backup chosen across a refresh, if it is still there.
+    if (rsBackup && !rows.some(function (b) { return b.name === rsBackup.name; })) rsBackup = null;
+    rows.forEach(function (b) {
+      var row = document.createElement('div');
+      row.className = 'bk-row' + (rsBackup && rsBackup.name === b.name ? ' chosen' : '');
+      var when = document.createElement('div');
+      when.className = 'bk-when';
+      when.textContent = fmtWhen(b.at);
+      var meta = document.createElement('span');
+      meta.className = 'bk-meta';
+      meta.textContent = fmtSize(b.size);
+      when.appendChild(meta);
+      row.appendChild(when);
+      var badge = document.createElement('span');
+      badge.className = 'bk-badge';
+      badge.textContent = b.encrypted ? 'Encrypted' : 'Not encrypted';
+      row.appendChild(badge);
+      var actions = document.createElement('div');
+      actions.className = 'bk-row-actions';
+      var dl = document.createElement('a');
+      dl.href = '/admin/api/backups/' + encodeURIComponent(b.name);
+      dl.textContent = 'Download';
+      dl.setAttribute('download', b.name);
+      actions.appendChild(dl);
+      var rs = document.createElement('button');
+      rs.type = 'button';
+      rs.textContent = 'Restore';
+      rs.addEventListener('click', function () { rsChooseBackup(b); });
+      actions.appendChild(rs);
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+    rsSync();
+  }
+  function rsChooseBackup(b) {
+    rsBackup = b;
+    el('rs-file').value = '';
+    el('rs-msg').textContent = '';
+    [].forEach.call(document.querySelectorAll('.bk-row'), function (r) {
+      r.classList.toggle('chosen', r.querySelector('a').getAttribute('download') === b.name);
+    });
+    rsSync();
+    el('rs-heading').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    (b.encrypted ? el('rs-key') : el('rs-confirm')).focus({ preventScroll: true });
   }
 
   // Poll until the agent records our requestId (applied or rejected), then render.
@@ -1333,6 +1450,7 @@
   // restore request. The ROOT agent does the actual restore, health-checks the
   // result and rolls back if the site does not come up.
   var rsStaged = null;
+  var rsBackup = null; // a backup picked from the list, instead of an upload
 
   function rsSections() {
     return [].slice.call(document.querySelectorAll('.rs-sec:checked')).map(function (c) { return c.value; });
@@ -1342,8 +1460,15 @@
   // manifest title. RESTORE is unambiguous and cannot be got wrong by accident.
   function rsSiteName() { return 'RESTORE'; }
   function rsSync() {
-    var f = el('rs-file').files && el('rs-file').files[0];
-    var enc = !!(f && /\.age$/i.test(f.name));
+    var b = rsBackup;
+    var f = !b && el('rs-file').files && el('rs-file').files[0];
+    var enc = b ? b.encrypted : !!(f && /\.age$/i.test(f.name));
+    el('rs-source').hidden = !b;
+    el('rs-file-wrap').hidden = !!b;
+    if (b) {
+      el('rs-source-text').textContent = 'Restoring the backup from ' + fmtWhen(b.at) +
+        (b.encrypted ? ' (encrypted)' : '') + '.';
+    }
     el('rs-key-wrap').hidden = !enc;
     var secs = rsSections();
     var creds = secs.indexOf('credentials') !== -1;
@@ -1353,14 +1478,19 @@
         'This will replace your password and 2FA. You will be signed out, and must sign back in with the ' +
         'password and authenticator app from the site this archive came from.';
     }
-    el('rs-confirm-wrap').hidden = !f;
+    el('rs-confirm-wrap').hidden = !(f || b);
     el('rs-sitename').textContent = rsSiteName();
     var typed = (el('rs-confirm').value || '').trim() === rsSiteName();
     // null means "status not loaded yet" — only a status we have actually read
     // and found absent proves the agent is missing.
     var noAgent = !!bkLastStatus && bkLastStatus.configured === false;
-    el('rs-go').disabled = !(f && secs.length && typed && !noAgent && (!enc || (el('rs-key').value || '').trim()));
+    el('rs-go').disabled = !((f || b) && secs.length && typed && !noAgent && (!enc || (el('rs-key').value || '').trim()));
   }
+  el('rs-source-clear') && el('rs-source-clear').addEventListener('click', function () {
+    rsBackup = null;
+    [].forEach.call(document.querySelectorAll('.bk-row.chosen'), function (r) { r.classList.remove('chosen'); });
+    rsSync();
+  });
   ['rs-file', 'rs-confirm', 'rs-key'].forEach(function (id) {
     el(id) && el(id).addEventListener('input', rsSync);
     el(id) && el(id).addEventListener('change', rsSync);
@@ -1368,6 +1498,28 @@
   document.querySelectorAll('.rs-sec').forEach(function (c) { c.addEventListener('change', rsSync); });
 
   el('rs-go') && el('rs-go').addEventListener('click', function () {
+    if (rsBackup) {
+      // A backup already on this server: no upload. The app decrypts an
+      // encrypted one with the pasted key; root restores it.
+      el('rs-go').disabled = true;
+      el('rs-msg').textContent = rsBackup.encrypted ? 'Decrypting the backup…' : 'Restoring… the site will restart.';
+      var body = { backupName: rsBackup.name, sections: rsSections() };
+      if (rsBackup.encrypted) body.identity = (el('rs-key').value || '').trim();
+      fetch('/admin/api/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.j.error || 'restore refused');
+          el('rs-msg').textContent = 'Restoring… the site will restart.';
+          pollRestore(res.j.requestId);
+        })
+        .catch(function (e) {
+          el('rs-go').disabled = false;
+          el('rs-msg').textContent = 'Restore failed: ' + e.message;
+        });
+      return;
+    }
     var f = el('rs-file').files[0];
     el('rs-go').disabled = true;
     el('rs-msg').textContent = 'Uploading archive…';
@@ -1474,7 +1626,7 @@
           tries++;
           fetch('/admin/api/backup-status').then(function (r) { return r.json(); }).then(function (s) {
             var ranNew = s && s.lastRun && s.lastRun.at !== prevAt;
-            if (ranNew) { renderBackupStatus(s); el('bk-run').disabled = false; el('bk-msg').textContent = s.lastRun.ok ? 'Backup complete.' : ('Backup failed: ' + (s.lastRun.error || 'unknown')); return; }
+            if (ranNew) { renderBackupStatus(s); loadBackupList(); el('bk-run').disabled = false; el('bk-msg').textContent = s.lastRun.ok ? 'Backup complete.' : ('Backup failed: ' + (s.lastRun.error || 'unknown')); return; }
             if (tries > 60) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Backup started; still running (check the server).'; return; }
             setTimeout(wait, 1000);
           }).catch(function () { if (tries > 60) { el('bk-run').disabled = false; el('bk-msg').textContent = 'Status unreadable.'; } else setTimeout(wait, 1000); });

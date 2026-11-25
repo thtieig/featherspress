@@ -31,6 +31,7 @@ const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
+const { backupDir, listBackups, backupFile, parseBackupName } = require("../tools/agent-lib");
 const { buildSettings, DEFAULT_BACKUP_TIME } = require("../src/settings");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
@@ -329,6 +330,40 @@ router.get("/api/age-key-once", (req, res) => {
   }
   fs.rmSync(AGE_KEY_ONCE_FILE, { force: true });
   res.type("text/plain").send(body);
+});
+
+// ---- the backups kept on this server -----------------------------------------
+// This site's own backup folder is root-owned but group-readable by the site
+// user (0750 root:fp-<name>, backups 0640), so the app can list and serve it
+// and can write nothing there. The folder comes from the root agent's status.
+function backupFolder() {
+  try {
+    const s = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+    return backupDir((s.config || {}).localDir, s.localRoot);
+  } catch {
+    return null;
+  }
+}
+
+router.get("/api/backups", (req, res) => {
+  const dir = backupFolder();
+  if (!dir) return res.json({ backups: [], readable: false });
+  try {
+    res.json({ backups: listBackups(dir), readable: true });
+  } catch {
+    // The folder exists but this user cannot read it: a box set up before the
+    // list existed. DEPLOY.md says how to open it to the site user.
+    res.json({ backups: [], readable: false });
+  }
+});
+
+// Download streams the file exactly as stored (encrypted stays encrypted).
+router.get("/api/backups/:name", (req, res) => {
+  const file = backupFile(backupFolder(), req.params.name);
+  if (!file) return res.status(404).json({ error: "No such backup" });
+  res.download(file, req.params.name, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: "Could not read the backup" });
+  });
 });
 
 // ---- export (Site Package download) ---------------------------------------
@@ -989,22 +1024,52 @@ router.post("/api/import-upload", (req, res) => {
 
 router.post("/api/restore", (req, res) => {
   const b = req.body || {};
-  // stagedName is a BARE FILENAME, never a path — the root agent re-checks this,
-  // but refuse obvious nonsense here so the operator gets a useful error.
-  const name = typeof b.stagedName === "string" ? b.stagedName : "";
-  if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) {
-    return res.status(400).json({ error: "Invalid upload reference" });
-  }
-  if (!fs.existsSync(path.join(config.IMPORT_STAGING_DIR, name))) {
-    return res.status(400).json({ error: "That upload is no longer staged. Upload the archive again." });
-  }
   const sections = Array.isArray(b.sections) ? b.sections : [];
   if (!sections.length) return res.status(400).json({ error: "Choose at least one section to restore" });
   for (const s of sections) {
     if (!SECTIONS.includes(s)) return res.status(400).json({ error: "unknown section" });
   }
+  const restoreAuth = sections.includes("credentials");
+
+  // Either a backup from this server's list, by its bare name...
+  let source;
+  if (b.backupName !== undefined) {
+    const file = backupFile(backupFolder(), b.backupName);
+    if (!file) return res.status(400).json({ error: "That backup is not on this server any more. Reload the list." });
+    if (!parseBackupName(b.backupName).encrypted) {
+      source = { backupName: b.backupName };
+    } else {
+      // Root has no key, so an encrypted backup is decrypted here, exactly as
+      // an encrypted upload is, and restored as a staged file. The key is piped
+      // to age, never written down, and never put in the request.
+      const identity = typeof b.identity === "string" ? b.identity.trim() : "";
+      if (!identity) return res.status(400).json({ error: "This backup is encrypted. Paste the age private key that decrypts it." });
+      const spaceError = importSpaceError(stagingDir(), fs.statSync(file).size);
+      if (spaceError) return res.status(507).json({ error: spaceError });
+      const plain = path.join(stagingDir(), crypto.randomBytes(16).toString("hex") + ".tar.gz");
+      try {
+        archive.decryptWithIdentity(file, plain, identity);
+      } catch {
+        fs.rmSync(plain, { force: true });
+        return res.status(400).json({ error: "Could not decrypt the backup with that key. Check you pasted the right one." });
+      }
+      source = { stagedName: path.basename(plain) };
+    }
+  } else {
+    // ...or an upload staged by /api/import-upload. stagedName is a BARE
+    // FILENAME, never a path: the root agent re-checks this, but refuse obvious
+    // nonsense here so the operator gets a useful error.
+    const name = typeof b.stagedName === "string" ? b.stagedName : "";
+    if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) {
+      return res.status(400).json({ error: "Invalid upload reference" });
+    }
+    if (!fs.existsSync(path.join(config.IMPORT_STAGING_DIR, name))) {
+      return res.status(400).json({ error: "That upload is no longer staged. Upload the archive again." });
+    }
+    source = { stagedName: name };
+  }
   const requestId = nextRequestId(config.BACKUP_STATUS_FILE, (s) => s.restore && s.restore.appliedRequestId);
-  writeRequest(config.RESTORE_REQUEST_FILE, { requestId, stagedName: name, sections, restoreAuth: sections.includes("credentials") });
+  writeRequest(config.RESTORE_REQUEST_FILE, { requestId, ...source, sections, restoreAuth });
   res.json({ requestId });
 });
 

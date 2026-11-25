@@ -182,3 +182,77 @@ test("instance() refuses a name that is not a plain lowercase word", () => {
   assert.strictEqual(lib.instance({ INSTANCE: "a".repeat(24) }).name, "a".repeat(24));
   assert.strictEqual(lib.instance({ INSTANCE: "my-blog2" }).name, "my-blog2");
 });
+
+// ---- the backups list: which files in a site's backup folder are backups ---
+
+test("parseBackupName reads the time, engine and encryption out of a backup's name", () => {
+  assert.deepStrictEqual(lib.parseBackupName("featherspress-full-20261125-002000.tar.gz"), {
+    at: "2026-11-25T00:20:00Z", engine: null, encrypted: false,
+  });
+  assert.deepStrictEqual(lib.parseBackupName("featherspress-full-20261125-002000-3dc6ab2.tar.gz.age"), {
+    at: "2026-11-25T00:20:00Z", engine: "3dc6ab2", encrypted: true,
+  });
+  for (const bad of [
+    "featherspress-full-20261125-002000.tar.gz.partial",
+    ".featherspress-full-20261125-002000.tar.gz.partial",
+    "featherspress-full-2026112-002000.tar.gz",
+    "featherspress-full-20261125-002000-XYZ.tar.gz",
+    "featherspress-site-20261125-002000.tar.gz",
+    "../featherspress-full-20261125-002000.tar.gz",
+    "featherspress-full-20261125-002000.tar.gz/x",
+    "featherspress-full-20261125-002000.tar.gz\n",
+    "",
+  ]) {
+    assert.strictEqual(lib.parseBackupName(bad), null, JSON.stringify(bad));
+  }
+});
+
+test("listBackups lists real backup files only, newest first, with their size", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "al-bk-"));
+  try {
+    fs.writeFileSync(path.join(dir, "featherspress-full-20261123-002000.tar.gz"), "a");
+    fs.writeFileSync(path.join(dir, "featherspress-full-20261125-002000-3dc6ab2.tar.gz.age"), "abc");
+    fs.writeFileSync(path.join(dir, "featherspress-full-20261124-002000.tar.gz.age"), "ab");
+    fs.writeFileSync(path.join(dir, ".featherspress-full-20261126-002000.tar.gz.partial"), "x");
+    fs.writeFileSync(path.join(dir, "notes.txt"), "x");
+    fs.mkdirSync(path.join(dir, "featherspress-full-20261127-002000.tar.gz"));
+    fs.symlinkSync("/etc/passwd", path.join(dir, "featherspress-full-20261128-002000.tar.gz"));
+    assert.deepStrictEqual(lib.listBackups(dir), [
+      { name: "featherspress-full-20261125-002000-3dc6ab2.tar.gz.age", at: "2026-11-25T00:20:00Z", engine: "3dc6ab2", encrypted: true, size: 3 },
+      { name: "featherspress-full-20261124-002000.tar.gz.age", at: "2026-11-24T00:20:00Z", engine: null, encrypted: true, size: 2 },
+      { name: "featherspress-full-20261123-002000.tar.gz", at: "2026-11-23T00:20:00Z", engine: null, encrypted: false, size: 1 },
+    ]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("listBackups is empty for a folder that does not exist yet", () => {
+  assert.deepStrictEqual(lib.listBackups(path.join(os.tmpdir(), "al-no-such-dir-" + process.pid)), []);
+});
+
+test("backupFile resolves a listed name inside the folder and nothing else", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "al-bk-"));
+  try {
+    const good = "featherspress-full-20261125-002000.tar.gz";
+    fs.writeFileSync(path.join(dir, good), "a");
+    fs.symlinkSync("/etc/passwd", path.join(dir, "featherspress-full-20261126-002000.tar.gz"));
+    assert.strictEqual(lib.backupFile(dir, good), path.join(dir, good));
+    assert.strictEqual(lib.backupFile(dir, "featherspress-full-20261124-002000.tar.gz"), null, "missing");
+    assert.strictEqual(lib.backupFile(dir, "featherspress-full-20261126-002000.tar.gz"), null, "symlink");
+    assert.strictEqual(lib.backupFile(dir, "../" + good), null, "path");
+    assert.strictEqual(lib.backupFile(dir, "notes.txt"), null, "not a backup name");
+    assert.strictEqual(lib.backupFile(null, good), null, "no folder");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backupDir is the configured folder when it is inside the site's own, else the site's own", () => {
+  assert.strictEqual(lib.backupDir("/var/backups/featherspress/alpha/nightly", "/var/backups/featherspress/alpha"),
+    "/var/backups/featherspress/alpha/nightly");
+  assert.strictEqual(lib.backupDir("/var/backups/featherspress/beta", "/var/backups/featherspress/alpha"),
+    "/var/backups/featherspress/alpha");
+  assert.strictEqual(lib.backupDir(null, "/var/backups/featherspress/alpha"), "/var/backups/featherspress/alpha");
+  assert.strictEqual(lib.backupDir("/x", null), null);
+});

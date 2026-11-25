@@ -23,7 +23,10 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { SECTIONS } = require("./site-package");
 const { DEFAULT_BACKUP_TIME } = require("../src/settings");
-const { instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest } = require("./agent-lib");
+const {
+  instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest,
+  parseBackupName, backupDir, backupFile,
+} = require("./agent-lib");
 
 const PRESETS = ["hourly", "daily", "twice-daily", "weekly"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -552,25 +555,41 @@ function applyRequest(env) {
 // module scope — so this borrows update.sh's discipline: snapshot, restore,
 // restart, health-check, and roll back if the site does not come up.
 
-// Validate an untrusted restore request. `stagedName` must be a BARE filename:
-// it is joined to the staging dir, so a path or `..` would aim the import at an
-// arbitrary file. Errors are fixed strings and never echo the input.
+// Validate an untrusted restore request. It names exactly one source, always a
+// BARE filename, never a path:
+//   stagedName  an upload (or a backup the app decrypted) in the staging dir;
+//   backupName  a plaintext backup in this site's own backup folder, by the
+//               name deploy/backup.sh gave it. Encrypted ones never come here:
+//               root has no key, so the app decrypts them into staging first.
+// Errors are fixed strings and never echo the input.
 function validateRestoreRequest(req, ctx) {
   if (!req || typeof req !== "object") return fail("malformed request");
   if (!Number.isInteger(req.requestId) || req.requestId <= (ctx.appliedRestoreId || 0)) {
     return fail("stale or invalid requestId");
   }
-  const name = req.stagedName;
-  if (
-    typeof name !== "string" ||
-    name === "" ||
-    name.includes("/") ||
-    name.includes("\\") ||
-    name === "." ||
-    name === ".." ||
-    path.basename(name) !== name
-  ) {
-    return fail("stagedName must be a plain filename");
+  if ((req.stagedName === undefined) === (req.backupName === undefined)) {
+    return fail("name exactly one archive to restore");
+  }
+  let stagedName = null;
+  let backupName = null;
+  if (req.backupName !== undefined) {
+    const meta = parseBackupName(req.backupName);
+    if (!meta || meta.encrypted) return fail("backupName must be the name of a plaintext backup");
+    backupName = req.backupName;
+  } else {
+    const name = req.stagedName;
+    if (
+      typeof name !== "string" ||
+      name === "" ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name === "." ||
+      name === ".." ||
+      path.basename(name) !== name
+    ) {
+      return fail("stagedName must be a plain filename");
+    }
+    stagedName = name;
   }
   if (!Array.isArray(req.sections) || req.sections.length === 0) return fail("bad sections");
   for (const s of req.sections) {
@@ -580,7 +599,8 @@ function validateRestoreRequest(req, ctx) {
     ok: true,
     config: {
       requestId: req.requestId,
-      stagedName: name,
+      stagedName,
+      backupName,
       sections: [...new Set(req.sections)],
       restoreAuth: !!req.restoreAuth && req.sections.includes("credentials"),
     },
@@ -605,7 +625,7 @@ function siteHealthy(port, tries = 10) {
 }
 
 function restoreStatus(env, state, extra) {
-  env._restore = Object.assign({ state, at: new Date().toISOString() }, extra || {});
+  env._restore = Object.assign({ state, at: new Date().toISOString() }, env._restoreSource || {}, extra || {});
   refreshStatus(env);
 }
 
@@ -684,6 +704,7 @@ function restoreRequest(env) {
   } catch {
     return; // no/invalid/symlinked restore request: nothing to do
   }
+  env._restoreSource = {};
   let applied = 0;
   try {
     applied = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8")).restore?.appliedRequestId || 0;
@@ -702,21 +723,34 @@ function restoreRequest(env) {
 
   const cfg = v.config;
   env._restoreApplied = cfg.requestId;
-  // Resolve the staged archive inside the staging dir and prove it stayed there.
-  const staged = path.join(env.IMPORT_STAGING, cfg.stagedName);
-  const rel = path.relative(env.IMPORT_STAGING, staged);
-  if (rel.startsWith("..") || path.isAbsolute(rel) || !fs.existsSync(staged)) {
-    restoreStatus(env, "failed", { error: "staged archive not found", appliedRequestId: cfg.requestId });
+  const conf = parseEnvFile(env.BACKUP_ENV);
+  // The archive: a staged upload, proved to stay inside the staging dir, or a
+  // backup in this site's own backup folder (a regular file, not a symlink).
+  // Only a staged copy is ours to delete afterwards; a backup is kept.
+  let staged = null;
+  if (cfg.backupName) {
+    staged = backupFile(backupDir(conf.LOCAL_DIR, env.BACKUP_ROOT), cfg.backupName);
+  } else {
+    const p = path.join(env.IMPORT_STAGING, cfg.stagedName);
+    const rel = path.relative(env.IMPORT_STAGING, p);
+    if (!rel.startsWith("..") && !path.isAbsolute(rel) && fs.existsSync(p)) staged = p;
+  }
+  // Carried in every state from here on, so the panel can say which backup.
+  env._restoreSource = cfg.backupName ? { backupName: cfg.backupName } : {};
+  if (!staged) {
+    restoreStatus(env, "failed", {
+      error: cfg.backupName ? "backup not found" : "staged archive not found",
+      appliedRequestId: cfg.requestId,
+    });
     finish();
     return;
   }
 
-  const conf = parseEnvFile(env.BACKUP_ENV);
   const node = conf.NODE_BIN || env.NODE_BIN;
   const pkgTool = path.join(env.ENGINE_DIR, "tools", "site-package.js");
   const port = parseEnvFile(env.FP_ENV).PORT || "3000"; // config.js's default
   const cleanup = () => {
-    fs.rmSync(staged, { force: true });
+    if (cfg.stagedName) fs.rmSync(staged, { force: true });
     finish();
   };
 

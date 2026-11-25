@@ -119,6 +119,46 @@ test("backup.sh records a good run as ok", () => {
   }
 });
 
+// The site user lists, downloads and decrypts its own backups from /admin, so
+// a backup takes the folder's group (fp-<name> on a real box: the folder is
+// 0750 root:fp-<name>) and is 0640: readable by the site, writable by root only.
+test("backup.sh leaves backups readable by the folder's group, and fixes older ones", () => {
+  const dir = setup(null);
+  try {
+    const dest = path.join(dir, "dest");
+    fs.mkdirSync(dest, { mode: 0o750 });
+    fs.chmodSync(dest, 0o750);
+    const old = path.join(dest, "featherspress-full-20200101-000000.tar.gz");
+    fs.writeFileSync(old, "old", { mode: 0o600 });
+    fs.chmodSync(old, 0o600);
+    fs.writeFileSync(path.join(dir, "backup.env"), `DEST_TYPE=local\nLOCAL_DIR=${dest}\nKEEP_LAST=3\n`);
+    const r = run(dir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const files = fs.readdirSync(dest).filter((f) => f.startsWith("featherspress-full-"));
+    assert.strictEqual(files.length, 2);
+    for (const f of files) {
+      const st = fs.statSync(path.join(dest, f));
+      assert.strictEqual(st.mode & 0o777, 0o640, f);
+      assert.strictEqual(st.gid, fs.statSync(dest).gid, f);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("backup.sh creates a missing backup folder closed to everyone but root and its group", () => {
+  const dir = setup(null);
+  try {
+    const dest = path.join(dir, "dest", "nightly");
+    fs.writeFileSync(path.join(dir, "backup.env"), `DEST_TYPE=local\nLOCAL_DIR=${dest}\nKEEP_LAST=3\n`);
+    const r = run(dir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(fs.statSync(dest).mode & 0o777, 0o750);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Run by featherspress-backup@<name>.service with nothing but the instance
 // name to go on: the config comes from /etc/featherspress/<name>/ and the
 // outcome lands in /var/lib/featherspress/<name>/, where /admin reads it.
