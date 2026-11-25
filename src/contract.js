@@ -156,5 +156,4 @@ module.exports = {
   postPage,
   pageView,
   notFound,
-  tagCloud,
 };

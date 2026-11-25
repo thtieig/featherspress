@@ -1,8 +1,6 @@
 "use strict";
 
-// Artifact helpers for the /admin export + restore path: age encryption, plus
-// a re-export of buildSettings (src/settings.js), which turns the
-// root-written backup-status.json into a portable settings.json.
+// Artifact helpers for the /admin export + restore path: age encryption.
 //
 // Encryption is KEY-BASED in both directions. `age -p` cannot be used: it opens
 // /dev/tty unconditionally and 1.1.1 has no --passphrase-file, so a web app
@@ -16,7 +14,6 @@
 
 const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
-const { buildSettings } = require("../src/settings");
 
 function encryptToRecipient(inFile, outFile, recipient) {
   if (!recipient) throw new Error("no age recipient configured");
@@ -38,7 +35,4 @@ function decryptWithIdentity(inFile, outFile, identityText) {
   fs.chmodSync(outFile, 0o600);
 }
 
-// buildSettings itself now lives in src/settings.js — pure logic shared with
-// the CLI (tools/site-package.js). Re-exported here so admin/router.js keeps
-// working unchanged.
-module.exports = { encryptToRecipient, decryptWithIdentity, buildSettings };
+module.exports = { encryptToRecipient, decryptWithIdentity };

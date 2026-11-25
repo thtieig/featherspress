@@ -75,25 +75,11 @@ function load(dir) {
   return { posts: posts.length, pages: pages.length };
 }
 
-/** Alias that reads intent-clearly at admin call sites. */
-function reload() {
-  return load();
-}
-
 // ---- queries -------------------------------------------------------------
-
-/** Every post regardless of status (admin listing). Newest-first. */
-function allPosts() {
-  return posts;
-}
 
 /** Published posts only (public site). Newest-first. */
 function publishedPosts() {
   return posts.filter((p) => p.status === "published");
-}
-
-function allPages() {
-  return pages;
 }
 
 /** Find a post by slug (any status). */
@@ -145,10 +131,7 @@ function tagName(tagSlug) {
 
 module.exports = {
   load,
-  reload,
-  allPosts,
   publishedPosts,
-  allPages,
   postBySlug,
   pageBySlug,
   bySlug,

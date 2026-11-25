@@ -1,9 +1,8 @@
 "use strict";
 
 // admin/archive.js: the age encryption helper (key-based both ways — `age -p`
-// cannot be driven from a web app, see the module header). buildSettings now
-// lives in src/settings.js (test/settings.test.js) — archive.js just
-// re-exports it for admin/router.js. The age round-trip tests SKIP (not fail)
+// cannot be driven from a web app, see the module header). The age
+// round-trip tests SKIP (not fail)
 // when `age`/`age-keygen` are absent, so the suite still runs on a dev box
 // without them.
 

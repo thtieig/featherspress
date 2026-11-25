@@ -88,15 +88,15 @@ test.after(() => {
 });
 
 test("loading skips the bad file and warns with its name", () => {
-  assert.deepStrictEqual(posts.allPosts().map((p) => p.slug), ["good-post"]);
+  assert.deepStrictEqual(posts.publishedPosts().map((p) => p.slug), ["good-post"]);
   assert.ok(warnings.some((w) => w.includes("broken-post.md")), warnings.join("\n"));
 });
 
 // gray-matter caches a file before parsing it, so a second read of a broken
 // file "succeeds" with half-parsed data unless the cache is bypassed.
 test("a reload (as after an admin save) still skips it", () => {
-  posts.reload();
-  assert.deepStrictEqual(posts.allPosts().map((p) => p.slug), ["good-post"]);
+  assert.deepStrictEqual(posts.load(), { posts: 1, pages: 0 });
+  assert.deepStrictEqual(posts.publishedPosts().map((p) => p.slug), ["good-post"]);
 });
 
 test("the public site serves the rest", async () => {

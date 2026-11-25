@@ -33,7 +33,7 @@ const { writeAuthConfigAtomic } = require("../src/auth-config");
 const { MAX_UPLOAD_BYTES, saveUpload } = require("./upload");
 const { exportPackage, resolvePackagePaths, SECTIONS } = require("../tools/site-package");
 const archive = require("./archive");
-const { DEFAULT_BACKUP_TIME } = require("../src/settings");
+const { buildSettings, DEFAULT_BACKUP_TIME } = require("../src/settings");
 
 const POSTS_DIR = path.join(config.CONTENT_DIR, "posts");
 const PAGES_DIR = path.join(config.CONTENT_DIR, "pages");
@@ -358,8 +358,7 @@ router.get("/api/export", (req, res) => {
   if (wantsSecrets && !recipient) {
     return res.status(409).json({
       error: "This archive contains your credentials, so it must be encrypted. " +
-             "Set an age key on the server first (run `age-keygen`, then add " +
-             "AGE_RECIPIENT to /etc/featherspress/backup.env).",
+             'Use "Set up encryption" under Scheduled backup first.',
     });
   }
 
@@ -375,7 +374,7 @@ router.get("/api/export", (req, res) => {
       ...paths,
       profile: wantsSecrets ? "full" : "site",
       sections,
-      settings: sections.includes("settings") ? archive.buildSettings(status) : null,
+      settings: sections.includes("settings") ? buildSettings(status) : null,
       outFile: file,
     });
     if (wantsSecrets || req.query.encrypt === "1") {
@@ -726,7 +725,7 @@ router.post("/api/post", (req, res) => {
     status
   );
   fs.writeFileSync(path.join(dir, `${slug}.md`), matter.stringify(normalizeBody(body), data));
-  posts.reload();
+  posts.load();
   res.json({ ok: true, type: contentType, slug, status: statusOf(data), url: `/${slug}/` });
 });
 
@@ -755,7 +754,7 @@ router.put("/api/post/:type/:slug", (req, res) => {
   if (status !== undefined) applyStatus(data, status);
   const newBody = body !== undefined ? normalizeBody(body) : existing.content.trim();
   fs.writeFileSync(filePath, matter.stringify(newBody, data));
-  posts.reload();
+  posts.load();
   res.json({ ok: true, type: found.item.type, slug: found.item.slug, status: statusOf(data), url: `/${found.item.slug}/` });
 });
 
@@ -768,7 +767,7 @@ router.post("/api/post/:type/:slug/status", (req, res) => {
   const existing = matter.read(filePath);
   const data = applyStatus({ ...existing.data }, status);
   fs.writeFileSync(filePath, matter.stringify(existing.content.trim(), data));
-  posts.reload();
+  posts.load();
   res.json({ ok: true, status });
 });
 
@@ -794,7 +793,7 @@ router.delete("/api/post/:type/:slug", (req, res) => {
   }
 
   fs.unlinkSync(path.join(found.dir, found.item.filename));
-  posts.reload();
+  posts.load();
   res.json({ ok: true, deletedAttachments: removedAttachments });
 });
 
@@ -859,10 +858,9 @@ router.delete("/api/media", (req, res) => {
 router.get("/api/tag-audit", (req, res) => {
   const { tags } = vocab();
   const singleUse = tags.filter((t) => t.count === 1);
-  const norm = (s) => s.toLowerCase().replace(/[\s_-]+/g, "");
   const groups = new Map();
   for (const t of tags) {
-    const key = norm(t.name);
+    const key = normTagName(t.name);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(t);
   }
@@ -881,7 +879,7 @@ router.post("/api/upload", (req, res) => {
       const tooBig = err.code === "LIMIT_FILE_SIZE";
       return res
         .status(tooBig ? 413 : 400)
-        .json({ error: tooBig ? "File is too large (25MB maximum)" : "Upload failed" });
+        .json({ error: tooBig ? `File is too large (${MAX_UPLOAD_BYTES / (1024 * 1024)}MB maximum)` : "Upload failed" });
     }
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
     try {
@@ -906,7 +904,7 @@ function stagingDir() {
   return config.IMPORT_STAGING_DIR;
 }
 
-// Separate multer instance from the 25MB media uploader: a site package is a
+// Separate multer instance from the media uploader: a site package is a
 // whole site, streamed to disk rather than held in memory.
 const importUpload = multer({
   storage: multer.diskStorage({

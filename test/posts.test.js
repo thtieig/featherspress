@@ -13,8 +13,7 @@ test.before(() => {
 
 test("loads all posts and pages", () => {
   // alpha, beta, gamma(draft), delta = 4 posts; about + welcome = 2 pages
-  assert.strictEqual(posts.allPosts().length, 4);
-  assert.strictEqual(posts.allPages().length, 2);
+  assert.deepStrictEqual(posts.load(FIXTURES), { posts: 4, pages: 2 });
 });
 
 test("published excludes only status:draft (legacy status:ok counts)", () => {

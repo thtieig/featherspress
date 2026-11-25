@@ -2,9 +2,7 @@
 
 // src/settings.js: buildSettings turns the root-written backup-status.json
 // into the portable settings.json half of a Site Package. Shared by the
-// /admin export endpoint (admin/archive.js re-exports it) and the CLI
-// (tools/site-package.js) — moved here from admin/archive.js so the CLI path
-// does not have to pull in web/admin code to build a settings object.
+// /admin export endpoint and the CLI (tools/site-package.js).
 
 const test = require("node:test");
 const assert = require("node:assert");

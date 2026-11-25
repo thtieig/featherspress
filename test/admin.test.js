@@ -471,6 +471,9 @@ test("export: credentials without a configured age recipient is refused", async 
   assert.strictEqual(res.status, 409);
   const j = await res.json();
   assert.match(j.error, /encrypt/i);
+  // Point at the button that does it, not at shell commands.
+  assert.match(j.error, /Set up encryption/);
+  assert.doesNotMatch(j.error, /age-keygen|backup\.env/);
 });
 
 // ---- import upload: free-disk guard ---------------------------------------

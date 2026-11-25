@@ -3,7 +3,7 @@
 // The SKIN RUNTIME. A skin is a folder the engine wears:
 //
 //   skins/<name>/
-//     skin.json          { name, templates?, assets? }  (metadata; all optional)
+//     skin.json          { name, label, description }  (for people; the engine does not read it)
 //     templates/*.njk    one per page kind: base, home, post, page, archive, notFound
 //     assets/…           style.css, images, fonts…  → served at /theme/assets/…
 //
@@ -18,7 +18,7 @@ const path = require("path");
 const nunjucks = require("nunjucks");
 const config = require("./../config");
 
-let active = null; // { name, dir, templatesDir, assetsDir, env, meta }
+let active = null; // { name, dir, templatesDir, assetsDir, env }
 
 function formatDate(date) {
   if (!(date instanceof Date) || isNaN(date.getTime())) return "";
@@ -75,13 +75,6 @@ function load(skinName) {
   }
   const templatesDir = path.join(dir, "templates");
 
-  let meta = { name };
-  try {
-    meta = { ...meta, ...JSON.parse(fs.readFileSync(path.join(dir, "skin.json"), "utf8")) };
-  } catch (e) {
-    if (e.code !== "ENOENT") throw e;
-  }
-
   // autoescape ON: templates opt specific values into raw HTML with `| safe`
   // (only the server-rendered post/page bodyHtml, which is trusted).
   const env = new nunjucks.Environment(new nunjucks.FileSystemLoader(templatesDir), {
@@ -98,7 +91,6 @@ function load(skinName) {
     templatesDir,
     assetsDir: path.join(dir, "assets"),
     env,
-    meta,
   };
   return active;
 }
@@ -118,4 +110,4 @@ function assetsDir() {
   return current().assetsDir;
 }
 
-module.exports = { load, render, current, assetsDir, formatDate };
+module.exports = { load, render, current, assetsDir };

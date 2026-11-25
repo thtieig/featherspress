@@ -88,4 +88,4 @@ function load() {
   return { ...defaults, source: "(synthesized from env)" };
 }
 
-module.exports = { load, synthesize, manifestPath };
+module.exports = { load, manifestPath };
