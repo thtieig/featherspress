@@ -7,13 +7,17 @@ on:
 
 jobs:
   engine:
-    name: Engine tests (Node)
+    name: Engine tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The package.json engines floor, and the version servers run (.nvmrc).
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       # Backups and migration archives are age-encrypted, and the tests for that
       # shell out to the real binary. Without it the round-trip tests SKIP —
       # which for this path is the same as failing, and has bitten us before: a
@@ -31,6 +35,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - run: pip install -r converter/requirements.txt
       - run: python converter/test_convert.py

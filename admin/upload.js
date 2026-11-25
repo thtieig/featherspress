@@ -7,8 +7,8 @@ const fs = require("fs");
 const path = require("path");
 
 // file-type is ESM-only from v21 ("type": "module") and this server is
-// CommonJS. require() of ESM is only unflagged on Node >= 20.19, while
-// package.json sets the supported floor at Node 20 -- so import() it
+// CommonJS. require() of ESM is only unflagged on Node >= 22.12, while
+// package.json sets the supported floor at Node 22 -- so import() it
 // dynamically (works on every Node 18+) and cache the promise so the module
 // is only actually loaded once, on the first upload.
 let fileTypePromise = null;
