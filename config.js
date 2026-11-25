@@ -50,8 +50,8 @@ const config = {
   // override per-site by pointing this at your own icon dir.
   FAVICON_DIR: env("FAVICON_DIR", path.join(__dirname, "public", "favicon")),
 
-  // Auth + admin.
-  AUTH_CONFIG: env("AUTH_CONFIG", path.join(__dirname, "auth-config.json")),
+  // Auth + admin. The login lives with the site's data when there is a package.
+  AUTH_CONFIG: env("AUTH_CONFIG", pkg("auth-config.json") || path.join(__dirname, "auth-config.json")),
   SESSION_SECRET: env("SESSION_SECRET", "dev-insecure-change-me"),
 
   PORT: parseInt(env("PORT", "3000"), 10),
