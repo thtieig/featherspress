@@ -7,11 +7,16 @@
 #
 # The app itself never runs git or restarts — that stays here, in root's hands,
 # so the hardened (unprivileged, read-only-code) service model is preserved.
+#
+# It updates ONE instance: the checkout it lives in, /opt/featherspress/<name>,
+# with that instance's settings, and restarts featherspress@<name> only (see
+# deploy/instance.sh).
 set -euo pipefail
 
-FP_ENV="${FP_ENV:-/etc/featherspress/featherspress.env}"
-UPDATE_CONF="${UPDATE_CONF:-/etc/featherspress/update.conf}"
-UPDATE_LOCK="${UPDATE_LOCK:-/run/featherspress-update.lock}"
+. "$(dirname "${BASH_SOURCE[0]}")/instance.sh"
+FP_ENV="${FP_ENV:-$CONF_DIR/featherspress.env}"
+UPDATE_CONF="${UPDATE_CONF:-$CONF_DIR/update.conf}"
+UPDATE_LOCK="${UPDATE_LOCK:-/run/featherspress-update-$INSTANCE.lock}"
 
 # Serialize with any other update run — the GUI's "Apply now" button
 # (tools/update-control.js) and the routine daily check can otherwise overlap
@@ -43,7 +48,8 @@ fi
 # environment wins over it. That is how "Apply now" (tools/update-control.js)
 # or an operator (`AUTO_APPLY=1 update.sh`) forces one apply on a box whose
 # update.conf says AUTO_APPLY=0, while REPO_REF, NODE_BIN and the rest still
-# come from update.conf.
+# come from update.conf. ENGINE_DIR is always set by now (instance.sh), so
+# neither env file can move this run to another checkout.
 OVERRIDABLE="AUTO_APPLY REPO_REF ENGINE_DIR NODE_BIN NPM_BIN SERVICE FP_USER"
 declare -A FROM_ENV=()
 for v in $OVERRIDABLE; do [ -n "${!v:-}" ] && FROM_ENV[$v]="${!v}"; done
@@ -51,14 +57,13 @@ for v in $OVERRIDABLE; do [ -n "${!v:-}" ] && FROM_ENV[$v]="${!v}"; done
 [ -f "$UPDATE_CONF" ] && { set -a; . "$UPDATE_CONF"; set +a; }
 for v in "${!FROM_ENV[@]}"; do printf -v "$v" '%s' "${FROM_ENV[$v]}"; done
 
-ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
 NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
 NPM_BIN="${NPM_BIN:-/opt/node/bin/npm}"
-SERVICE="${SERVICE:-featherspress}"
+SERVICE="${SERVICE:-featherspress@$INSTANCE}"
 AUTO_APPLY="${AUTO_APPLY:-0}"
 REPO_REF="${REPO_REF:-main}"
-PORT="${PORT:-8787}"
-STATUS_FILE="${UPDATE_STATUS_FILE:-${CONTENT_DIR:-/var/lib/featherspress/content}/../update-status.json}"
+PORT="${PORT:-3000}"   # config.js's default; featherspress.env sets the real one
+STATUS_FILE="${UPDATE_STATUS_FILE:-$DATA_DIR/update-status.json}"
 
 # systemd gives this unit a bare PATH, but npm's shebang is `#!/usr/bin/env node`
 # — without node's dir on PATH, `npm ci` dies with "env: 'node': No such file or
@@ -74,9 +79,9 @@ cd "$ENGINE_DIR"
 # owner instead of teaching root to trust the path: it also keeps newly written
 # objects owned correctly, so no chown -R is needed to repair them afterwards.
 REPO_OWNER="$(stat -c %U "$ENGINE_DIR")"
-# Default to whoever actually owns the code dir: everything else runs as
-# REPO_OWNER, and a divergent FP_USER makes the chown below fail (or hand the
-# repo to the wrong user) on any box whose app user is not "featherspress".
+# Default to whoever actually owns the code dir (fp-<name>): everything else
+# runs as REPO_OWNER, and a divergent FP_USER makes the chown below fail (or
+# hand the repo to the wrong user).
 FP_USER="${FP_USER:-$REPO_OWNER}"
 run_as_owner() {
   if [ "$(id -u)" = "0" ] && [ "$REPO_OWNER" != "root" ]; then
@@ -146,7 +151,7 @@ rollback() {
   echo "[update] rolling back to ${CURRENT:0:7}" >&2
   git_as reset --hard "$CURRENT"
   run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || true
-  chown -R "$FP_USER:$FP_USER" "$ENGINE_DIR"
+  chown -R "$FP_USER:" "$ENGINE_DIR"
   systemctl restart "$SERVICE"
   AVAILABLE_BOOL=true
   write_status
@@ -184,7 +189,7 @@ if ! run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"; then
   rollback
   exit 1
 fi
-chown -R "$FP_USER:$FP_USER" "$ENGINE_DIR"
+chown -R "$FP_USER:" "$ENGINE_DIR"
 systemctl restart "$SERVICE"
 
 if ! healthy; then

@@ -5,18 +5,18 @@
 # it to a destination, and prune to keep-last-N. A backup is just an export saved
 # somewhere — restore with:  npm run import -- <artifact> [--restore-auth]
 #
-# Run as root from a systemd timer. Reads two env files:
-#   /etc/featherspress/featherspress.env   (CONTENT_DIR/MEDIA_DIR/AUTH_CONFIG — so
-#                                            the exporter resolves the right data)
-#   /etc/featherspress/backup.env          (DEST_TYPE/retention/age recipient)
+# Run as root from featherspress-backup@<name>.timer, for that one instance
+# (see deploy/instance.sh). Reads two env files from /etc/featherspress/<name>/:
+#   featherspress.env   (SITE_PACKAGE, so the exporter resolves the right data)
+#   backup.env          (DEST_TYPE/retention/age recipient)
 set -euo pipefail
 
-FP_ENV="${FP_ENV:-/etc/featherspress/featherspress.env}"
-BACKUP_ENV="${BACKUP_ENV:-/etc/featherspress/backup.env}"
-ENGINE_DIR="${ENGINE_DIR:-/opt/featherspress}"
+. "$(dirname "${BASH_SOURCE[0]}")/instance.sh"
+FP_ENV="${FP_ENV:-$CONF_DIR/featherspress.env}"
+BACKUP_ENV="${BACKUP_ENV:-$CONF_DIR/backup.env}"
 NODE_BIN="${NODE_BIN:-/opt/node/bin/node}"
-LAST_RUN_FILE="${LAST_RUN_FILE:-/var/lib/featherspress/backup-last-run.json}"
-BACKUP_LOCK="${BACKUP_LOCK:-/run/featherspress-backup.lock}"
+LAST_RUN_FILE="${LAST_RUN_FILE:-$DATA_DIR/backup-last-run.json}"
+BACKUP_LOCK="${BACKUP_LOCK:-/run/featherspress-backup-$INSTANCE.lock}"
 
 # Record the outcome for the /admin Backups panel (via backup-control.js status).
 record_run() {

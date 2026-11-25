@@ -118,3 +118,35 @@ test("backup.sh records a good run as ok", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Run by featherspress-backup@<name>.service with nothing but the instance
+// name to go on: the config comes from /etc/featherspress/<name>/ and the
+// outcome lands in /var/lib/featherspress/<name>/, where /admin reads it.
+test("backup.sh finds its instance's config and reports into its data dir by default", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-backup-sh-inst-"));
+  try {
+    const pkg = path.join(dir, "site");
+    fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, "content", "posts", "hello.md"), "---\ntitle: Hi\n---\nhi\n");
+    const conf = path.join(dir, "etc");
+    const data = path.join(dir, "data");
+    const dest = path.join(dir, "dest");
+    fs.mkdirSync(conf);
+    fs.mkdirSync(data);
+    fs.writeFileSync(path.join(conf, "featherspress.env"), `SITE_PACKAGE=${pkg}\n`);
+    fs.writeFileSync(path.join(conf, "backup.env"), `DEST_TYPE=local\nLOCAL_DIR=${dest}\nKEEP_LAST=3\n`);
+    const env = { ...process.env };
+    for (const k of ["FP_ENV", "BACKUP_ENV", "LAST_RUN_FILE", "BACKUP_STATUS", "SCHEDULE_DROPIN", "UPDATE_CONF",
+      "ENGINE_DIR", "INSTANCE", "CONTENT_DIR", "MEDIA_DIR", "SITE_MANIFEST", "AUTH_CONFIG"]) delete env[k];
+    const r = spawnSync("bash", [BACKUP_SH], {
+      encoding: "utf8",
+      env: { ...env, CONF_DIR: conf, DATA_DIR: data, BACKUP_LOCK: path.join(dir, "backup.lock"), NODE_BIN: process.execPath },
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(data, "backup-last-run.json"), "utf8")).ok, true);
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(data, "backup-status.json"), "utf8")).lastRun.ok, true);
+    assert.strictEqual(fs.readdirSync(dest).filter((f) => f.startsWith("featherspress-full-")).length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

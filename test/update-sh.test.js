@@ -91,3 +91,83 @@ test("update.sh lets an environment value win over update.conf", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- named instances --------------------------------------------------------
+// update.sh lives in each instance's own checkout, /opt/featherspress/<name>.
+// Run from there with nothing set, as the timer and a hand-run `sudo
+// /opt/featherspress/<name>/deploy/update.sh` both do, it must read that
+// instance's update.conf, write that instance's status file, and restart
+// that instance's service alone.
+
+test("update.sh run from an instance's checkout updates and restarts only that instance", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-update-sh-inst-"));
+  try {
+    const seed = path.join(dir, "seed");
+    fs.mkdirSync(path.join(seed, "deploy"), { recursive: true });
+    git(seed, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.0" }));
+    for (const f of ["update.sh", "instance.sh"]) {
+      fs.copyFileSync(path.join(__dirname, "..", "deploy", f), path.join(seed, "deploy", f));
+    }
+    git(seed, "add", ".");
+    git(seed, "commit", "-q", "-m", "one");
+    fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.1" }));
+    git(seed, "commit", "-q", "-am", "two");
+    git(dir, "clone", "-q", "--bare", seed, "origin.git");
+    // The instance's checkout, one commit behind.
+    git(dir, "clone", "-q", path.join(dir, "origin.git"), "alpha");
+    git(path.join(dir, "alpha"), "reset", "-q", "--hard", "HEAD~1");
+
+    // systemctl and curl stubbed; npm a no-op.
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    const calls = path.join(dir, "systemctl.log");
+    fs.writeFileSync(path.join(bin, "systemctl"), `#!/bin/sh\necho "$*" >> "${calls}"\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const conf = path.join(dir, "etc");
+    const data = path.join(dir, "data");
+    fs.mkdirSync(conf);
+    fs.writeFileSync(path.join(conf, "update.conf"),
+      `AUTO_APPLY=0\nREPO_REF=main\nNODE_BIN=${process.execPath}\nNPM_BIN=${path.join(bin, "npm")}\n`);
+    fs.writeFileSync(path.join(conf, "featherspress.env"), "PORT=1\n");
+
+    const env = { ...process.env };
+    for (const k of ["AUTO_APPLY", "REPO_REF", "NODE_BIN", "NPM_BIN", "SERVICE", "FP_USER", "ENGINE_DIR",
+      "INSTANCE", "FP_ENV", "UPDATE_CONF", "UPDATE_STATUS_FILE"]) delete env[k];
+    const r = spawnSync("bash", [path.join(dir, "alpha", "deploy", "update.sh")], {
+      encoding: "utf8",
+      env: {
+        ...env,
+        PATH: bin + path.delimiter + process.env.PATH,
+        CONF_DIR: conf,
+        DATA_DIR: data,
+        UPDATE_LOCK: path.join(dir, "update.lock"),
+        AUTO_APPLY: "1",
+      },
+    });
+    assert.strictEqual(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout, /applied and healthy/);
+    assert.deepStrictEqual(fs.readFileSync(calls, "utf8").trim().split("\n"), ["restart featherspress@alpha"]);
+    const status = JSON.parse(fs.readFileSync(path.join(data, "update-status.json"), "utf8"));
+    assert.strictEqual(status.behind, 0);
+    assert.strictEqual(status.currentVersion, "1.0.1");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh refuses a checkout whose name is not a valid instance name", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-update-sh-bad-"));
+  try {
+    const r = spawnSync("bash", [UPDATE_SH], {
+      encoding: "utf8",
+      env: { ...process.env, ENGINE_DIR: path.join(dir, "Not_Valid"), INSTANCE: "" },
+    });
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /instance name/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
