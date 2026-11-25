@@ -76,7 +76,10 @@ sudo ln -sfn /opt/node-$NODE_VER-linux-x64 /opt/node
 /opt/node/bin/node -v
 ```
 
-To upgrade Node later: unpack a new tarball, re-point the `/opt/node` symlink.
+To upgrade Node later, once the engine is checked out (step 3): `sudo
+/opt/featherspress/tools/install-node.sh /opt/node` installs the latest release
+of the major in `.nvmrc`, checksum-verified, then `sudo systemctl restart
+featherspress`.
 
 ## 3. Ship the engine code (a git checkout)
 

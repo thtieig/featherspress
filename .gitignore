@@ -18,6 +18,9 @@ auth-config.json
 # Dependencies & build output.
 node_modules/
 
+# Project-local Node, installed by tools/install-node.sh.
+/.node/
+
 # Python virtualenv for the converter (created per the migration guide).
 .venv/
 
