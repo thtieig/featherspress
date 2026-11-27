@@ -24,7 +24,7 @@ const { execFileSync } = require("node:child_process");
 const { SECTIONS } = require("./site-package");
 const { DEFAULT_BACKUP_TIME } = require("../src/settings");
 const {
-  instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, readAppliedId, consumeRequest,
+  instance, fail, readRequestNoFollow, parseEnvFile, writeStatusFile, writeFileSafely, readAppliedId, consumeRequest,
   parseBackupName, backupDir, backupFile, listBackups, engineInfo,
 } = require("./agent-lib");
 
@@ -346,7 +346,8 @@ function refreshStatus(env) {
   const upd = parseEnvFile(env.UPDATE_CONF);
   let lastRun = null;
   try {
-    lastRun = JSON.parse(fs.readFileSync(env.LAST_RUN_FILE, "utf8"));
+    // Written by backup.sh into the app-owned data dir: not through a link.
+    lastRun = readRequestNoFollow(env.LAST_RUN_FILE);
   } catch {}
   // Every backup is kept on this server, off-box copy or not (deploy/backup.sh).
   let artifactCount = 0;
@@ -444,11 +445,10 @@ function generateAgeKey(env, conf) {
 
   const onceFile = path.join(path.dirname(env.BACKUP_STATUS), "age-key-once.txt");
   try {
-    fs.writeFileSync(onceFile, out, { mode: 0o600 });
-    fs.chmodSync(onceFile, 0o600);
     // The app runs as the data dir's owner and has to read this exactly once.
-    const st = fs.statSync(path.dirname(onceFile));
-    fs.chownSync(onceFile, st.uid, st.gid);
+    // Written without following a link the app may have planted at that name.
+    const st = fs.lstatSync(path.dirname(onceFile));
+    writeFileSafely(onceFile, out, 0o600, { uid: st.uid, gid: st.gid });
   } catch {
     try {
       fs.rmSync(onceFile, { force: true });
@@ -782,6 +782,53 @@ function archiveEngine(file) {
   }
 }
 
+// The data dir's owner: the site user on a standard install.
+function dataOwner(env) {
+  const st = fs.lstatSync(path.dirname(env.BACKUP_STATUS));
+  return { uid: st.uid, gid: st.gid };
+}
+
+// Copy `src` to `dest` (a new 0600 file) without following a symlink, and only
+// when it is a regular file — owned by `owner.uid` when an owner is given.
+// Opened non-blocking, so a FIFO planted there cannot hang root. False when
+// any of that does not hold.
+function copyNoFollow(src, dest, owner) {
+  let fd;
+  try {
+    fd = fs.openSync(src, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch {
+    return false;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || (owner && st.uid !== owner.uid)) return false;
+    const out = fs.openSync(dest, "wx", 0o600);
+    try {
+      const buf = Buffer.alloc(1 << 20);
+      let n;
+      while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) fs.writeSync(out, buf, 0, n);
+    } finally {
+      fs.closeSync(out);
+    }
+    return true;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Delete a file in the app-owned data dir with the site user's rights, not
+// root's: a dir in the path may have been swapped for a symlink, and root's
+// unlink would then remove whatever it points at.
+function removeAsSiteUser(p, owner) {
+  try {
+    if (process.getuid && process.getuid() === 0 && owner.uid !== 0) {
+      execFileSync("rm", ["-f", "--", p], { uid: owner.uid, gid: owner.gid, stdio: "ignore" });
+    } else {
+      fs.rmSync(p, { force: true });
+    }
+  } catch {}
+}
+
 function restoreRequest(env) {
   let request;
   try {
@@ -812,22 +859,33 @@ function restoreRequest(env) {
   // The archive: a staged upload, proved to stay inside the staging dir, or a
   // backup in this site's own backup folder (a regular file, not a symlink).
   // Only a staged copy is ours to delete afterwards; a backup is kept.
-  let staged = null;
+  //
+  // Either way root first copies it into a private dir of its own, and every
+  // step after reads that copy, never the app-owned data dir again. A staged
+  // upload sits in a dir the site user controls, which could otherwise point
+  // root at another site's backup or data: so no symlink, a regular file only,
+  // and owned by this site's user.
+  const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), "featherspress-prerestore-"));
+  fs.chmodSync(snapDir, 0o700);
+  const archive = path.join(snapDir, "incoming.tar.gz");
+  const owner = dataOwner(env);
+  const stagedPath = cfg.stagedName ? path.join(env.IMPORT_STAGING, cfg.stagedName) : null;
+  let found = false;
   if (cfg.backupName) {
-    staged = backupFile(backupDir(conf.LOCAL_DIR, env.BACKUP_ROOT), cfg.backupName);
+    const f = backupFile(backupDir(conf.LOCAL_DIR, env.BACKUP_ROOT), cfg.backupName);
+    found = !!f && copyNoFollow(f, archive, null);
   } else {
-    const p = path.join(env.IMPORT_STAGING, cfg.stagedName);
-    const rel = path.relative(env.IMPORT_STAGING, p);
-    if (!rel.startsWith("..") && !path.isAbsolute(rel) && fs.existsSync(p)) staged = p;
+    found = copyNoFollow(stagedPath, archive, owner);
   }
   // Carried in every state from here on, so the panel can say which backup.
   env._restoreSource = cfg.backupName ? { backupName: cfg.backupName } : {};
-  if (staged) env._restoreSource.engine = { backup: archiveEngine(staged), running: engineInfo(env.ENGINE_DIR) };
-  if (!staged) {
+  if (found) env._restoreSource.engine = { backup: archiveEngine(archive), running: engineInfo(env.ENGINE_DIR) };
+  if (!found) {
     restoreStatus(env, "failed", {
       error: cfg.backupName ? "backup not found" : "staged archive not found",
       appliedRequestId: cfg.requestId,
     });
+    fs.rmSync(snapDir, { recursive: true, force: true });
     finish();
     return;
   }
@@ -836,13 +894,11 @@ function restoreRequest(env) {
   const pkgTool = path.join(env.ENGINE_DIR, "tools", "site-package.js");
   const port = parseEnvFile(env.FP_ENV).PORT || "3000"; // config.js's default
   const cleanup = () => {
-    if (cfg.stagedName) fs.rmSync(staged, { force: true });
+    if (stagedPath) removeAsSiteUser(stagedPath, owner);
     finish();
   };
 
   // 1. Snapshot the CURRENT data before touching anything, outside the data dir.
-  const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), "featherspress-prerestore-"));
-  fs.chmodSync(snapDir, 0o700);
   const snapshot = path.join(snapDir, "pre-restore.tar.gz");
   restoreStatus(env, "restoring", { appliedRequestId: cfg.requestId, sections: cfg.sections });
   try {
@@ -863,7 +919,7 @@ function restoreRequest(env) {
   // --no-safety-snapshot: we took our own snapshot above and own the rollback.
   // Without it the CLI strands a second full copy of the site, credentials and
   // all, in /tmp after every single restore, and nothing ever prunes it.
-  const importArgs = [pkgTool, "import", staged, "--force", "--no-safety-snapshot",
+  const importArgs = [pkgTool, "import", archive, "--force", "--no-safety-snapshot",
     "--env-file", env.FP_ENV, "--sections", cfg.sections.join(",")];
   if (cfg.restoreAuth) importArgs.push("--restore-auth");
   let skipped = [];
@@ -917,7 +973,7 @@ function restoreRequest(env) {
   // 3. Settings, through the same whitelist /admin writes go through.
   if (cfg.sections.includes("settings")) {
     try {
-      const raw = execFileSync("tar", ["-xzOf", staged, "./settings.json"], { encoding: "utf8", stdio: "pipe" });
+      const raw = execFileSync("tar", ["-xzOf", archive, "./settings.json"], { encoding: "utf8", stdio: "pipe" });
       skipped = applyRestoredSettings(env, JSON.parse(raw));
     } catch {
       skipped.push("archive carried no readable settings.json");

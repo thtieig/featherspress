@@ -29,7 +29,10 @@ For an instance called `<name>`:
 /var/backups/featherspress/<name>/     nightly backups, always kept here; root
                                        writes them, the site may read them
                                        (the /admin backups list)
-user fp-<name>                         runs the site; owns its code and data
+user fp-<name>                         runs the site and owns its data; the
+                                       code (/opt/featherspress/<name>) is
+                                       root's, so the site can read but never
+                                       change what root runs
 featherspress@<name>.service           the site
 featherspress-backup@<name>.timer      nightly backup
 featherspress-update@<name>.timer      nightly update check

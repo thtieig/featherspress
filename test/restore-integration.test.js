@@ -404,7 +404,7 @@ test("an import that fails half-way puts the previous site back", async () => {
   const wrapper = path.join(TMP, "half-import-node");
   fs.writeFileSync(wrapper, `#!/bin/sh
 case "$*" in
-  *" import "*import-staging*)
+  *" import "*incoming.tar.gz*)
     rm -rf "${path.join(LIVE, "media")}"
     rm -f "${path.join(LIVE, "content", "posts")}"/*
     echo broken > "${path.join(LIVE, "content", "posts", "half.md")}"
@@ -451,6 +451,46 @@ test("a rolled-back restore also puts the backup settings back", async () => {
   assert.strictEqual(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), beforeDropin);
   const restarts = systemctlCalls().filter((c) => c === "restart featherspress-backup@alpha.timer");
   assert.strictEqual(restarts.length, 2, "the timer must be reloaded with the old schedule too");
+});
+
+test("a staged name that is a symlink is not followed, and nothing is touched", async () => {
+  healthFails(0);
+  const before = livePosts();
+  // An archive outside the staging dir (another site's backup, say), linked in.
+  const elsewhere = buildSourceArchive("elsewhere.tar.gz", { title: "Somebody Else" });
+  fs.mkdirSync(STAGING, { recursive: true });
+  const link = path.join(STAGING, "linked.tar.gz");
+  fs.symlinkSync(elsewhere, link);
+  fs.writeFileSync(config.RESTORE_REQUEST_FILE, JSON.stringify({
+    requestId: restoreState().appliedRequestId + 1,
+    stagedName: "linked.tar.gz", sections: ["content", "site"],
+  }), { mode: 0o600 });
+
+  bc.restoreRequest(agentEnv());
+
+  const st = restoreState();
+  assert.strictEqual(st.state, "failed");
+  assert.match(st.error, /staged archive not found/);
+  assert.deepStrictEqual(livePosts(), before);
+  assert.notStrictEqual(liveTitle(), "Somebody Else");
+  assert.ok(fs.existsSync(elsewhere), "the link's target must not be deleted");
+  fs.rmSync(link, { force: true });
+});
+
+test("a staged name that is a directory is refused", async () => {
+  healthFails(0);
+  const before = livePosts();
+  fs.mkdirSync(path.join(STAGING, "a-dir.tar.gz", "content", "posts"), { recursive: true });
+  fs.writeFileSync(config.RESTORE_REQUEST_FILE, JSON.stringify({
+    requestId: restoreState().appliedRequestId + 1,
+    stagedName: "a-dir.tar.gz", sections: ["content"],
+  }), { mode: 0o600 });
+
+  bc.restoreRequest(agentEnv());
+
+  assert.strictEqual(restoreState().state, "failed");
+  assert.deepStrictEqual(livePosts(), before);
+  fs.rmSync(path.join(STAGING, "a-dir.tar.gz"), { recursive: true, force: true });
 });
 
 // ---- the backups list: restore and download a backup kept on this server ----

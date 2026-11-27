@@ -120,6 +120,26 @@ test("backup.sh records a good run as ok", () => {
   }
 });
 
+test("backup.sh does not write its result through a symlink planted in the data dir", () => {
+  const dir = setup(null);
+  try {
+    const dest = path.join(dir, "dest");
+    fs.writeFileSync(path.join(dir, "backup.env"), `DEST_TYPE=local\nLOCAL_DIR=${dest}\nKEEP_LAST=3\n`);
+    const victim = path.join(dir, "victim");
+    fs.writeFileSync(victim, "precious\n", { mode: 0o600 });
+    fs.symlinkSync(victim, path.join(dir, "last-run.json"));
+    const r = run(dir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(fs.readFileSync(victim, "utf8"), "precious\n", "the link's target must be untouched");
+    assert.ok(fs.lstatSync(path.join(dir, "last-run.json")).isFile());
+    assert.strictEqual(r.lastRun.ok, true);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(dir)).filter((f) => f.startsWith(".fp-put.")), [],
+      "no temp dir is left behind");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The backups list shows which engine took each backup without opening it,
 // so the engine's commit goes in the name.
 test("backup.sh names a backup after the engine commit that took it", () => {

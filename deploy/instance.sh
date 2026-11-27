@@ -16,3 +16,18 @@ DATA_DIR="${DATA_DIR:-/var/lib/featherspress/$INSTANCE}"
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/featherspress/$INSTANCE}"
 # Exported so the Node agents these scripts call agree on the same instance.
 export ENGINE_DIR INSTANCE CONF_DIR DATA_DIR BACKUP_ROOT
+
+# put_data_file <target> <mode>: write stdin to <target>, a file in the site's
+# data dir, safely as root. The site user owns that dir, so it can put a
+# symlink at any name in it (or swap root's temp file for one), and the
+# kernel's symlink protection does not cover a dir that is not sticky and
+# world-writable. So the file is made in a fresh root-only dir beside the data
+# dir (the same filesystem) and renamed into place: rename(2) replaces a link
+# planted at the target, it never writes through it.
+put_data_file() {
+  local target="$1" mode="$2" d rc=0
+  d="$(mktemp -d "$(dirname "$(dirname "$target")")/.fp-put.XXXXXX")" || return 1
+  { cat > "$d/f" && chmod "$mode" "$d/f" && mv -fT "$d/f" "$target"; } || rc=1
+  rm -rf "$d"
+  return "$rc"
+}

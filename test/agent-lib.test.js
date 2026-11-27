@@ -290,3 +290,67 @@ test("engineInfo follows packed refs and a detached HEAD, and survives no git at
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- root writing into the app-owned data dir --------------------------------
+// The site user owns its data dir, so it can plant a symlink (or a FIFO) at any
+// name root reads or writes there. Root must never follow one.
+
+test("writeStatusFile does not write through a symlink planted at the target", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-agentlib-plant-"));
+  try {
+    const victim = path.join(dir, "victim");
+    fs.writeFileSync(victim, "precious\n", { mode: 0o600 });
+    const status = path.join(dir, "status.json");
+    fs.symlinkSync(victim, status);
+    lib.writeStatusFile(status, { ok: true });
+    assert.strictEqual(fs.readFileSync(victim, "utf8"), "precious\n");
+    assert.strictEqual(fs.statSync(victim).mode & 0o777, 0o600, "the link's target must not be chmodded");
+    assert.ok(fs.lstatSync(status).isFile(), "the status is a real file now");
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(status, "utf8")), { ok: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeStatusFile does not use a predictable temp name the app could plant", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-agentlib-tmp-"));
+  try {
+    const victim = path.join(dir, "victim");
+    fs.writeFileSync(victim, "precious\n", { mode: 0o600 });
+    const status = path.join(dir, "status.json");
+    fs.symlinkSync(victim, status + ".tmp"); // the old fixed temp name
+    lib.writeStatusFile(status, { ok: true });
+    assert.strictEqual(fs.readFileSync(victim, "utf8"), "precious\n");
+    assert.strictEqual(fs.statSync(victim).mode & 0o777, 0o600);
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(), ["status.json", "status.json.tmp", "victim"],
+      "no temp file is left behind");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileSafely hands the file to the given owner, with the given mode", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-agentlib-owner-"));
+  try {
+    const f = path.join(dir, "once.txt");
+    const me = { uid: process.getuid(), gid: process.getgid() };
+    lib.writeFileSafely(f, "secret\n", 0o600, me);
+    const st = fs.lstatSync(f);
+    assert.ok(st.isFile());
+    assert.strictEqual(st.mode & 0o777, 0o600);
+    assert.strictEqual(st.uid, me.uid);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRequestNoFollow refuses a FIFO instead of hanging on it", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-agentlib-fifo-"));
+  try {
+    const fifo = path.join(dir, "req");
+    require("node:child_process").execFileSync("mkfifo", [fifo]);
+    assert.throws(() => lib.readRequestNoFollow(fifo), /not a regular file/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

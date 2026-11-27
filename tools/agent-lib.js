@@ -5,6 +5,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 // One named instance: every directory and unit name an agent may touch,
 // derived from the name alone. The name is INSTANCE, or else the name of the
@@ -36,11 +37,13 @@ function fail(error) {
 }
 
 // Read a request file from the app-writable data dir WITHOUT following a
-// symlink, capped at 64 KB. Throws on a symlink, an oversize file or bad JSON.
+// symlink, capped at 64 KB. Throws on a symlink, a FIFO or device (opened
+// non-blocking, so a FIFO cannot hang root), an oversize file or bad JSON.
 function readRequestNoFollow(p) {
-  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error("not a regular file");
     if (st.size > 64 * 1024) throw new Error("request too large");
     const buf = Buffer.alloc(st.size);
     fs.readSync(fd, buf, 0, st.size, 0);
@@ -71,14 +74,36 @@ function parseEnvFile(p) {
   return parseEnv(fs.readFileSync(p, "utf8"));
 }
 
-// Write a status file atomically (temp file + rename), 0644 so the
-// unprivileged app can read it.
+// Write a file into the app-owned data dir as root, safely. The site user
+// owns that dir, so it can put a symlink at any name in it, and the kernel's
+// symlink protection does not cover a dir that is not sticky and world-
+// writable. So: a new file under a random name, created exclusively and
+// without following a link (O_EXCL), its mode and owner set on the open file
+// itself, then renamed over the target. rename() replaces a link planted at
+// the target; it never writes through it. `owner` ({uid, gid}) is optional.
+function writeFileSafely(target, data, mode, owner) {
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomBytes(8).toString("hex")}`);
+  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, mode);
+  try {
+    try {
+      fs.writeSync(fd, data);
+      fs.fchmodSync(fd, mode);
+      if (owner) fs.fchownSync(fd, owner.uid, owner.gid);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw e;
+  }
+}
+
+// A status file, 0644 so the unprivileged app can read it.
 function writeStatusFile(statusPath, obj) {
-  const tmp = statusPath + ".tmp";
-  fs.rmSync(tmp, { force: true });
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o644 });
-  fs.chmodSync(tmp, 0o644);
-  fs.renameSync(tmp, statusPath);
+  writeFileSafely(statusPath, JSON.stringify(obj, null, 2) + "\n", 0o644);
 }
 
 // The last request id this agent processed, 0 if none.
@@ -243,6 +268,7 @@ module.exports = {
   parseEnv,
   parseEnvFile,
   writeStatusFile,
+  writeFileSafely,
   readAppliedId,
   consumeRequest,
 };

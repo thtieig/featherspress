@@ -286,3 +286,20 @@ exit 0
     fs.rmSync(s.dir, { recursive: true, force: true });
   }
 });
+
+test("update.sh does not write its status through a symlink planted in the data dir", () => {
+  const dir = setup();
+  try {
+    const victim = path.join(dir, "victim");
+    fs.writeFileSync(victim, "precious\n", { mode: 0o600 });
+    fs.symlinkSync(victim, path.join(dir, "update-status.json"));
+    const r = run(dir, ["AUTO_APPLY=0", "REPO_REF=develop", `NODE_BIN=${process.execPath}`]);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(fs.readFileSync(victim, "utf8"), "precious\n", "the link's target must be untouched");
+    assert.strictEqual(fs.statSync(victim).mode & 0o777, 0o600, "and not chmodded");
+    assert.ok(fs.lstatSync(path.join(dir, "update-status.json")).isFile());
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, "update-status.json"), "utf8")).behind, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

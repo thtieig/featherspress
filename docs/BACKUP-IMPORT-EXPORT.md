@@ -52,9 +52,9 @@ examples use a site (instance) called `blog`; use your own site's name.
    `sudo -u fp-blog npm run …` fails with `sudo: npm: command not found`.
    Call the script with the absolute node path instead.
 2. **The tool needs your deployment's config.** With no env it falls back to the
-   bundled `example-site/` inside the code dir — and since the app user owns that
-   dir, an import *succeeds* there, clobbering git-tracked files and leaving your
-   real site untouched. Pass `--env-file` so it resolves the same paths the
+   bundled `example-site/` inside the code dir — and run with enough rights to
+   write there, an import *succeeds*, clobbering git-tracked files and leaving
+   your real site untouched. Pass `--env-file` so it resolves the same paths the
    service uses. (`import` now refuses outright if it notices it is about to
    write into the engine dir, but pass the flag and don't rely on the guard.)
 

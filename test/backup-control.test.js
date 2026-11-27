@@ -752,6 +752,20 @@ test("keygen puts the public half in backup.env and the private half in a 0600 o
   assert.doesNotMatch(JSON.stringify(status), /AGE-SECRET-KEY/, "the status file is 0644 — no secrets");
 });
 
+test("keygen does not write the key through a symlink planted at the one-shot file", () => {
+  const env = keygenEnv("fp-bc-keygen-plant-");
+  const victim = path.join(path.dirname(env.BACKUP_STATUS), "victim");
+  fs.writeFileSync(victim, "precious\n", { mode: 0o644 });
+  fs.symlinkSync(victim, onceFileOf(env));
+  bc.applyRequest(env);
+  const status = JSON.parse(fs.readFileSync(env.BACKUP_STATUS, "utf8"));
+  assert.strictEqual(status.lastRequestOk, true, status.lastRequestError);
+  assert.strictEqual(fs.readFileSync(victim, "utf8"), "precious\n", "the link's target must be untouched");
+  assert.strictEqual(fs.statSync(victim).mode & 0o777, 0o644, "and not chmodded");
+  assert.ok(fs.lstatSync(onceFileOf(env)).isFile(), "the key lands in a real file");
+  assert.match(fs.readFileSync(onceFileOf(env), "utf8"), /AGE-SECRET-KEY-1/);
+});
+
 test("keygen preserves the rest of backup.env instead of rewriting it", () => {
   const env = keygenEnv("fp-bc-keygen-keep-",
     "DEST_TYPE=local\nLOCAL_DIR=/var/backups/featherspress\nKEEP_LAST=9\n" +

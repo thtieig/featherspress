@@ -89,6 +89,12 @@ function exportPackage(opts) {
     if (profile === "full" && want.has("credentials") && notifyPath && fs.existsSync(notifyPath)) {
       fs.copyFileSync(notifyPath, path.join(stage, "notify.json"));
     }
+    // An already-open output (the CLI opens it before it gives up root): tar
+    // writes the archive to it, and whoever opened it chose its mode.
+    if (opts.outFd !== undefined) {
+      execFileSync("tar", ["-czf", "-", "-C", stage, "."], { stdio: ["ignore", opts.outFd, "pipe"] });
+      return outFile;
+    }
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     // A "full" artifact carries the password hash and the TOTP secret in
     // cleartext, so it must never exist at the ambient umask (0644) even briefly,
@@ -114,7 +120,9 @@ function exportPackage(opts) {
 // Reject tar members that would escape the extraction dir (absolute paths or a
 // `..` segment) BEFORE extracting a single byte.
 function assertSafeTar(tarball) {
-  const listing = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" });
+  // A big media library lists tens of thousands of names: far past the 1 MB
+  // execFileSync would otherwise allow.
+  const listing = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   for (const raw of listing.split("\n")) {
     const entry = raw.trim();
     if (!entry) continue;
@@ -161,8 +169,35 @@ function assertNoEscapingLinks(root) {
   walk(rootResolved);
 }
 
-// Resolve a package source (a directory OR a .tar.gz) to a directory on disk.
-function resolveSource(src) {
+// Resolve a package source (a directory OR a .tar.gz, or an already-open
+// .tar.gz as `srcFd`) to a directory on disk.
+function resolveSource(src, srcFd) {
+  if (srcFd !== undefined) {
+    // Copied to a file of our own first: the checks below read it twice.
+    const holder = fs.mkdtempSync(path.join(os.tmpdir(), "fp-import-src-"));
+    const copy = path.join(holder, "package.tar.gz");
+    try {
+      const out = fs.openSync(copy, "wx", 0o600);
+      try {
+        const buf = Buffer.alloc(1 << 20);
+        let n;
+        while ((n = fs.readSync(srcFd, buf, 0, buf.length, null)) > 0) fs.writeSync(out, buf, 0, n);
+      } finally {
+        fs.closeSync(out);
+      }
+      const inner = resolveSource(copy);
+      return {
+        dir: inner.dir,
+        cleanup: () => {
+          inner.cleanup();
+          fs.rmSync(holder, { recursive: true, force: true });
+        },
+      };
+    } catch (e) {
+      fs.rmSync(holder, { recursive: true, force: true });
+      throw e;
+    }
+  }
   const stat = fs.statSync(src);
   if (stat.isDirectory()) {
     assertNoEscapingLinks(src);
@@ -212,7 +247,7 @@ function importPackage(opts) {
     if (!SECTIONS.includes(s)) throw new Error(`unknown section: ${s}`);
   }
 
-  const { dir, cleanup } = resolveSource(src);
+  const { dir, cleanup } = resolveSource(src, opts.srcFd);
   try {
     // Validate the package is renderable before touching the live dir — but only
     // for the sections actually being restored. Checking unconditionally made a
@@ -443,6 +478,44 @@ function reownAfterRootRestore(paths) {
   return { uid: owner.uid, gid: owner.gid, count: targets.length };
 }
 
+// Run as root (the nightly backup, the restore agent, an operator's sudo), the
+// CLI does its work as the site's own user — whoever owns the data dir — so a
+// symlink the site planted in its data dir can only reach what the site could
+// reach anyway: root following one would read /etc/shadow into a backup, or
+// write a restored file over a system one. Root only opens the archive on its
+// own side first and hands the open file over. Null when there is nobody to
+// become: not root, or the data dir is root's own.
+function siteUserToBecome(paths) {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return null;
+  let st;
+  try {
+    st = fs.lstatSync(path.dirname(path.resolve(paths.contentDir)));
+  } catch {
+    return null;
+  }
+  return st.uid === 0 ? null : { uid: st.uid, gid: st.gid };
+}
+
+// The archive to import, opened by root. A directory is packed first (as
+// root, into a private temp dir), so the site user can be handed one file.
+function openSourceAsRoot(src) {
+  if (!fs.statSync(src).isDirectory()) return fs.openSync(src, "r");
+  const holder = fs.mkdtempSync(path.join(os.tmpdir(), "fp-import-dir-"));
+  try {
+    const packed = path.join(holder, "package.tar.gz");
+    execFileSync("tar", ["-czf", packed, "-C", src, "."]);
+    return fs.openSync(packed, "r");
+  } finally {
+    fs.rmSync(holder, { recursive: true, force: true }); // the open file stays readable
+  }
+}
+
+function becomeSiteUser(who) {
+  process.setgroups([who.gid]);
+  process.setgid(who.gid);
+  process.setuid(who.uid);
+}
+
 // A private 0700 directory for credential-bearing artifacts. The pre-restore
 // snapshot used to go straight into /tmp under a fully predictable name
 // (featherspress-prerestore-<UTC timestamp>.tar.gz) in a world-WRITABLE dir, so
@@ -509,6 +582,16 @@ function assertNotEngineDir(contentDir, engineRoot, allow) {
   }
 }
 
+function readSettings(config) {
+  try {
+    const status = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
+    return buildSettings(status);
+  } catch {
+    process.stderr.write("settings not captured: backup-status.json is missing or unreadable\n");
+    return undefined;
+  }
+}
+
 function main(argv = process.argv.slice(2)) {
   const cmd = argv[0];
   const { flags, positional } = parseFlags(argv.slice(1));
@@ -533,18 +616,27 @@ function main(argv = process.argv.slice(2)) {
     // path has that. A missing/unparseable status file must never fail the
     // whole backup: skip just the settings section and say so.
     let settings;
-    if (sections.includes("settings")) {
-      try {
-        const status = JSON.parse(fs.readFileSync(config.BACKUP_STATUS_FILE, "utf8"));
-        settings = buildSettings(status);
-      } catch {
-        process.stderr.write(
-          "settings not captured: backup-status.json is missing or unreadable\n"
-        );
-      }
+    if (sections.includes("settings") && !siteUserToBecome(paths)) settings = readSettings(config);
+    const who = siteUserToBecome(paths);
+    if (!who) {
+      exportPackage({ ...paths, profile, sections, outFile, settings });
+      process.stderr.write(`exported ${profile} package → ${outFile}\n`);
+      return outFile;
     }
-    exportPackage({ ...paths, profile, sections, outFile, settings });
-    process.stderr.write(`exported ${profile} package → ${outFile}\n`);
+    // Root opens the output (a new 0600 file, never through a link), then
+    // gives up root before reading a single file of the site's.
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
+    fs.rmSync(outFile, { force: true });
+    const outFd = fs.openSync(outFile, "wx", 0o600);
+    try {
+      becomeSiteUser(who);
+      // Settings come from the status file in the data dir: read as the site.
+      if (sections.includes("settings") && settings === undefined) settings = readSettings(config);
+      exportPackage({ ...paths, profile, sections, outFile, settings, outFd });
+    } finally {
+      fs.closeSync(outFd);
+    }
+    process.stderr.write(`exported ${profile} package → ${outFile} (read as uid ${who.uid})\n`);
     return outFile;
   }
 
@@ -578,9 +670,25 @@ function main(argv = process.argv.slice(2)) {
     // rollback (the root restore agent) passes --no-safety-snapshot: otherwise
     // every /admin restore silently strands a second full copy of the site —
     // credentials included — in /tmp, for ever, with nothing pruning it.
-    if (hasExistingData && !flags.noSafetySnapshot) {
-      const safety = path.join(safeTmpDir(), `featherspress-prerestore-${timestamp()}.tar.gz`);
-      exportPackage({ ...paths, profile: "full", outFile: safety });
+    const who = siteUserToBecome(paths);
+    const wantSafety = hasExistingData && !flags.noSafetySnapshot;
+    const safety = wantSafety ? path.join(safeTmpDir(), `featherspress-prerestore-${timestamp()}.tar.gz`) : null;
+    // As root: open the archive (an operator's path, or the restore agent's
+    // private copy) and the safety snapshot's file now, then give up root.
+    let srcFd;
+    let safetyFd;
+    if (who) {
+      srcFd = openSourceAsRoot(src);
+      if (safety) safetyFd = fs.openSync(safety, "wx", 0o600);
+      becomeSiteUser(who);
+      process.stderr.write(`working as uid ${who.uid}, the data dir's owner\n`);
+    }
+    if (safety) {
+      try {
+        exportPackage({ ...paths, profile: "full", outFile: safety, outFd: safetyFd });
+      } finally {
+        if (safetyFd !== undefined) fs.closeSync(safetyFd);
+      }
       process.stderr.write(`pre-restore backup of current data → ${safety}\n`);
     }
     const importSections = flags.sections
@@ -594,6 +702,7 @@ function main(argv = process.argv.slice(2)) {
     }
     importPackage({
       src,
+      srcFd,
       ...paths,
       sections: importSections,
       force: !!flags.force,

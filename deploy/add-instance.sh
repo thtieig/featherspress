@@ -81,7 +81,9 @@ install -d -m 0755 /opt/featherspress /var/lib/featherspress /etc/featherspress
 # own folder without listing the others.
 install -d -m 0711 /var/backups/featherspress
 install -d -o root -g "$FP_USER" -m 0750 "$BACKUPS"
-install -d -o "$FP_USER" -g "$FP_USER" -m 0755 "$CODE"
+# The code is root's: root runs the backup and restore agents from it, so the
+# site user may read it but never change it.
+install -d -o root -g root -m 0755 "$CODE"
 # 0751: Apache may pass through to media/, but nobody else can list the data.
 install -d -o "$FP_USER" -g "$FP_USER" -m 0751 "$DATA_DIR"
 install -d -o "$FP_USER" -g "$FP_USER" -m 0755 "$DATA_DIR/content" "$DATA_DIR/content/posts" \
@@ -89,14 +91,16 @@ install -d -o "$FP_USER" -g "$FP_USER" -m 0755 "$DATA_DIR/content" "$DATA_DIR/co
 install -d -o root -g "$FP_USER" -m 0750 "$CONF_DIR"
 
 # --- Code ----------------------------------------------------------------------
-as_site() { runuser -u "$FP_USER" -- env PATH="/opt/node/bin:$PATH" "$@"; }
 if [ ! -d "$CODE/.git" ]; then
   echo "Cloning $REPO ($REF) into $CODE"
-  as_site git clone --quiet --branch "$REF" "$REPO" "$CODE"
+  git clone --quiet --branch "$REF" "$REPO" "$CODE"
 fi
 if [ ! -d "$CODE/node_modules" ]; then
   echo "Installing dependencies"
-  as_site npm ci --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error --prefix "$CODE"
+  # --ignore-scripts: as root, no dependency may run an install script; none
+  # of them needs one.
+  PATH="/opt/node/bin:$PATH" npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    --no-update-notifier --loglevel=error --prefix "$CODE"
 fi
 
 # --- Config (kept if already there) -------------------------------------------

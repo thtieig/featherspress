@@ -79,7 +79,7 @@ fi
 # update.conf says AUTO_APPLY=0, while REPO_REF, NODE_BIN and the rest still
 # come from update.conf. ENGINE_DIR is always set by now (instance.sh), so
 # neither env file can move this run to another checkout.
-OVERRIDABLE="AUTO_APPLY REPO_REF ENGINE_DIR NODE_BIN NPM_BIN SERVICE FP_USER"
+OVERRIDABLE="AUTO_APPLY REPO_REF ENGINE_DIR NODE_BIN NPM_BIN SERVICE"
 declare -A FROM_ENV=()
 for v in $OVERRIDABLE; do [ -n "${!v:-}" ] && FROM_ENV[$v]="${!v}"; done
 [ -f "$FP_ENV" ] && { set -a; . "$FP_ENV"; set +a; }
@@ -102,16 +102,18 @@ export PATH
 
 cd "$ENGINE_DIR"
 
-# The code dir is owned by the unprivileged app user, and git refuses to operate
-# on a repo owned by someone else ("detected dubious ownership"), which makes
-# every git call below fail when this runs as root from the timer. Run git AS the
-# owner instead of teaching root to trust the path: it also keeps newly written
-# objects owned correctly, so no chown -R is needed to repair them afterwards.
+# The code dir is root's. Root runs code from it (the backup and restore
+# agents), so the site user must not be able to change it: before, it owned
+# the checkout, and only the site service's sandbox kept it read-only — while
+# this script ran git and npm as that user, outside the sandbox, with the data
+# dir (which the site can write) as their home and its .gitconfig/.npmrc read.
+# A checkout still owned by the site user from before is handed to root here,
+# once, before git touches it (git refuses a repo owned by someone else).
+if [ "$(id -u)" = "0" ] && [ "$(stat -c %u "$ENGINE_DIR")" != "0" ]; then
+  echo "[update] handing $ENGINE_DIR to root (it was owned by $(stat -c %U "$ENGINE_DIR"))"
+  chown -R root:root "$ENGINE_DIR"
+fi
 REPO_OWNER="$(stat -c %U "$ENGINE_DIR")"
-# Default to whoever actually owns the code dir (fp-<name>): everything else
-# runs as REPO_OWNER, and a divergent FP_USER makes the chown below fail (or
-# hand the repo to the wrong user).
-FP_USER="${FP_USER:-$REPO_OWNER}"
 run_as_owner() {
   if [ "$(id -u)" = "0" ] && [ "$REPO_OWNER" != "root" ]; then
     # `env PATH=…` rather than relying on --preserve-env=PATH alone: sudoers
@@ -125,6 +127,9 @@ run_as_owner() {
   fi
 }
 git_as() { run_as_owner git -C "$ENGINE_DIR" "$@"; }
+# --ignore-scripts: no dependency gets to run an install script, as root least
+# of all. None of Featherspress's dependencies needs one (all plain JS).
+npm_install() { run_as_owner "$NPM_BIN" ci --omit=dev --ignore-scripts --prefix "$ENGINE_DIR"; }
 
 # A connection that stalls (under 1 KB/s for a minute) is given up on rather
 # than waited on forever.
@@ -143,16 +148,11 @@ AVAILABLE_BOOL=false
 [ "$BEHIND" -gt 0 ] && AVAILABLE_BOOL=true
 
 write_status() {
-  local tmp
-  # In the status file's own directory, so the rename is atomic — a mktemp in
-  # /tmp can land on another filesystem, making `mv` a copy the admin UI could
-  # read half-written.
+  # Renamed into place (deploy/instance.sh), so the admin UI never reads it
+  # half-written and a link planted at its name is never written through.
   mkdir -p "$(dirname "$STATUS_FILE")"
-  tmp="$(mktemp "$(dirname "$STATUS_FILE")/.update-status.XXXXXX")"
   printf '{"available":%s,"behind":%s,"currentCommit":"%s","currentVersion":"%s","availableCommit":"%s","checkedAt":"%s"}\n' \
-    "$AVAILABLE_BOOL" "$BEHIND" "$CURRENT" "$(read_version)" "$AVAILABLE" "$NOW" > "$tmp"
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$STATUS_FILE"
+    "$AVAILABLE_BOOL" "$BEHIND" "$CURRENT" "$(read_version)" "$AVAILABLE" "$NOW" | put_data_file "$STATUS_FILE" 644
 }
 write_status
 echo "[update] behind=$BEHIND current=${CURRENT:0:7} available=${AVAILABLE:0:7} auto_apply=$AUTO_APPLY"
@@ -197,9 +197,8 @@ rollback() {
     rm -rf "$ENGINE_DIR/node_modules"
     mv "$SAVED_MODULES" "$ENGINE_DIR/node_modules" || echo "[update] rollback: could not put the old node_modules back" >&2
   else
-    run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || echo "[update] rollback: npm ci FAILED" >&2
+    npm_install || echo "[update] rollback: npm ci FAILED" >&2
   fi
-  chown -R "$FP_USER:" "$ENGINE_DIR" || echo "[update] rollback: chown FAILED" >&2
   systemctl restart "$SERVICE" || echo "[update] rollback: restart FAILED" >&2
   AVAILABLE_BOOL=true
   write_status || echo "[update] rollback: could not write the status file" >&2
@@ -250,12 +249,11 @@ if [ -d "$ENGINE_DIR/node_modules" ]; then
   mv "$ENGINE_DIR/node_modules" "$SAVED_MODULES"
 fi
 
-if ! run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"; then
+if ! npm_install; then
   echo "[update] dependency install FAILED on the new commit" >&2
   rollback
   exit 1
 fi
-chown -R "$FP_USER:" "$ENGINE_DIR"
 systemctl restart "$SERVICE"
 
 if ! healthy; then

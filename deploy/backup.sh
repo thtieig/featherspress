@@ -23,7 +23,7 @@ BACKUP_LOCK="${BACKUP_LOCK:-/run/featherspress-backup-$INSTANCE.lock}"
 record_run() {
   local ok="$1" err="$2" bytes="${3:-0}"
   printf '{"at":"%s","ok":%s,"error":%s,"artifactBytes":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$err" "$bytes" > "$LAST_RUN_FILE" 2>/dev/null || true
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ok" "$err" "$bytes" | put_data_file "$LAST_RUN_FILE" 644 2>/dev/null || true
   "$NODE_BIN" "$ENGINE_DIR/tools/backup-control.js" status 2>/dev/null || true
 }
 

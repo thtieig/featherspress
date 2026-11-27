@@ -659,3 +659,55 @@ test("resolvePackagePaths points notify.json at the app's own file", () => {
   const p = sp.resolvePackagePaths(require("../config"), null);
   assert.strictEqual(p.notifyConfigPath, require("../config").NOTIFY_CONFIG);
 });
+
+// ---- handed-over files: what the CLI does as root, after giving up root ------
+// Root opens the archive (or the output) itself, becomes the site user, and
+// passes the open file. The same code paths, run as whoever runs the tests.
+test("export into an already-open file, and import from one, round-trip a site", () => {
+  const sp = require("../tools/site-package");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-sp-fd-"));
+  try {
+    const src = path.join(dir, "src");
+    fs.mkdirSync(path.join(src, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(src, "content", "posts", "a.md"), "---\ntitle: A\n---\n\nbody a\n");
+    fs.writeFileSync(path.join(src, "site.json"), JSON.stringify({ title: "Fd Site", skin: "notepad" }));
+    const out = path.join(dir, "out.tar.gz");
+    const outFd = fs.openSync(out, "wx", 0o600);
+    try {
+      sp.exportPackage({
+        contentDir: path.join(src, "content"),
+        manifestPath: path.join(src, "site.json"),
+        profile: "site",
+        outFile: out,
+        outFd,
+      });
+    } finally {
+      fs.closeSync(outFd);
+    }
+    assert.ok(fs.statSync(out).size > 0, "the archive went into the open file");
+
+    const dst = path.join(dir, "dst");
+    fs.mkdirSync(dst);
+    const inFd = fs.openSync(out, "r");
+    try {
+      sp.importPackage({
+        src: "(handed over)",
+        srcFd: inFd,
+        contentDir: path.join(dst, "content"),
+        manifestPath: path.join(dst, "site.json"),
+        bundledSkinsDir: path.join(__dirname, "..", "skins"),
+      });
+    } finally {
+      fs.closeSync(inFd);
+    }
+    assert.match(fs.readFileSync(path.join(dst, "content", "posts", "a.md"), "utf8"), /body a/);
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dst, "site.json"), "utf8")).title, "Fd Site");
+    assert.deepStrictEqual(
+      fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith("fp-import-src-") &&
+        fs.statSync(path.join(os.tmpdir(), d)).mtimeMs > Date.now() - 5000), [],
+      "the copy of the handed-over archive is cleaned up"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
