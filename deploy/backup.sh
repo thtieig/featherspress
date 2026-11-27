@@ -42,7 +42,11 @@ refuse() {
 # A copy of this run's error output, for the failure email. It still goes to
 # the journal as before (fd 3 is the original stderr).
 ERR_LOG="$(mktemp)"
-exec 3>&2 2> >(tee -a "$ERR_LOG" >&3)
+# The tee ignores SIGTERM/SIGINT: systemd stops a job by signalling ALL its
+# processes, and a dead tee would make this script's next line on stderr kill
+# it (SIGPIPE) before it could roll back or record anything. It still ends
+# when this script closes its end of the pipe.
+exec 3>&2 2> >(trap '' TERM INT; exec tee -a "$ERR_LOG" >&3)
 TEE_PID=$!
 
 # One email per failed run (tools/notify.js; it sends nothing until email

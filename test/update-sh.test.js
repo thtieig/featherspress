@@ -269,10 +269,13 @@ rm -rf "$p/node_modules"; mkdir -p "$p/node_modules/dep"; echo "new deps" > "$p/
 });
 
 test("update.sh: an update stopped half-way (systemd timeout, shutdown) is rolled back", () => {
-  // The install is interrupted the way systemd stops a unit: SIGTERM.
-  const s = applySetup(`#!/bin/sh
+  // The install is interrupted the way systemd stops a unit: SIGTERM to every
+  // process of the job, the script AND its helpers (the tee that keeps the
+  // log for the alert email among them), not just the script.
+  const s = applySetup(`#!/bin/bash
 while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && p="$2"; shift; done
 rm -rf "$p/node_modules"
+for c in $(pgrep -P $PPID); do [ "$c" != $$ ] && kill -TERM "$c"; done
 kill -TERM $PPID
 exit 0
 `);

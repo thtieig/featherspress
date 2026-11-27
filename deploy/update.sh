@@ -28,7 +28,11 @@ NOTIFY_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/notify.js"
 ALERT_SUBJECT="Update check failed"
 ALERT_TEXT="The nightly check for engine updates could not run, so this site cannot tell whether an update is waiting."
 ERR_LOG="$(mktemp)"
-exec 3>&2 2> >(tee -a "$ERR_LOG" >&3)
+# The tee ignores SIGTERM/SIGINT: systemd stops a job by signalling ALL its
+# processes, and a dead tee would make this script's next line on stderr kill
+# it (SIGPIPE) before it could roll back or record anything. It still ends
+# when this script closes its end of the pipe.
+exec 3>&2 2> >(trap '' TERM INT; exec tee -a "$ERR_LOG" >&3)
 TEE_PID=$!
 on_exit() {
   local rc=$?
