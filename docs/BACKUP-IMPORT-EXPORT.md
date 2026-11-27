@@ -38,9 +38,12 @@ it restore as before.
 | `site` (default) | everything **except** `auth-config.json` | a portable, shareable, movable copy of the blog |
 | `full` | `site` + `auth-config.json` (password hash + TOTP secret) and `notify.json` (email alert settings) | disaster recovery / backups |
 
-There are deliberately no finer "sections" — the only meaningful split on a
-single-author blog is *with or without credentials*. The engine code is **not**
-part of the package (recover it from git), and `featherspress.env` is disposable.
+The profiles are shortcuts. Underneath, a package is five **sections**:
+`content`, `media`, `site` (site.json with its skin and favicon), `settings`
+(the backup settings) and `credentials` (login and alert settings). Exports,
+the scheduled backup and restores can each take a subset (`--sections`, the
+/admin checkboxes). The engine code is **not** part of the package (recover it
+from git), and `featherspress.env` is disposable.
 
 ## Running the tool on a server
 
@@ -66,11 +69,16 @@ ENVF="--env-file /etc/featherspress/blog/featherspress.env"
 `import` prints the resolved content/media/skin/favicon/auth paths before it
 touches anything — **read them** and confirm they are your data dir.
 
+Run as root instead (`sudo` without `-u`), the tool opens the archive, or the
+output file, as root and then does all its work as the data dir's owner: it
+never reads or writes the site's files with root's rights, and restored files
+belong to the site.
+
 ## Export
 
 ```sh
-# Always pass --out a writable path: the app user can't write the (read-only)
-# code dir, which is the default location.
+# Always pass --out a writable path: the default is the current directory,
+# which the site user usually cannot write.
 $FP export $ENVF --out /tmp/site.tar.gz
 $FP export $ENVF --profile full --out /tmp/site-full.tar.gz
 ```
@@ -102,8 +110,9 @@ $FP import $ENVF /path/to/backup.tar.gz --force --restore-auth
   ```
 - **`--restore-auth`** is required to overwrite `auth-config.json` — a routine
   content import can never clobber your working 2FA.
-- After a content change the running site hot-reloads; after an import, restart
-  the service if you changed the skin/manifest: `sudo systemctl restart featherspress@blog`.
+- The running site reads content, manifest and skin when it starts, so restart
+  it after an import: `sudo systemctl restart featherspress@blog`. (Saves made
+  in /admin show at once; files changed on disk do not.)
 
 ## Scheduled backups
 
@@ -144,7 +153,9 @@ journalctl -u featherspress-backup@blog.service -n 20
   If the upload fails (wrong credentials, host down) the run is marked failed
   in /admin ("the off-box copy failed; this backup is kept on this server
   only"); the local copy is still made. A dead host takes a few minutes to
-  give up (rclone retries); a refused login fails at once.
+  give up (rclone retries); a refused login fails at once. Pruning old off-box
+  copies that fails (a key that may write but not delete, say) does not fail
+  the run, but the job's log says so: otherwise the remote folder only grows.
 
 ### Setting up an off-box copy
 
@@ -274,7 +285,8 @@ site's /admin address (from `url` in `site.json`).
 Fill in where alerts go and how to send them, then press **Send test email**:
 it saves, sends one straight away, and shows either success or the mail
 server's own error. The password is never shown again; the field says one is
-saved, and leaving it empty keeps it. **Turn off alerts** removes the settings.
+saved, and leaving it empty keeps it, as long as the mail server and username
+stay the same (change either, and type the password again). **Turn off alerts** removes the settings.
 
 - **An email account (SMTP)** works everywhere, including a server with no
   mail software. For **Gmail**: mail server `smtp.gmail.com`, port `587`,
@@ -379,7 +391,14 @@ or put in the request): root has no key. The
 ROOT agent snapshots your current site, restores the requested sections, applies
 any `settings.json` through the same whitelist the backup panel uses, restarts
 the service, and checks that `/healthz` AND the home page both respond. **If the
-restored site does not come up, the snapshot is put back automatically.**
+restore fails part-way, or the restored site does not come up, the snapshot is
+put back automatically**, and with it the backup settings and anything the
+site did not have before (a fresh site's missing `site.json`, say).
+
+Root first copies the archive into a private folder of its own, and takes an
+upload only when it is a plain file owned by the site's user, never a link.
+An upload never restored (abandoned, or refused) is deleted at the next upload
+after an hour: it may be a decrypted backup.
 
 Two things to expect:
 

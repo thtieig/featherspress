@@ -183,13 +183,20 @@ By hand, the same thing:
 sudo env AUTO_APPLY=1 /opt/featherspress/blog/deploy/update.sh
 ```
 
+An update stopped half-way (a timeout, a shutdown, `systemctl stop`) is rolled
+back as well. git and npm run as root on the root-owned checkout, and npm with
+`--ignore-scripts`, so no dependency runs an install script. A site installed
+before the checkout became root's (its code owned by `fp-<name>`) is handed to
+root by the first update run, check or apply; nothing to do by hand.
+
 Set `AUTO_APPLY=1` in `/etc/featherspress/<name>/update.conf` to apply updates
 automatically, and `REPO_REF` to follow another branch. Automatic is
 convenient, but a bad upstream commit then runs within a day, so choose it per
 site, knowingly.
 
 The systemd templates in `/etc/systemd/system` are shared by all sites. If an
-update changes `deploy/featherspress*@.*`, copy them in again:
+update changes `deploy/featherspress*@.*` (`git log -p -- deploy/` in the
+checkout shows it), copy them in again:
 
 ```sh
 sudo install -m 644 /opt/featherspress/blog/deploy/featherspress*@.* /etc/systemd/system/

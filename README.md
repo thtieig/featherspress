@@ -181,6 +181,7 @@ All optional; sensible defaults for local dev.
 | `SITE_MANIFEST` | Explicit path to `site.json`. |
 | `SKINS_DIR` / `DEFAULT_SKIN` | Where skins live / fallback skin. |
 | `PORT` / `HOST` | Bind address (default `127.0.0.1:3000`). |
+| `TZ` | Timezone post dates are shown in, e.g. `Europe/Berlin` (default: the server's). |
 | `SESSION_SECRET` | Required for `/admin`: 32+ random characters (`openssl rand -hex 32`). Without it `/admin` answers 503; the public site still runs. |
 
 ## Deploying
