@@ -227,9 +227,21 @@ if [ "$DEST_TYPE" = "rclone" ]; then
     refuse "the off-box copy failed; this backup is kept on this server only" "$REMOTE_DIR"
   fi
   echo "[backup] uploaded $REMOTE_DIR/$BASENAME"
-  # Prune: keep newest N in this site's remote folder.
-  mapfile -t OLD < <(rclone lsf "$REMOTE_DIR" --include 'featherspress-full-*' 2>/dev/null | sort | head -n -"$KEEP_LAST" || true)
-  for f in "${OLD[@]:-}"; do [ -n "$f" ] && rclone deletefile "$REMOTE_DIR/$f" && echo "[backup] pruned off-box $f"; done
+  # Prune: keep newest N in this site's remote folder. A prune that fails does
+  # not fail the backup (it was made and uploaded), but it is said: left
+  # unnoticed, the remote folder grows without limit.
+  if REMOTE_LIST="$(rclone lsf "$REMOTE_DIR" --include 'featherspress-full-*')"; then
+    mapfile -t OLD < <(printf '%s\n' "$REMOTE_LIST" | sed '/^$/d' | sort | head -n -"$KEEP_LAST" || true)
+    PRUNE_FAILED=0
+    for f in "${OLD[@]:-}"; do
+      [ -n "$f" ] || continue
+      if rclone deletefile "$REMOTE_DIR/$f"; then echo "[backup] pruned off-box $f"; else PRUNE_FAILED=$((PRUNE_FAILED + 1)); fi
+    done
+    [ "$PRUNE_FAILED" -eq 0 ] ||
+      echo "[backup] warning: could not prune $PRUNE_FAILED old off-box backups in $REMOTE_DIR; it keeps growing until that is fixed" >&2
+  else
+    echo "[backup] warning: could not list $REMOTE_DIR to prune old off-box backups" >&2
+  fi
 fi
 
 record_run true null "${STORED_BYTES:-0}"

@@ -85,7 +85,9 @@ the Apache vhost, then starts the site and all its timers. It refuses a port or
 domain another instance already uses. Running it again is safe: it keeps the
 existing checkout, config and login. `RELOAD_APACHE=1` makes it reload Apache
 for you. `ALIASES="www.blog.example.org"` (space-separated) adds other names
-the vhost answers to; pass them to certbot as extra `-d` names too.
+the vhost answers to; pass them to certbot as extra `-d` names too (the
+script prints the full certbot command). Aliases only go into a NEW vhost: for
+a site that already has one, add them to its `ServerAlias` line by hand.
 
 ## 4. Admin login, or restore
 

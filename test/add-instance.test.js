@@ -132,3 +132,64 @@ test("the vhost template has the one ServerAlias line add-instance.sh fills in o
   assert.deepStrictEqual(lines, ["    ServerAlias @ALIASES@"]);
   assert.match(fs.readFileSync(SCRIPT, "utf8"), /ServerAlias @ALIASES@\$/);
 });
+
+// ---- the vhost it writes: PRINT_VHOST=1 prints it after every check, and
+// stops there, so the alias handling is tested on the real output.
+function vhost(etc, aliases, ...args) {
+  return runWith({ PRINT_VHOST: "1", ALIASES: aliases }, etc, ...args);
+}
+
+test("the vhost carries the aliases on one ServerAlias line, or no such line without them", () => {
+  const etc = server();
+  try {
+    const withAliases = vhost(etc, "www.alpha.example.org alpha.example.net", "alpha", "alpha.example.org", "8801");
+    assert.strictEqual(withAliases.status, 0, withAliases.stderr);
+    assert.match(withAliases.stdout, /^\s*ServerName alpha\.example\.org$/m);
+    assert.match(withAliases.stdout, /^\s*ServerAlias www\.alpha\.example\.org alpha\.example\.net$/m);
+    assert.doesNotMatch(withAliases.stdout, /@[A-Z]+@/, "every placeholder is filled in");
+
+    const without = vhost(etc, "", "alpha", "alpha.example.org", "8801");
+    assert.strictEqual(without.status, 0, without.stderr);
+    assert.doesNotMatch(without.stdout, /^\s*ServerAlias\b/m);
+    assert.doesNotMatch(without.stdout, /@[A-Z]+@/);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});
+
+test("aliases on several lines are all taken, and one listed twice is refused", () => {
+  const etc = server();
+  try {
+    const r = vhost(etc, "www.alpha.example.org\nalpha.example.net", "alpha", "alpha.example.org", "8801");
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /ServerAlias www\.alpha\.example\.org alpha\.example\.net$/m);
+    refuses(vhost(etc, "www.alpha.example.org www.alpha.example.org", "alpha", "alpha.example.org", "8801"),
+      /listed twice/);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});
+
+test("the certbot step it prints names the aliases too", () => {
+  const etc = server();
+  try {
+    const r = vhost(etc, "www.alpha.example.org", "alpha", "alpha.example.org", "8801");
+    assert.match(r.stderr, /certbot --apache -d alpha\.example\.org -d www\.alpha\.example\.org/);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});
+
+test("re-running with new aliases for a site whose vhost exists says to add them by hand", () => {
+  const etc = server();
+  try {
+    // beta's vhost already exists, with www.beta.example.org.
+    refuses(runWith({ ALIASES: "beta.example.net" }, etc, "beta", "beta.example.org", "8802"),
+      /already has a vhost.*beta\.example\.net/s);
+    // Naming the aliases it already has is fine.
+    const same = runWith({ ALIASES: "www.beta.example.org", PRINT_VHOST: "1" }, etc, "beta", "beta.example.org", "8802");
+    assert.strictEqual(same.status, 0, same.stderr);
+  } finally {
+    fs.rmSync(etc, { recursive: true, force: true });
+  }
+});

@@ -242,6 +242,7 @@ function offbox() {
   fs.writeFileSync(path.join(bin, "rclone"), `#!/bin/bash
 echo "$*" >> "${path.join(dir, "rclone.log")}"
 [ -n "$RCLONE_FAIL" ] && { echo "Failed to copy: access denied" >&2; exit 1; }
+[ -n "$RCLONE_NO_DELETE" ] && [ "$1" = deletefile ] && { echo "Failed to delete: access denied" >&2; exit 1; }
 args=(); while [ $# -gt 0 ]; do case "$1" in --include) shift 2;; --*) shift;; *) args+=("$1"); shift;; esac; done
 map() { echo "${remote}/\${1#*:}"; }
 case "\${args[0]}" in
@@ -269,6 +270,23 @@ test("off-box: each site uploads under its own name, and keeps its local copy", 
     assert.strictEqual(here.length, 1);
     assert.match(here[0], /^featherspress-full-\d{8}-\d{6}(-[0-9a-f]{7})?\.tar\.gz\.age$/, "always encrypted off-box");
     assert.deepStrictEqual(fs.readdirSync(backups), here, "the same backup is kept on this server for the list");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("off-box: old backups that cannot be pruned are reported, and the run still counts", () => {
+  const { dir, remote, env } = offbox();
+  try {
+    const mine = path.join(remote, "bucket", "featherspress", "alpha");
+    fs.mkdirSync(mine, { recursive: true });
+    for (const d of ["20200101", "20200102", "20200103"]) {
+      fs.writeFileSync(path.join(mine, `featherspress-full-${d}-000000.tar.gz.age`), "old");
+    }
+    const r = run(dir, { ...env, RCLONE_NO_DELETE: "1" });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.lastRun.ok, true, "the backup itself was made and uploaded");
+    assert.match(r.stderr, /could not prune 2 old off-box backups/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

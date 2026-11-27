@@ -453,6 +453,26 @@ test("a rolled-back restore also puts the backup settings back", async () => {
   assert.strictEqual(restarts.length, 2, "the timer must be reloaded with the old schedule too");
 });
 
+test("an upload clears staged files abandoned for over an hour, and keeps recent ones", async () => {
+  fs.mkdirSync(STAGING, { recursive: true });
+  const old = path.join(STAGING, "abandoned.tar.gz");
+  const recent = path.join(STAGING, "recent.tar.gz");
+  fs.writeFileSync(old, "x");
+  fs.writeFileSync(recent, "y");
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(old, twoHoursAgo, twoHoursAgo);
+
+  const fd = new FormData();
+  fd.append("file", new Blob([fs.readFileSync(buildSourceArchive("fresh.tar.gz"))]), "fresh.tar.gz");
+  const up = await api("POST", "/admin/api/import-upload", fd);
+  const upBody = await up.text();
+  assert.strictEqual(up.status, 200, upBody);
+  assert.strictEqual(fs.existsSync(old), false, "the abandoned upload must be gone");
+  assert.strictEqual(fs.existsSync(recent), true, "a recent one is kept");
+  fs.rmSync(recent, { force: true });
+  fs.rmSync(path.join(STAGING, JSON.parse(upBody).stagedName), { force: true });
+});
+
 test("a staged name that is a symlink is not followed, and nothing is touched", async () => {
   healthFails(0);
   const before = livePosts();

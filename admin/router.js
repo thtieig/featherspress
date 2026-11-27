@@ -409,7 +409,10 @@ function storedNotify() {
 }
 
 // The form as the browser sends it (the port is a string there) → a
-// validated config, keeping the saved password when the field is left empty.
+// validated config, keeping the saved password when the field is left empty
+// — but only for the same server and username. Otherwise anyone at the
+// controls could point the form at a server of theirs and have the saved
+// password sent there with "Send test email".
 function notifyFromForm(b) {
   b = b || {};
   const cfg = { to: typeof b.to === "string" ? b.to.trim() : b.to, from: typeof b.from === "string" ? b.from.trim() : b.from, method: b.method };
@@ -418,8 +421,10 @@ function notifyFromForm(b) {
     const port = typeof s.port === "string" && /^\d{1,5}$/.test(s.port.trim()) ? Number(s.port.trim()) : s.port;
     let pass = typeof s.pass === "string" ? s.pass : "";
     const prev = storedNotify();
-    if (!pass && prev && prev.smtp) pass = prev.smtp.pass;
-    cfg.smtp = { host: typeof s.host === "string" ? s.host.trim() : s.host, port, security: s.security, user: typeof s.user === "string" ? s.user.trim() : s.user, pass };
+    const host = typeof s.host === "string" ? s.host.trim() : s.host;
+    const user = typeof s.user === "string" ? s.user.trim() : s.user;
+    if (!pass && prev && prev.smtp && prev.smtp.host === host && prev.smtp.user === user) pass = prev.smtp.pass;
+    cfg.smtp = { host, port, security: s.security, user, pass };
   }
   return notify.validateConfig(cfg);
 }
@@ -1098,9 +1103,21 @@ router.post("/api/upload", (req, res) => {
 // restarts, health-checks and rolls back on failure. The app never unpacks into
 // the live data dir and never restarts the service.
 
+// A staged upload is restored within a minute or two of being uploaded. One
+// older than this was abandoned (the restore never confirmed, or refused),
+// and may hold a decrypted copy of a backup, credentials and all.
+const STALE_STAGED_MS = 60 * 60 * 1000;
+
 function stagingDir() {
   fs.mkdirSync(config.IMPORT_STAGING_DIR, { recursive: true });
   fs.chmodSync(config.IMPORT_STAGING_DIR, 0o700); // uploads may carry credentials
+  const cutoff = Date.now() - STALE_STAGED_MS;
+  for (const name of fs.readdirSync(config.IMPORT_STAGING_DIR)) {
+    const p = path.join(config.IMPORT_STAGING_DIR, name);
+    try {
+      if (fs.lstatSync(p).mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true });
+    } catch {}
+  }
   return config.IMPORT_STAGING_DIR;
 }
 

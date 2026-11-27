@@ -16,6 +16,7 @@
 # re-run: it keeps an existing checkout, config and login. Apache is only
 # reloaded when RELOAD_APACHE=1. repo-url may be a local path or git bundle.
 # ALIASES="www.example.org ..." adds ServerAlias names to a new vhost.
+# PRINT_VHOST=1 runs every check, prints the vhost it would write and stops.
 set -euo pipefail
 
 die() { echo "add-instance: $*" >&2; exit 1; }
@@ -35,11 +36,19 @@ CODE="$ENGINE_DIR" BACKUPS="$BACKUP_ROOT" FP_USER="fp-$NAME"
 DOMAIN_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 [[ "$DOMAIN" =~ $DOMAIN_RE ]] ||
   die "'$DOMAIN' is not a domain name (lowercase, like blog.example.org)"
-read -ra ALIAS_LIST <<<"${ALIASES:-}"
+# -d '': every line, not just the first (read returns 1 at the end of input).
+read -r -d '' -a ALIAS_LIST <<<"${ALIASES:-}" || true
+declare -A SEEN=()
 for a in "${ALIAS_LIST[@]}"; do
   [[ "$a" =~ $DOMAIN_RE ]] || die "alias '$a' is not a domain name (lowercase, like www.blog.example.org)"
   [ "$a" != "$DOMAIN" ] || die "alias '$a' is the domain itself"
+  [ -z "${SEEN[$a]:-}" ] || die "alias '$a' is listed twice"
+  SEEN[$a]=1
 done
+# The HTTPS step to print: the certificate must cover every name the vhost
+# answers to, or HTTPS on an alias shows a certificate error.
+CERTBOT="certbot --apache -d $DOMAIN"
+for a in "${ALIAS_LIST[@]}"; do CERTBOT+=" -d $a"; done
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] ||
   die "port must be a number from 1024 to 65535"
 
@@ -66,6 +75,31 @@ for f in "$ETC"/apache2/sites-available/*.conf; do
       done ;;
   esac
 done
+
+# A re-run never rewrites an existing vhost, so aliases it does not have yet
+# would be silently left out. Say so instead.
+OWN_VHOST="$ETC/apache2/sites-available/featherspress-$NAME.conf"
+if [ -f "$OWN_VHOST" ] && [ ${#ALIAS_LIST[@]} -gt 0 ]; then
+  have="$(awk 'tolower($1) ~ /^server(name|alias)$/ { for (i = 2; i <= NF; i++) print tolower($i) }' "$OWN_VHOST")"
+  missing=()
+  for a in "${ALIAS_LIST[@]}"; do grep -qxF "$a" <<<"$have" || missing+=("$a"); done
+  [ ${#missing[@]} -eq 0 ] ||
+    die "$NAME already has a vhost ($OWN_VHOST), which a re-run does not change. Add ${missing[*]} to its ServerAlias line by hand, reload Apache, then run: $CERTBOT"
+fi
+
+# The vhost, from the template beside this script (the alias handling below
+# is written for that template, not for whatever an older checkout carries).
+# No aliases: the template's ServerAlias line is dropped.
+render_vhost() {
+  local alias_line='^[[:space:]]*ServerAlias @ALIASES@$' aliases
+  if [ ${#ALIAS_LIST[@]} -gt 0 ]; then aliases="/$alias_line/s|@ALIASES@|${ALIAS_LIST[*]}|"; else aliases="/$alias_line/d"; fi
+  sed -e "s|@INSTANCE@|$NAME|g; s|@DOMAIN@|$DOMAIN|g; s|@PORT@|$PORT|g; $aliases" "$HERE/apache/featherspress.conf"
+}
+if [ "${PRINT_VHOST:-0}" = 1 ]; then
+  render_vhost
+  echo "HTTPS afterwards: $CERTBOT" >&2
+  exit 0
+fi
 
 [ "$(id -u)" = 0 ] || die "run this as root"
 [ -x /opt/node/bin/node ] || die "no Node in /opt/node; run tools/install-node.sh /opt/node first"
@@ -129,12 +163,7 @@ systemctl enable --now --quiet "featherspress@$NAME.service" \
 # --- Apache --------------------------------------------------------------------
 VHOST="/etc/apache2/sites-available/featherspress-$NAME.conf"
 if [ -d /etc/apache2/sites-available ]; then
-  # No aliases: drop the template's ServerAlias line.
-  alias_line='^[[:space:]]*ServerAlias @ALIASES@$'
-  if [ ${#ALIAS_LIST[@]} -gt 0 ]; then aliases="/$alias_line/s|@ALIASES@|${ALIAS_LIST[*]}|"; else aliases="/$alias_line/d"; fi
-  [ -e "$VHOST" ] ||
-    sed -e "s|@INSTANCE@|$NAME|g; s|@DOMAIN@|$DOMAIN|g; s|@PORT@|$PORT|g; $aliases" \
-      "$CODE/deploy/apache/featherspress.conf" > "$VHOST"
+  [ -e "$VHOST" ] || render_vhost > "$VHOST"
   a2enmod -q proxy proxy_http headers rewrite >/dev/null
   a2ensite -q "featherspress-$NAME" >/dev/null
   if [ "${RELOAD_APACHE:-0}" = 1 ]; then apache2ctl configtest && systemctl reload apache2; fi
@@ -148,7 +177,7 @@ Featherspress instance "$NAME" is running on 127.0.0.1:$PORT.
 
 Next steps:
   1. Apache:  apache2ctl configtest && systemctl reload apache2
-     HTTPS:   certbot --apache -d $DOMAIN
+     HTTPS:   $CERTBOT
   2. Create the admin login (password + 2FA):
        sudo -u $FP_USER env SITE_PACKAGE=$DATA_DIR /opt/node/bin/node $CODE/setup.js
      Then either start writing at https://$DOMAIN/admin, or restore a backup

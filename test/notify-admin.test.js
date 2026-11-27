@@ -135,6 +135,16 @@ test("an empty password keeps the saved one", async () => {
   assert.strictEqual(saved.smtp.port, 2526);
 });
 
+test("an empty password is not reused for a different mail server or username", async () => {
+  const before = fs.readFileSync(NOTIFY_FILE, "utf8");
+  for (const over of [{ host: "mail.elsewhere.example", pass: "" }, { user: "someone-else@example.com", pass: "" }]) {
+    const res = await api("POST", "/admin/api/notify", form(2526, over));
+    assert.strictEqual(res.status, 400, JSON.stringify(over));
+    assert.match((await res.json()).error, /password/);
+  }
+  assert.strictEqual(fs.readFileSync(NOTIFY_FILE, "utf8"), before, "the saved settings are unchanged");
+});
+
 test("invalid settings are refused with a plain message and nothing is changed", async () => {
   const before = fs.readFileSync(NOTIFY_FILE, "utf8");
   const res = await api("POST", "/admin/api/notify", form(2527, { host: "" }));

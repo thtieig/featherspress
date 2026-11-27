@@ -2030,7 +2030,7 @@
       }
     }
     el('al-pass').value = '';
-    el('al-pass').placeholder = s.smtp && s.smtp.passSaved ? 'Saved \u00b7 leave empty to keep it' : '';
+    el('al-pass').placeholder = s.smtp && s.smtp.passSaved ? 'Saved \u00b7 leave empty to keep it (same server and username)' : '';
     alShowMethod();
     if (s.problem) alMsg('The saved settings could not be used (' + s.problem + '). Fill them in and save again.', 'err');
   }
