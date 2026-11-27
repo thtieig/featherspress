@@ -171,3 +171,118 @@ test("update.sh refuses a checkout whose name is not a valid instance name", () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- applying: a failed update must leave the old engine running -------------
+// An instance checkout one commit behind, with installed dependencies (a
+// marker file in node_modules). `npm` is whatever script the test hands in.
+function applySetup(npmScript) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-update-sh-apply-"));
+  const seed = path.join(dir, "seed");
+  fs.mkdirSync(path.join(seed, "deploy"), { recursive: true });
+  git(seed, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(seed, ".gitignore"), "node_modules/\n");
+  fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  for (const f of ["update.sh", "instance.sh"]) {
+    fs.copyFileSync(path.join(__dirname, "..", "deploy", f), path.join(seed, "deploy", f));
+  }
+  git(seed, "add", ".");
+  git(seed, "commit", "-q", "-m", "one");
+  fs.writeFileSync(path.join(seed, "package.json"), JSON.stringify({ version: "1.0.1" }));
+  git(seed, "commit", "-q", "-am", "two");
+  git(dir, "clone", "-q", "--bare", seed, "origin.git");
+  const engine = path.join(dir, "alpha");
+  git(dir, "clone", "-q", path.join(dir, "origin.git"), "alpha");
+  git(engine, "reset", "-q", "--hard", "HEAD~1");
+  fs.mkdirSync(path.join(engine, "node_modules", "dep"), { recursive: true });
+  fs.writeFileSync(path.join(engine, "node_modules", "dep", "marker"), "old deps");
+
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "curl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "npm"), npmScript, { mode: 0o755 });
+
+  const conf = path.join(dir, "etc");
+  fs.mkdirSync(conf);
+  fs.writeFileSync(path.join(conf, "update.conf"),
+    `AUTO_APPLY=1\nREPO_REF=main\nNODE_BIN=${process.execPath}\nNPM_BIN=${path.join(bin, "npm")}\n`);
+  fs.writeFileSync(path.join(conf, "featherspress.env"), "PORT=1\n");
+
+  const env = { ...process.env };
+  for (const k of ["AUTO_APPLY", "REPO_REF", "NODE_BIN", "NPM_BIN", "SERVICE", "FP_USER", "ENGINE_DIR",
+    "INSTANCE", "FP_ENV", "UPDATE_CONF", "UPDATE_STATUS_FILE"]) delete env[k];
+  const runIt = () => spawnSync("bash", [path.join(engine, "deploy", "update.sh")], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: {
+      ...env,
+      PATH: bin + path.delimiter + process.env.PATH,
+      CONF_DIR: conf,
+      DATA_DIR: path.join(dir, "data"),
+      UPDATE_LOCK: path.join(dir, "update.lock"),
+    },
+  });
+  const head = () => execFileSync("git", ["-C", engine, "log", "-1", "--format=%s"], { encoding: "utf8" }).trim();
+  return { dir, engine, run: runIt, head };
+}
+
+test("update.sh: a failed install puts the old dependencies back without needing the network", () => {
+  // npm ci empties node_modules first, then fails (registry unreachable) —
+  // every time, so a second install during the rollback cannot help either.
+  const s = applySetup(`#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && p="$2"; shift; done
+rm -rf "$p/node_modules"
+echo "npm ERR! network unreachable" >&2
+exit 1
+`);
+  try {
+    const r = s.run();
+    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /rolled back and healthy/);
+    assert.strictEqual(s.head(), "one", "the code must be back at the rollback point");
+    assert.strictEqual(fs.readFileSync(path.join(s.engine, "node_modules", "dep", "marker"), "utf8"), "old deps",
+      "the old dependencies must be back");
+    assert.deepStrictEqual(fs.readdirSync(s.dir).filter((f) => /node_modules/.test(f)), [],
+      "no saved copy may be left beside the checkout");
+    assert.strictEqual(execFileSync("git", ["-C", s.engine, "status", "--porcelain"], { encoding: "utf8" }), "",
+      "the checkout must be clean, or the next update refuses");
+  } finally {
+    fs.rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh: a good update leaves the new dependencies and no saved copy", () => {
+  const s = applySetup(`#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && p="$2"; shift; done
+rm -rf "$p/node_modules"; mkdir -p "$p/node_modules/dep"; echo "new deps" > "$p/node_modules/dep/marker"
+`);
+  try {
+    const r = s.run();
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.strictEqual(s.head(), "two");
+    assert.strictEqual(fs.readFileSync(path.join(s.engine, "node_modules", "dep", "marker"), "utf8"), "new deps\n");
+    assert.deepStrictEqual(fs.readdirSync(s.dir).filter((f) => /node_modules/.test(f)), []);
+  } finally {
+    fs.rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("update.sh: an update stopped half-way (systemd timeout, shutdown) is rolled back", () => {
+  // The install is interrupted the way systemd stops a unit: SIGTERM.
+  const s = applySetup(`#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && p="$2"; shift; done
+rm -rf "$p/node_modules"
+kill -TERM $PPID
+exit 0
+`);
+  try {
+    const r = s.run();
+    assert.notStrictEqual(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stderr, /rolled back and healthy/);
+    assert.strictEqual(s.head(), "one");
+    assert.strictEqual(fs.readFileSync(path.join(s.engine, "node_modules", "dep", "marker"), "utf8"), "old deps");
+  } finally {
+    fs.rmSync(s.dir, { recursive: true, force: true });
+  }
+});

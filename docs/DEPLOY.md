@@ -264,8 +264,10 @@ sudo /root/featherspress/deploy/remove-instance.sh blog
 sudo systemctl reload apache2
 ```
 
-It stops the site's units and removes its code, config and vhost. Its data,
-backups and `fp-blog` user stay until you delete them yourself.
+It stops the site's units (and a backup or update still running) and removes
+its code, config and vhost. Its data, backups and `fp-blog` user stay until you
+delete them yourself, and so does its TLS certificate: `certbot delete
+--cert-name <name>` stops it being renewed.
 
 ## Good to know
 

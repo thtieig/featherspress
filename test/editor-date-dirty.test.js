@@ -78,13 +78,22 @@ const dirtyListenerLine = extractLine(SRC, "el('f-date').addEventListener('input
 const resetFormFn = extractBlock(SRC, "function resetForm() {");
 const editPostFn = extractBlock(SRC, "function editPost(type, slug) {");
 const saveFn = extractBlock(SRC, "function save(status) {");
+// The unsaved-work tracking resetForm/editPost/save now keep up to date.
+const savedSnapshotDecl = extractLine(SRC, "var savedSnapshot = '';");
+const formGenDecl = extractLine(SRC, "var formGen = 0;");
+const formSnapshotFn = extractBlock(SRC, "function formSnapshot() {");
+const markCleanFn = extractBlock(SRC, "function markClean() {");
 
 const harnessScript = [
   "var currentEditSlug = null;",
   "var currentEditType = null;",
   "var currentEditStatus = 'published';",
   dateFieldDirtyDecl,
+  savedSnapshotDecl,
+  formGenDecl,
   elFn,
+  formSnapshotFn,
+  markCleanFn,
   toDatetimeLocalValueFn,
   syncDateFieldVisibilityFn,
   dirtyListenerLine,

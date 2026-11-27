@@ -364,6 +364,95 @@ test("the settings section carries the source's schedule and age recipient", asy
   assert.match(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), /OnCalendar=Tue \*-\*-\* 05:45:00/);
 });
 
+// An archive that carries a settings.json describing a different backup setup.
+function settingsArchive(name, title) {
+  const src = fs.mkdtempSync(path.join(TMP, "settings-src-"));
+  fs.mkdirSync(path.join(src, "content", "posts"), { recursive: true });
+  fs.writeFileSync(path.join(src, "content", "posts", "s.md"),
+    "---\ntitle: S\ndate: 2026-03-03\n---\n\nx\n");
+  const manifestPath = path.join(src, "site.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({ title, skin: "notepad" }));
+  const out = path.join(TMP, name);
+  exportPackage({
+    contentDir: path.join(src, "content"),
+    manifestPath,
+    profile: "full",
+    outFile: out,
+    settings: {
+      schemaVersion: 1,
+      backup: {
+        destType: "local", localDir: "/var/backups/featherspress", keepLast: 30,
+        schedule: { preset: "weekly", timeOfDay: "03:15", weekday: "Fri" },
+      },
+    },
+  });
+  return out;
+}
+
+test("an import that fails half-way puts the previous site back", async () => {
+  healthFails(0);
+  const known = buildSourceArchive("before-half.tar.gz", { title: "Before Half" });
+  await uploadAndRequest(known, ["content", "media", "site"]);
+  bc.restoreRequest(agentEnv());
+  assert.strictEqual(restoreState().state, "done");
+  const posts = livePosts();
+  assert.ok(fs.existsSync(path.join(LIVE, "media", "2026", "01", "pic.txt")));
+
+  // A node that, for the import of the STAGED archive only, wrecks the site the
+  // way a full disk mid-copy would, then fails. The snapshot export and the
+  // rollback import go to the real node.
+  const wrapper = path.join(TMP, "half-import-node");
+  fs.writeFileSync(wrapper, `#!/bin/sh
+case "$*" in
+  *" import "*import-staging*)
+    rm -rf "${path.join(LIVE, "media")}"
+    rm -f "${path.join(LIVE, "content", "posts")}"/*
+    echo broken > "${path.join(LIVE, "content", "posts", "half.md")}"
+    exit 1;;
+esac
+exec "${process.execPath}" "$@"
+`, { mode: 0o755 });
+  const env = { ...agentEnv(), NODE_BIN: wrapper };
+  fs.rmSync(env.BACKUP_ENV, { force: true }); // so NODE_BIN comes from env
+  const other = buildSourceArchive("half.tar.gz", { title: "Never Lands" });
+  const { stagedName } = await uploadAndRequest(other, ["content", "media", "site"]);
+  systemctlCalls();
+
+  bc.restoreRequest(env);
+
+  const st = restoreState();
+  assert.strictEqual(st.state, "rolled-back", `expected a rollback, got ${st.state}: ${st.error}`);
+  assert.match(st.error, /could not be restored/);
+  assert.match(st.error, /previous site was put back/);
+  assert.deepStrictEqual(livePosts(), posts, "the content from before the restore must be back");
+  assert.strictEqual(liveTitle(), "Before Half");
+  assert.ok(fs.existsSync(path.join(LIVE, "media", "2026", "01", "pic.txt")), "deleted media must be back");
+  assert.ok(systemctlCalls().includes("restart featherspress@alpha"), "the put-back site must be restarted");
+  assert.strictEqual(fs.existsSync(path.join(STAGING, stagedName)), false);
+});
+
+test("a rolled-back restore also puts the backup settings back", async () => {
+  healthFails(0);
+  const env = agentEnv();
+  const beforeEnv = "LOCAL_DIR=/var/backups/featherspress/alpha\nKEEP_LAST=5\n";
+  const beforeDropin = "[Timer]\nOnCalendar=\nOnCalendar=*-*-* 00:20:00\n";
+  fs.writeFileSync(env.BACKUP_ENV, beforeEnv, { mode: 0o600 });
+  fs.mkdirSync(path.dirname(env.SCHEDULE_DROPIN), { recursive: true });
+  fs.writeFileSync(env.SCHEDULE_DROPIN, beforeDropin);
+
+  healthFails(10); // the restored site never comes up; the rollback's check passes
+  await uploadAndRequest(settingsArchive("settings-bad.tar.gz", "Settings Bad"), ["content", "site", "settings"]);
+  systemctlCalls();
+  bc.restoreRequest(env);
+
+  assert.strictEqual(restoreState().state, "rolled-back");
+  assert.strictEqual(fs.readFileSync(env.BACKUP_ENV, "utf8"), beforeEnv,
+    "the archive's backup settings must not outlive the rollback");
+  assert.strictEqual(fs.readFileSync(env.SCHEDULE_DROPIN, "utf8"), beforeDropin);
+  const restarts = systemctlCalls().filter((c) => c === "restart featherspress-backup@alpha.timer");
+  assert.strictEqual(restarts.length, 2, "the timer must be reloaded with the old schedule too");
+});
+
 // ---- the backups list: restore and download a backup kept on this server ----
 // The site's own backup folder is group-readable by the site user (0750
 // root:fp-<name>, files 0640), so the app lists and serves it directly; the

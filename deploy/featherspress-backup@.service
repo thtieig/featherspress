@@ -18,3 +18,7 @@ Type=oneshot
 # Root: the backup reads auth-config.json and writes/prunes the destination.
 # Config: /etc/featherspress/%i/backup.env (see deploy/backup.env.example).
 ExecStart=/opt/featherspress/%i/deploy/backup.sh
+# A hung run would otherwise hold the backup lock forever, and every later
+# backup would quietly skip itself. Generous: a large site copied off-box over
+# a slow line can take hours.
+TimeoutStartSec=6h

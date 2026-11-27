@@ -25,6 +25,12 @@ for unit in "featherspress@$INSTANCE.service" \
   "featherspress-update-control@$INSTANCE.path" "featherspress-update-control@$INSTANCE.timer"; do
   systemctl disable --now --quiet "$unit" 2>/dev/null || true
 done
+# With the triggers gone nothing new starts; a backup, update or restore that
+# is already running is stopped too, or it carries on with its code and
+# config deleted underneath it.
+for job in backup update backup-control update-control; do
+  systemctl stop "featherspress-$job@$INSTANCE.service" 2>/dev/null || true
+done
 rm -rf "/etc/systemd/system/featherspress-backup@$INSTANCE.timer.d"
 systemctl daemon-reload
 systemctl reset-failed "featherspress*@$INSTANCE.*" 2>/dev/null || true
@@ -41,6 +47,9 @@ rm -rf "$ENGINE_DIR" "$CONF_DIR"
 cat <<EOF
 Removed instance "$INSTANCE" (units, code, config, vhost).
 Reload Apache:  apache2ctl configtest && systemctl reload apache2
+Its TLS certificate, if it had one, is still renewed; remove it with
+  certbot certificates                  (find its name)
+  certbot delete --cert-name <name>
 Still here, delete when sure:
   $DATA_DIR
   /var/backups/featherspress/$INSTANCE

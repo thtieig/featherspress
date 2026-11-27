@@ -12,3 +12,7 @@ Type=oneshot
 # Whether it applies or only notifies is AUTO_APPLY in
 # /etc/featherspress/%i/update.conf.
 ExecStart=/opt/featherspress/%i/deploy/update.sh
+# A hung check or apply (a git fetch that never ends, say) would otherwise hold
+# the update lock forever: every later check and "Apply now" would fail. When
+# this runs out, systemd stops update.sh with SIGTERM and it rolls back.
+TimeoutStartSec=1800

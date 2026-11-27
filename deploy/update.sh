@@ -126,7 +126,9 @@ run_as_owner() {
 }
 git_as() { run_as_owner git -C "$ENGINE_DIR" "$@"; }
 
-git_as fetch --quiet origin "$REPO_REF"
+# A connection that stalls (under 1 KB/s for a minute) is given up on rather
+# than waited on forever.
+git_as -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch --quiet origin "$REPO_REF"
 CURRENT="$(git_as rev-parse HEAD)"
 AVAILABLE="$(git_as rev-parse "origin/$REPO_REF")"
 BEHIND="$(git_as rev-list --count "HEAD..origin/$REPO_REF")"
@@ -179,14 +181,28 @@ echo "[update] applying (rollback point: ${CURRENT:0:7})…"
 # Used both when the new code fails its health check and when the new code never
 # got as far as installing — a half-applied update (new code, old deps) must
 # never be left behind.
+#
+# Every step is tried even when an earlier one fails (no `set -e` in here): a
+# rollback that stopped at its first error would leave the site down without
+# even restarting it. It is never re-entered from the traps below.
 rollback() {
+  trap - ERR TERM INT
+  set +e
   echo "[update] rolling back to ${CURRENT:0:7}" >&2
-  git_as reset --hard "$CURRENT"
-  run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || true
-  chown -R "$FP_USER:" "$ENGINE_DIR"
-  systemctl restart "$SERVICE"
+  git_as reset --hard "$CURRENT" || echo "[update] rollback: git reset FAILED" >&2
+  # The old dependencies, as they were. Only when there is no saved copy is
+  # npm asked to install them again — and npm needs the registry, which may be
+  # exactly what just failed.
+  if [ -d "$SAVED_MODULES" ]; then
+    rm -rf "$ENGINE_DIR/node_modules"
+    mv "$SAVED_MODULES" "$ENGINE_DIR/node_modules" || echo "[update] rollback: could not put the old node_modules back" >&2
+  else
+    run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR" || echo "[update] rollback: npm ci FAILED" >&2
+  fi
+  chown -R "$FP_USER:" "$ENGINE_DIR" || echo "[update] rollback: chown FAILED" >&2
+  systemctl restart "$SERVICE" || echo "[update] rollback: restart FAILED" >&2
   AVAILABLE_BOOL=true
-  write_status
+  write_status || echo "[update] rollback: could not write the status file" >&2
   if healthy; then
     echo "[update] rolled back and healthy at ${CURRENT:0:7}." >&2
     ALERT_SUBJECT="Update failed and was rolled back"
@@ -213,12 +229,26 @@ healthy() {
   return 1
 }
 
+# The installed dependencies are moved aside, not deleted, until the new ones
+# are proven, so a rollback can put them straight back. Beside the checkout
+# (same filesystem, so moving is instant) rather than in it, where git would
+# see it as a local change and refuse the next update.
+SAVED_MODULES="$ENGINE_DIR.node_modules.rollback"
+rm -rf "$SAVED_MODULES"
+
 git_as merge --ff-only "origin/$REPO_REF"
 
 # From here on the code dir has MOVED FORWARD. Any failure below must restore
 # the rollback point rather than leave a half-applied update behind: `set -e`
 # would otherwise abort straight past rollback() on a failed chown or restart.
+# So must being stopped half-way: systemd stops a unit that runs too long, or
+# one still running at shutdown, with SIGTERM.
 trap 'echo "[update] step failed — rolling back" >&2; rollback; exit 1' ERR
+trap 'echo "[update] stopped — rolling back" >&2; rollback; exit 1' TERM INT
+
+if [ -d "$ENGINE_DIR/node_modules" ]; then
+  mv "$ENGINE_DIR/node_modules" "$SAVED_MODULES"
+fi
 
 if ! run_as_owner "$NPM_BIN" ci --omit=dev --prefix "$ENGINE_DIR"; then
   echo "[update] dependency install FAILED on the new commit" >&2
@@ -239,7 +269,8 @@ fi
 # assignment from a failing command substitution fires ERR too, and that would
 # roll back an already-healthy, already-restarted deploy over nothing worse
 # than a flaky `git rev-parse`.
-trap - ERR
+trap - ERR TERM INT
+rm -rf "$SAVED_MODULES"
 
 # Refresh status (behind=0) now that we're at the pulled commit.
 CURRENT="$(git_as rev-parse HEAD)"

@@ -36,7 +36,9 @@ const CSSPIC = "/media/2023/06/csspic.png"; // hardcoded in a skin stylesheet
 const BODYPIC = "/media/2023/06/bodypic.png"; // a post body
 const FMPIC = "/media/2023/06/fmpic.png"; // a page's frontmatter
 const LONELY = "/media/2023/06/lonely.png"; // genuinely unused
-for (const url of [HERO, SKINPIC, CSSPIC, BODYPIC, FMPIC, LONELY]) {
+const PDFDOT = "/media/2023/06/report.pdf"; // a post body, at the end of a sentence
+const CAFE = "/media/2023/06/café.png"; // a post body, a non-ASCII filename
+for (const url of [HERO, SKINPIC, CSSPIC, BODYPIC, FMPIC, LONELY, PDFDOT, CAFE]) {
   fs.writeFileSync(path.join(PKG, url.replace(/^\//, "")), PNG_1x1);
 }
 
@@ -64,6 +66,10 @@ fs.writeFileSync(path.join(PKG, "skins", "testskin", "assets", "logo.png"), PNG_
 fs.writeFileSync(
   path.join(PKG, "content", "posts", "body-post.md"),
   `---\ntitle: "Body Post"\ndate: 2023-06-01 10:00:00\nslug: body-post\n---\n\nAn image: ![shot](${BODYPIC})\n`
+);
+fs.writeFileSync(
+  path.join(PKG, "content", "posts", "prose-post.md"),
+  `---\ntitle: "Prose Post"\ndate: 2023-06-01 11:00:00\nslug: prose-post\n---\n\nGrab it at ${PDFDOT}. And see ![x](${CAFE}), please.\n`
 );
 fs.writeFileSync(
   path.join(PKG, "content", "pages", "fm-page.md"),
@@ -181,6 +187,17 @@ test("a file referenced by a post body still counts as used", async () => {
     body.usage.map((u) => ({ type: u.type, slug: u.slug })),
     [{ type: "post", slug: "body-post" }]
   );
+});
+
+test("a reference at the end of a sentence, or with an accented name, counts as used", async () => {
+  const list = await mediaList();
+  for (const url of [PDFDOT, CAFE]) {
+    assert.deepStrictEqual(
+      entryFor(list, url).usage.map((u) => u.slug), ["prose-post"], `${url} must not show as unused`
+    );
+  }
+  const del = await api("DELETE", "/admin/api/media", { path: CAFE });
+  assert.strictEqual(del.status, 409, "a referenced file must not be deletable");
 });
 
 test("a file nothing references is still reported unused and deletable", async () => {

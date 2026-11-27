@@ -130,7 +130,7 @@ router.post("/api/login", loginLimiter, async (req, res) => {
     return res.status(500).json({ error: "Not set up yet -- run `node setup.js` first." });
   }
   const authConfig = JSON.parse(fs.readFileSync(AUTH_CONFIG_PATH, "utf8"));
-  const { passwordHash, totpSecret, recoveryCodeHashes = [] } = authConfig;
+  const { passwordHash, totpSecret } = authConfig;
   const { password, code } = req.body;
   if (!password || !code || typeof code !== "string") return res.status(400).json({ error: "Password and code required" });
   if (!bcrypt.compareSync(password, passwordHash)) {
@@ -146,14 +146,19 @@ router.post("/api/login", loginLimiter, async (req, res) => {
     lastTotpTimeStep = totpResult.timeStep;
     return startSession(req, res);
   }
-  // One-time recovery code fallback (SHA-256 of the normalized code).
+  // One-time recovery code fallback (SHA-256 of the normalized code). Read the
+  // codes again: another sign-in may have used one while this one awaited the
+  // TOTP check, and writing back the copy from before would revive it. From
+  // here to the write nothing awaits, so no other sign-in can step in between.
+  const fresh = JSON.parse(fs.readFileSync(AUTH_CONFIG_PATH, "utf8"));
+  const codes = fresh.recoveryCodeHashes || [];
   const codeHash = crypto.createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
-  const matchIndex = recoveryCodeHashes.indexOf(codeHash);
+  const matchIndex = codes.indexOf(codeHash);
   if (matchIndex === -1) {
     return res.status(401).json(LOGIN_FAILED);
   }
-  const remaining = recoveryCodeHashes.filter((_, i) => i !== matchIndex);
-  writeAuthConfigAtomic(AUTH_CONFIG_PATH, { ...authConfig, recoveryCodeHashes: remaining });
+  const remaining = codes.filter((_, i) => i !== matchIndex);
+  writeAuthConfigAtomic(AUTH_CONFIG_PATH, { ...fresh, recoveryCodeHashes: remaining });
   startSession(req, res);
 });
 
@@ -693,7 +698,11 @@ function applyStatus(data, status) {
 
 // ---- media usage index (adapted: /media/ prefix) -------------------------
 
-const UPLOAD_REF_RE = /\/media\/[A-Za-z0-9._~%/-]+/g;
+// Anything up to a character that cannot be part of a stored media path in
+// Markdown, HTML, CSS or JSON. Non-ASCII names (café.jpg) count. Sentence
+// punctuation right after a path ("see /media/a.pdf.") is trimmed off below.
+const UPLOAD_REF_RE = /\/media\/[^\s"'<>()[\]{}`*?#&|\\^]+/g;
+const TRAILING_PUNCT_RE = /[.,;:!]+$/;
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "avif"]);
 
 function decodePath(p) {
@@ -713,7 +722,7 @@ const SKIN_TEXT_EXTS = new Set(["njk", "html", "css", "js", "json", "svg", "txt"
 function addRefs(usage, text, ref) {
   const seen = new Set();
   for (const raw of String(text).match(UPLOAD_REF_RE) || []) {
-    const key = decodePath(raw);
+    const key = decodePath(raw.replace(TRAILING_PUNCT_RE, ""));
     if (seen.has(key)) continue;
     seen.add(key);
     if (!usage.has(key)) usage.set(key, []);
@@ -854,6 +863,20 @@ router.get("/api/post/:type/:slug/orphans", (req, res) => {
   res.json({ orphans: orphansOf(found.item.type, found.item.slug) });
 });
 
+// Write a content file so it is either the old version or the new one, never
+// half of each: a temp file beside it, then a rename. On a full disk the old
+// post survives and the temp file is removed.
+function writeFileAtomic(file, text) {
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text, { flag: "wx" });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
 router.post("/api/post", (req, res) => {
   const { title, tags, body, type, status } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: "Title is required" });
@@ -889,7 +912,7 @@ router.post("/api/post", (req, res) => {
     },
     status
   );
-  fs.writeFileSync(path.join(dir, `${slug}.md`), matter.stringify(normalizeBody(body), data));
+  writeFileAtomic(path.join(dir, `${slug}.md`), matter.stringify(normalizeBody(body), data));
   posts.load();
   res.json({ ok: true, type: contentType, slug, status: statusOf(data), url: `/${slug}/` });
 });
@@ -917,8 +940,11 @@ router.put("/api/post/:type/:slug", (req, res) => {
     data.date = parsedDate;
   }
   if (status !== undefined) applyStatus(data, status);
+  // YAML cannot write `undefined`: a post that never had tags, saved without
+  // a tags field, must not fail.
+  if (data.postTags === undefined) delete data.postTags;
   const newBody = body !== undefined ? normalizeBody(body) : existing.content.trim();
-  fs.writeFileSync(filePath, matter.stringify(newBody, data));
+  writeFileAtomic(filePath, matter.stringify(newBody, data));
   posts.load();
   res.json({ ok: true, type: found.item.type, slug: found.item.slug, status: statusOf(data), url: `/${found.item.slug}/` });
 });
@@ -931,7 +957,7 @@ router.post("/api/post/:type/:slug/status", (req, res) => {
   const filePath = path.join(found.dir, found.item.filename);
   const existing = matter.read(filePath);
   const data = applyStatus({ ...existing.data }, status);
-  fs.writeFileSync(filePath, matter.stringify(existing.content.trim(), data));
+  writeFileAtomic(filePath, matter.stringify(existing.content.trim(), data));
   posts.load();
   res.json({ ok: true, status });
 });

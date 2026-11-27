@@ -867,15 +867,50 @@ function restoreRequest(env) {
     "--env-file", env.FP_ENV, "--sections", cfg.sections.join(",")];
   if (cfg.restoreAuth) importArgs.push("--restore-auth");
   let skipped = [];
+
+  // The backup settings step 3 may overwrite, as they are now (null: no file).
+  const readOrNull = (f) => {
+    try {
+      return fs.readFileSync(f, "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const savedSettings = { backupEnv: readOrNull(env.BACKUP_ENV), dropin: readOrNull(env.SCHEDULE_DROPIN) };
+
+  // Put the site from before the restore back, and the backup settings with
+  // it, then restart and report whether it came up. The snapshot is deleted
+  // only once the old site is proven back; otherwise it stays for the operator.
+  const rollBack = (why, detail) => {
+    let imported = true;
+    try {
+      execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth",
+        "--no-safety-snapshot", "--env-file", env.FP_ENV], { stdio: "pipe" });
+    } catch {
+      imported = false;
+    }
+    if (cfg.sections.includes("settings")) putBackBackupSettings(env, savedSettings);
+    try {
+      execFileSync("systemctl", ["restart", env.SERVICE]);
+    } catch {}
+    const recovered = imported && siteHealthy(port);
+    restoreStatus(env, "rolled-back", {
+      appliedRequestId: cfg.requestId,
+      sections: cfg.sections,
+      error: recovered
+        ? `${why}; your previous site was put back`
+        : `${why} AND the rollback did not recover it — check the server (the pre-restore snapshot is kept at ${snapshot})`,
+    }, detail);
+    if (recovered) fs.rmSync(snapDir, { recursive: true, force: true });
+    cleanup();
+  };
+
+  // A failed import may already have replaced some sections (a full disk in
+  // the media copy, say), so it is rolled back, never reported as unchanged.
   try {
     execFileSync(node, importArgs, { stdio: "pipe" });
   } catch (e) {
-    restoreStatus(env, "failed", {
-      error: "the archive could not be restored; nothing was changed",
-      appliedRequestId: cfg.requestId,
-    }, stderrTail(e));
-    fs.rmSync(snapDir, { recursive: true, force: true });
-    cleanup();
+    rollBack("the archive could not be restored", stderrTail(e));
     return;
   }
 
@@ -908,21 +943,26 @@ function restoreRequest(env) {
   }
 
   // 5. It did not come up — put the old site back and restart again.
+  rollBack("the restored site did not come up");
+}
+
+// Write back the backup.env and timer drop-in saved before a restore changed
+// them (null: there was none), and reload the timer. Best effort: a rollback
+// must still go on to restart the site.
+function putBackBackupSettings(env, saved) {
   try {
-    execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth",
-      "--no-safety-snapshot", "--env-file", env.FP_ENV], { stdio: "pipe" });
-    execFileSync("systemctl", ["restart", env.SERVICE]);
+    const put = (f, text, mode) => {
+      if (text === null) fs.rmSync(f, { force: true });
+      else {
+        fs.writeFileSync(f, text, { mode });
+        fs.chmodSync(f, mode);
+      }
+    };
+    put(env.BACKUP_ENV, saved.backupEnv, 0o600);
+    put(env.SCHEDULE_DROPIN, saved.dropin, 0o644);
+    execFileSync("systemctl", ["daemon-reload"]);
+    execFileSync("systemctl", ["restart", `${env.BACKUP_UNIT}.timer`]);
   } catch {}
-  const recovered = siteHealthy(port);
-  restoreStatus(env, "rolled-back", {
-    appliedRequestId: cfg.requestId,
-    sections: cfg.sections,
-    error: recovered
-      ? "the restored site did not come up; your previous site was put back"
-      : "the restored site did not come up AND the rollback did not recover it — check the server",
-  });
-  fs.rmSync(snapDir, { recursive: true, force: true });
-  cleanup();
 }
 
 // Every path and unit comes from this instance (tools/agent-lib.js); each can

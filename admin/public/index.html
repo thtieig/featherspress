@@ -535,6 +535,12 @@
   // both reset this to false, so an edit that never touches the date field
   // sends no `date` key at all -- even though the field shows a value.
   var dateFieldDirty = false;
+  // Unsaved-work tracking. `savedSnapshot` is the form as it was last loaded,
+  // cleared or saved; the form is "dirty" when it differs from that.
+  // `formGen` changes whenever the form is pointed at something else, so a
+  // save response that arrives after that is not applied to the new contents.
+  var savedSnapshot = '';
+  var formGen = 0;
 
   function el(id) { return document.getElementById(id); }
 
@@ -676,8 +682,16 @@
 
   document.querySelectorAll('.tab').forEach(function (t) {
     t.addEventListener('click', function () {
+      if (t.dataset.tab === 'new') {
+        // Back to the editor with unsaved work in it: ask before clearing.
+        if (isDirty()) {
+          confirmDiscard(function () { resetForm(); }, function () {});
+          activateTab('new');
+          return;
+        }
+        resetForm();
+      }
       activateTab(t.dataset.tab);
-      if (t.dataset.tab === 'new') resetForm();
       if (t.dataset.tab === 'edit') loadPostList();
       if (t.dataset.tab === 'media') loadMedia();
       if (t.dataset.tab === 'tags') loadTagAudit();
@@ -792,7 +806,49 @@
   // which explicitly reset the flag back to false after setting .value.
   el('f-date').addEventListener('input', function () { dateFieldDirty = true; });
 
+  function formSnapshot() {
+    return JSON.stringify([
+      el('f-title').value,
+      el('f-date').value,
+      tagInput.get(),
+      editor.getMarkdown(),
+      document.querySelector('input[name=type]:checked').value,
+    ]);
+  }
+  function markClean() { savedSnapshot = formSnapshot(); }
+  function isDirty() { return formSnapshot() !== savedSnapshot; }
+
+  // Ask before throwing away unsaved work. `discard` runs on "Discard
+  // changes", `keep` (optional) on "Keep editing".
+  function confirmDiscard(discard, keep) {
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML =
+      '<div class="modal">' +
+        '<h3>Discard unsaved changes?</h3>' +
+        '<p>The text in the editor has not been saved.</p>' +
+        '<div class="modal-actions">' +
+          '<button type="button" class="secondary" id="dc-keep">Keep editing</button>' +
+          '<button type="button" class="danger" id="dc-discard">Discard changes</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(backdrop);
+    function close() { document.body.removeChild(backdrop); }
+    function onKeep() { close(); if (keep) keep(); }
+    backdrop.addEventListener('click', function (e) { if (e.target === backdrop) onKeep(); });
+    el('dc-keep').addEventListener('click', onKeep);
+    el('dc-discard').addEventListener('click', function () { close(); discard(); });
+    el('dc-keep').focus();
+  }
+
+  // Closing or reloading the browser tab with unsaved work: the browser's own
+  // "Leave site?" question.
+  window.addEventListener('beforeunload', function (e) {
+    if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
+  });
+
   function resetForm() {
+    formGen++;
     currentEditSlug = null;
     currentEditType = null;
     currentEditStatus = 'published';
@@ -808,6 +864,7 @@
     el('btn-preview').hidden = true;
     el('status').textContent = '';
     el('status').className = 'status';
+    markClean();
   }
 
   // Point the Preview button at the current item and reveal it.
@@ -854,7 +911,10 @@
     // The rendered order is the sorted order, so map clicks back through it.
     document.querySelectorAll('#postList .post-item').forEach(function (row) {
       var item = items[Number(row.dataset.i)];
-      row.querySelector('.post-item-left').addEventListener('click', function () { editPost(item.type, item.slug); });
+      row.querySelector('.post-item-left').addEventListener('click', function () {
+        if (isDirty()) confirmDiscard(function () { editPost(item.type, item.slug); });
+        else editPost(item.type, item.slug);
+      });
       row.querySelector('.row-delete').addEventListener('click', function (e) {
         e.stopPropagation();
         confirmDelete(item);
@@ -885,6 +945,7 @@
   function editPost(type, slug) {
     fetch('/admin/api/post/' + encodeURIComponent(type) + '/' + encodeURIComponent(slug))
       .then(function (r) { return r.json(); }).then(function (p) {
+        formGen++;
         currentEditSlug = p.slug;
         currentEditType = p.type;
         currentEditStatus = p.status || 'published';
@@ -904,6 +965,7 @@
         var label = p.type === 'page' ? 'page' : 'post';
         var draftNote = currentEditStatus === 'draft' ? ' (currently a draft; “Save & publish” to make it live)' : '';
         setStatus('Editing "' + p.title + '": saving will overwrite this ' + label + '.' + draftNote, 'pending');
+        markClean();
       });
   }
 
@@ -960,7 +1022,10 @@
     });
   }
 
-  el('btn-cancel-edit').addEventListener('click', function () { resetForm(); activateTab('new'); });
+  el('btn-cancel-edit').addEventListener('click', function () {
+    if (isDirty()) confirmDiscard(function () { resetForm(); activateTab('new'); });
+    else { resetForm(); activateTab('new'); }
+  });
 
   // Persistent success banner built via DOM (href/textContent), never HTML
   // string concatenation -- so the server-generated URL can't inject markup.
@@ -1011,6 +1076,10 @@
     if (!payload.title.trim()) { setStatus('Title is required.', 'err'); return; }
 
     setStatus(status === 'draft' ? 'Saving draft…' : 'Saving…', 'pending');
+    // What this save will store, and which form it belongs to: if the form is
+    // pointed elsewhere before the reply comes, the reply must not touch it.
+    var gen = formGen;
+    var snapshot = formSnapshot();
     el('btn-save').disabled = true;
     el('btn-save-draft').disabled = true;
 
@@ -1022,6 +1091,7 @@
       .then(function (res) {
         el('btn-save').disabled = false;
         el('btn-save-draft').disabled = false;
+        if (gen !== formGen) return; // the form now holds something else
         if (!res.ok) { setStatus(res.data.error || 'Something went wrong.', 'err'); return; }
         // After a new create, adopt the returned slug + type so an immediate
         // second save UPDATEs this item instead of re-POSTing and colliding
@@ -1032,11 +1102,13 @@
         el('btn-cancel-edit').hidden = false;
         showPreviewButton(currentEditType, currentEditSlug);
         setSavedBanner(res.data, currentEditType);
+        savedSnapshot = snapshot;
         loadMeta();
       })
       .catch(function (e) {
         el('btn-save').disabled = false;
         el('btn-save-draft').disabled = false;
+        if (gen !== formGen) return;
         setStatus('Request failed: ' + e.message, 'err');
       });
   }
@@ -1950,6 +2022,7 @@
 
   loadMeta();
   checkUpdateStatus();
+  markClean(); // the empty editor the page opens with has nothing to lose
 })();
 </script>
 </body>
