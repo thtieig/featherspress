@@ -83,6 +83,7 @@ const savedSnapshotDecl = extractLine(SRC, "var savedSnapshot = '';");
 const formGenDecl = extractLine(SRC, "var formGen = 0;");
 const formSnapshotFn = extractBlock(SRC, "function formSnapshot() {");
 const markCleanFn = extractBlock(SRC, "function markClean() {");
+const setTypeLockedFn = extractBlock(SRC, "function setTypeLocked(locked) {");
 
 const harnessScript = [
   "var currentEditSlug = null;",
@@ -94,6 +95,7 @@ const harnessScript = [
   elFn,
   formSnapshotFn,
   markCleanFn,
+  setTypeLockedFn,
   toDatetimeLocalValueFn,
   syncDateFieldVisibilityFn,
   dirtyListenerLine,

@@ -59,7 +59,10 @@ if (secretProblem) {
   router.use((req, res) => res.status(503).type("text/plain").send(msg + "\n"));
 }
 
-router.use(express.json());
+// Big enough for a long post (a whole book chapter is ~1 MB of Markdown); the
+// default 100 KB refused long posts with an HTML error page the editor could
+// not read.
+router.use(express.json({ limit: "5mb" }));
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1236,6 +1239,18 @@ router.post("/api/restore", (req, res) => {
   const requestId = nextRequestId(config.BACKUP_STATUS_FILE, (s) => s.restore && s.restore.appliedRequestId);
   writeRequest(config.RESTORE_REQUEST_FILE, { requestId, ...source, sections, restoreAuth });
   res.json({ requestId });
+});
+
+// Errors in /admin/api come back as JSON the page can show ("Too large to
+// save"), not Express's HTML error page. Internals stay out of the message.
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  if (!req.path.startsWith("/api/")) return next(err);
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error(err);
+  const error =
+    status === 413 ? "Too large to save (the limit is 5 MB)." : err.expose ? err.message : "Something went wrong on the server.";
+  res.status(status).json({ error });
 });
 
 module.exports = router;

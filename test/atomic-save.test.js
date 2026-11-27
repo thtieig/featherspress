@@ -114,3 +114,24 @@ test("a normal save still works", async () => {
   assert.match(fs.readFileSync(path.join(POSTS, "keep-me.md"), "utf8"), /new words/);
   assert.deepStrictEqual(fs.readdirSync(POSTS), ["keep-me.md"]);
 });
+
+test("a long post saves, and one over the limit gets a readable JSON error", async () => {
+  const long = "word ".repeat(60000); // ~300 KB, over Express's 100 KB default
+  const ok = await put("/admin/api/post/post/keep-me", { title: "Keep Me", tags: "", body: long });
+  assert.strictEqual(ok.status, 200, (await ok.text()).slice(0, 200));
+  const huge = await put("/admin/api/post/post/keep-me", { title: "Keep Me", tags: "", body: "x".repeat(6 * 1024 * 1024) });
+  assert.strictEqual(huge.status, 413);
+  assert.match((await huge.json()).error, /Too large/);
+});
+
+test("a failed save says so in JSON, not an HTML page", async () => {
+  const restore = fillDisk();
+  let res;
+  try {
+    res = await put("/admin/api/post/post/keep-me", { title: "Keep Me", tags: "", body: "x" });
+  } finally {
+    restore();
+  }
+  assert.strictEqual(res.status, 500);
+  assert.deepStrictEqual(await res.json(), { error: "Something went wrong on the server." });
+});

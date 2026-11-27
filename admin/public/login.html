@@ -58,16 +58,29 @@
 <script>
   const form = document.getElementById('login-form');
   const err = document.getElementById('err');
+  const button = form.querySelector('button');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    // One attempt at a time: a double Enter would send the same 2FA code
+    // twice, and the second is refused as a replay.
+    if (button.disabled) return;
     err.hidden = true;
     const password = document.getElementById('password').value;
     const code = document.getElementById('code').value;
-    const res = await fetch('/admin/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, code }),
-    });
+    button.disabled = true;
+    let res;
+    try {
+      res = await fetch('/admin/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, code }),
+      });
+    } catch {
+      button.disabled = false;
+      err.textContent = 'Could not reach the server. Check your connection and try again.';
+      err.hidden = false;
+      return;
+    }
     if (res.ok) {
       if (window.PasswordCredential) {
         try {
@@ -77,6 +90,7 @@
       window.location.href = '/admin/';
       return;
     }
+    button.disabled = false;
     const data = await res.json().catch(() => ({}));
     err.textContent = data.error || 'Sign in failed';
     err.hidden = false;

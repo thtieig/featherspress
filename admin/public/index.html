@@ -81,6 +81,8 @@
   .status { margin-top: 14px; padding: 10px 14px; border-radius: 6px; font-size: 0.85rem; }
   .status.ok { background: #E9F3EC; color: #2E5C3A; }
   .status.err { background: #FBE7E4; color: #8A2A1B; }
+  .signed-out { margin: 0; border-radius: 0; padding: 10px 28px; border-bottom: 1px solid var(--rule); }
+  .signed-out a { color: inherit; font-weight: 600; }
   .status.pending { background: var(--bg-2); color: var(--ink-soft); }
   .post-list { display: flex; flex-direction: column; gap: 2px; }
   .post-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--rule); cursor: pointer; }
@@ -238,6 +240,11 @@
   <button type="button" class="secondary" id="update-apply-btn" hidden style="margin-left:12px;">Apply now</button>
 </div>
 
+<div id="signed-out" class="status err signed-out" role="alert" hidden>
+  You were signed out (the site restarted).
+  <a href="/admin/login" target="_blank" rel="noopener">Sign in again in a new tab</a>,
+  then come back here and try again. Text you have not saved is kept in this tab.
+</div>
 <div class="tabs">
   <div class="tab active" data-tab="new">New</div>
   <div class="tab" data-tab="edit">Edit existing</div>
@@ -544,6 +551,38 @@
 
   function el(id) { return document.getElementById(id); }
 
+  // Sessions live in memory, so a restart (an update, a restore) signs you
+  // out. An API call that comes back 401 shows one banner whose sign-in link
+  // opens a NEW tab, so unsaved text in this one is kept, and the call fails
+  // like a network error rather than handing {"error":"unauthorized"} to the
+  // page as if it were data. A caller that expects the 401 (the restore
+  // poller) passes { expect401: true }.
+  var rawFetch = window.fetch.bind(window);
+  function fetch(url, init) {
+    return rawFetch(url, init).then(function (r) {
+      if (r.status === 401 && String(url).indexOf('/admin/api/') === 0 && !(init && init.expect401)) {
+        el('signed-out').hidden = false;
+        var e = new Error('you were signed out');
+        e.signedOut = true;
+        throw e;
+      }
+      return r;
+    });
+  }
+  // The banner already says it: a load with no error handler of its own
+  // need not also log the sign-out as an uncaught error.
+  window.addEventListener('unhandledrejection', function (e) {
+    if (e.reason && e.reason.signedOut) e.preventDefault();
+  });
+
+  // A JSON reply, or an Error carrying the server's message when it is not OK.
+  function jsonOk(r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (!r.ok) throw new Error(d.error || 'request failed (' + r.status + ')');
+      return d;
+    });
+  }
+
   function previewUrl(type, slug) {
     return '/admin/preview/' + encodeURIComponent(type) + '/' + encodeURIComponent(slug);
   }
@@ -713,7 +752,7 @@
 
     function render() {
       chipsEl.innerHTML = selected.map(function (name) {
-        return '<span class="tag-chip">' + name + '<button type="button" data-name="' + name + '" aria-label="Remove">&times;</button></span>';
+        return '<span class="tag-chip">' + esc(name) + '<button type="button" data-name="' + esc(name) + '" aria-label="Remove">&times;</button></span>';
       }).join('');
       chipsEl.querySelectorAll('button').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -749,11 +788,11 @@
         .slice(0, 8);
 
       var html = matches.map(function (t) {
-        return '<div class="tag-suggestion" data-name="' + t.name + '"><span>' + t.name + '</span><span class="count">' + t.count + '</span></div>';
+        return '<div class="tag-suggestion" data-name="' + esc(t.name) + '"><span>' + esc(t.name) + '</span><span class="count">' + esc(t.count) + '</span></div>';
       }).join('');
       var exactExists = pool.some(function (t) { return t.name.toLowerCase() === q; });
       if (!exactExists) {
-        html += '<div class="tag-suggestion create-new" data-name="' + this.value.trim() + '">+ Add new ' + opts.label + ' "' + this.value.trim() + '"</div>';
+        html += '<div class="tag-suggestion create-new" data-name="' + esc(this.value.trim()) + '">+ Add new ' + opts.label + ' "' + esc(this.value.trim()) + '"</div>';
       }
       suggEl.innerHTML = html;
       suggEl.hidden = false;
@@ -764,9 +803,18 @@
 
     inputEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ',') {
+        // Exactly what was typed, unless a suggestion was picked with the
+        // arrow keys. (The first suggestion is the most-used match, so
+        // taking it would turn a typed "go" into "google".)
         e.preventDefault();
-        var active = suggEl.querySelector('.tag-suggestion');
+        var active = suggEl.querySelector('.tag-suggestion.active');
         add(active ? active.dataset.name : this.value);
+      } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !suggEl.hidden) {
+        e.preventDefault();
+        var items = [].slice.call(suggEl.querySelectorAll('.tag-suggestion'));
+        var at = items.findIndex(function (i) { return i.classList.contains('active'); });
+        var next = e.key === 'ArrowDown' ? Math.min(at + 1, items.length - 1) : Math.max(at - 1, -1);
+        items.forEach(function (i, n) { i.classList.toggle('active', n === next); });
       } else if (e.key === 'Backspace' && !this.value && selected.length) {
         selected.pop();
         render();
@@ -847,6 +895,12 @@
     if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
   });
 
+  // A post cannot become a page (or back) once saved: the server keeps the
+  // type it has, so the choice is shown but not offered.
+  function setTypeLocked(locked) {
+    document.querySelectorAll('input[name=type]').forEach(function (r) { r.disabled = locked; });
+  }
+
   function resetForm() {
     formGen++;
     currentEditSlug = null;
@@ -858,6 +912,7 @@
     editor.setMarkdown('');
     setEditorMode('wysiwyg');
     document.querySelector('input[name=type][value=post]').checked = true;
+    setTypeLocked(false);
     syncDateFieldVisibility();
     dateFieldDirty = false;
     el('btn-cancel-edit').hidden = true;
@@ -904,7 +959,7 @@
           '<span class="post-item-title">' + esc(p.title) + '</span>' +
         '</div>' +
         '<div class="post-item-right">' +
-          '<span class="post-item-meta">' + esc(String(p.date).slice(0, 10)) + '</span>' +
+          '<span class="post-item-meta">' + esc((toDatetimeLocalValue(p.date) || String(p.date)).slice(0, 10)) + '</span>' +
           '<button type="button" class="row-delete" data-i="' + i + '">Delete</button>' +
         '</div></div>';
     }).join('');
@@ -958,6 +1013,7 @@
         setEditorMode('markdown');
         editor.setMarkdown(p.body || '');
         document.querySelector('input[name=type][value=' + (p.type === 'page' ? 'page' : 'post') + ']').checked = true;
+        setTypeLocked(true);
         syncDateFieldVisibility();
         el('btn-cancel-edit').hidden = false;
         showPreviewButton(p.type, p.slug);
@@ -1015,6 +1071,18 @@
           if (!res.ok) { setListStatus((res.data && res.data.error) || 'Delete failed.', 'err'); return; }
           var n = (res.data.deletedAttachments || []).length;
           var title = item.title;
+          // The editor was on the item just deleted: keep its text, but as a
+          // new unsaved item, so Save creates it again instead of failing.
+          if (currentEditSlug === item.slug && currentEditType === item.type) {
+            formGen++;
+            currentEditSlug = null;
+            currentEditType = null;
+            savedSnapshot = '';
+            setTypeLocked(false);
+            el('btn-cancel-edit').hidden = true;
+            el('btn-preview').hidden = true;
+            setStatus('"' + title + '" was deleted. Its text is still in the editor as a new, unsaved item.', 'pending');
+          }
           loadPostList(true);
           loadMeta();
           setListStatus('Deleted "' + title + '"' + (n ? ' and ' + n + ' unused file' + (n > 1 ? 's' : '') : '') + '.', 'ok');
@@ -1100,6 +1168,7 @@
         currentEditType = res.data.type || payload.type;
         currentEditStatus = res.data.status || status;
         el('btn-cancel-edit').hidden = false;
+        setTypeLocked(true);
         showPreviewButton(currentEditType, currentEditSlug);
         setSavedBanner(res.data, currentEditType);
         savedSnapshot = snapshot;
@@ -1123,7 +1192,7 @@
       el('tag-dupes').textContent = data.nearDuplicates.length;
       el('dupeList').innerHTML = data.nearDuplicates.length
         ? data.nearDuplicates.map(function (g) {
-            return '<div class="dupe-group">' + g.map(function (t) { return '<b>' + t.name + '</b> (' + t.count + ')'; }).join(' &nbsp;vs&nbsp; ') + '</div>';
+            return '<div class="dupe-group">' + g.map(function (t) { return '<b>' + esc(t.name) + '</b> (' + esc(t.count) + ')'; }).join(' &nbsp;vs&nbsp; ') + '</div>';
           }).join('')
         : '<p class="hint">No likely near-duplicates found.</p>';
     });
@@ -1178,7 +1247,10 @@
 
   // Bulk-delete every unused file (unused => no force needed server-side).
   el('btn-delete-unused').addEventListener('click', function () {
-    var unused = loadedMedia.filter(function (f) { return !f.usage.length; });
+    // Files used only in the editor's unsaved text (an image pasted into a
+    // post not saved yet) look unused to the server; they are kept.
+    var inEditor = editor.getMarkdown();
+    var unused = loadedMedia.filter(function (f) { return !f.usage.length && inEditor.indexOf(f.path) === -1; });
     if (!unused.length) { el('media-toolbar').textContent = 'No unused files to delete.'; return; }
     var backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
@@ -1202,8 +1274,12 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: f.path }),
         });
-      })).then(function () { close(); loadMedia(); })
-        .catch(function (e) { close(); el('media-toolbar').textContent = 'Bulk delete failed: ' + e.message; });
+      })).then(function (results) {
+        close();
+        var failed = results.filter(function (r) { return !r.ok; }).length;
+        loadMedia();
+        if (failed) el('media-toolbar').textContent = failed + ' of ' + unused.length + ' file' + (unused.length > 1 ? 's' : '') + ' could not be deleted.';
+      }).catch(function (e) { close(); el('media-toolbar').textContent = 'Bulk delete failed: ' + e.message; });
     });
   });
 
@@ -1740,7 +1816,7 @@
     var tries = 0;
     (function tick() {
       tries++;
-      fetch('/admin/api/backup-status').then(function (r) {
+      fetch('/admin/api/backup-status', { expect401: true }).then(function (r) {
         // Sessions live in memory, so the restore's service restart signs you
         // out. A 401 here is the expected end of the story, not an error.
         if (r.status === 401) {
@@ -1795,7 +1871,7 @@
   el('bk-save') && el('bk-save').addEventListener('click', function () {
     el('bk-save').disabled = true; el('bk-msg').textContent = 'Saving…';
     fetch('/admin/api/backup-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentBackupRequest()) })
-      .then(function (r) { return r.json(); })
+      .then(jsonOk)
       .then(function (res) {
         pollBackupApplied(res.requestId, function (err) {
           el('bk-save').disabled = false;
@@ -1808,7 +1884,7 @@
     el('bk-run').disabled = true; el('bk-msg').textContent = 'Running a backup now…';
     var prevAt = bkLastStatus && bkLastStatus.lastRun ? bkLastStatus.lastRun.at : null;
     fetch('/admin/api/backup-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then(function (r) { return r.json(); })
+      .then(jsonOk)
       .then(function (res) {
         var tries = 0;
         (function wait() {
@@ -1831,7 +1907,7 @@
     el('bk-keygen').disabled = true;
     el('bk-msg').textContent = 'Generating a key…';
     fetch('/admin/api/backup-keygen', { method: 'POST' })
-      .then(function (r) { return r.json(); })
+      .then(jsonOk)
       .then(function (res) {
         pollBackupApplied(res.requestId, function (err) {
           el('bk-keygen').disabled = false;
@@ -2011,7 +2087,7 @@
   el('al-off').addEventListener('click', function () {
     if (!window.confirm('Turn off email alerts? Failures will then only show here in /admin.')) return;
     alBusy(true);
-    fetch('/admin/api/notify', { method: 'DELETE' }).then(function () {
+    fetch('/admin/api/notify', { method: 'DELETE' }).then(jsonOk).then(function () {
       alBusy(false);
       ['al-to', 'al-from', 'al-host', 'al-user', 'al-pass'].forEach(function (id) { el(id).value = ''; });
       el('al-port').value = '587';
