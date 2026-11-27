@@ -576,6 +576,9 @@ function normalizeBody(body) {
   return body == null ? "" : String(body);
 }
 
+// Paths the engine serves before /:slug (server.js).
+const RESERVED_SLUGS = new Set(["admin", "search", "healthz"]);
+
 function slugify(title) {
   return String(title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
@@ -614,10 +617,10 @@ function readContentDir(dir, type, unreadable) {
     }
     items.push({
       type,
-      slug: file.data.slug || f.replace(/\.md$/, ""),
-      title: file.data.title || "(untitled)",
+      slug: posts.text(file.data.slug) || f.replace(/\.md$/, ""),
+      title: posts.text(file.data.title) || "(untitled)",
       date: file.data.date || "",
-      postTags: file.data.postTags || [],
+      postTags: posts.normalizeTags(file.data.postTags),
       status: statusOf(file.data),
       filename: f,
     });
@@ -849,9 +852,9 @@ router.get("/api/post/:type/:slug", (req, res) => {
   res.json({
     type: found.item.type,
     slug: found.item.slug,
-    title: file.data.title,
+    title: posts.text(file.data.title),
     date: file.data.date,
-    postTags: file.data.postTags || [],
+    postTags: posts.normalizeTags(file.data.postTags),
     status: statusOf(file.data),
     body: file.content.trim(),
   });
@@ -893,6 +896,9 @@ router.post("/api/post", (req, res) => {
   // near-unique slug so the content is still addressable.
   let slug = slugify(title);
   if (!slug) slug = `${contentType}-${Date.now().toString(36)}`;
+  // The engine answers these paths itself, so an item there could never be
+  // seen: "Search" becomes search-post.
+  if (RESERVED_SLUGS.has(slug)) slug = `${slug}-${contentType}`;
   const dir = DIR_FOR[contentType];
   fs.mkdirSync(dir, { recursive: true });
 
@@ -996,9 +1002,9 @@ router.get("/preview/:type/:slug", (req, res) => {
   const item = {
     type: found.item.type,
     slug: found.item.slug,
-    title: file.data.title || found.item.slug,
+    title: posts.text(file.data.title) || found.item.slug,
     date: file.data.date ? new Date(String(file.data.date).replace(" ", "T")) : null,
-    postTags: file.data.postTags || [],
+    postTags: posts.normalizeTags(file.data.postTags),
     status: statusOf(file.data),
     format: file.data.format === "html" ? "html" : "markdown",
     body: file.content,

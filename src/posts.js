@@ -26,18 +26,46 @@ function coerceDate(value) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// YAML turns unquoted values into numbers or dates (`title: 1984`,
+// `title: 2024-01-01`, `slug: 42`), and `postTags: [foo, bar]` into bare
+// strings. Everything downstream expects strings and {name, slug} tags, and
+// one such hand-edited file must not take every page down.
+function text(value) {
+  if (value == null) return "";
+  if (value instanceof Date) return isNaN(value.getTime()) ? "" : value.toISOString().slice(0, 10);
+  return String(value).trim();
+}
+
+// The same rule the admin uses for new tags; a name with no ASCII letters or
+// digits keeps its own (lowercased) text, which /tag/:slug matches as is.
+function tagSlug(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || name.toLowerCase();
+}
+
+function normalizeTags(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const t of list) {
+    const isObj = t && typeof t === "object" && !(t instanceof Date) && !Array.isArray(t);
+    const name = text(isObj ? t.name : t);
+    const slug = (isObj && text(t.slug)) || (name && tagSlug(name));
+    if (name && slug) out.push(isObj ? { ...t, name, slug } : { name, slug });
+  }
+  return out;
+}
+
 function parseFile(dir, filename, type) {
   const raw = fs.readFileSync(path.join(dir, filename), "utf8");
   // Options ({}) bypass gray-matter's cache, which stores a file BEFORE parsing
   // it: without this a broken file throws once, then "parses" on the next read.
   const { data, content } = matter(raw, {});
-  const slug = data.slug || path.basename(filename, ".md");
+  const slug = text(data.slug) || path.basename(filename, ".md");
   return {
     type, // "post" | "page"
     slug,
-    title: data.title || slug,
+    title: text(data.title) || slug,
     date: coerceDate(data.date),
-    postTags: Array.isArray(data.postTags) ? data.postTags : [],
+    postTags: normalizeTags(data.postTags),
     status: data.status === "draft" ? "draft" : "published",
     // `format: html` → body is trusted author-written HTML, served verbatim
     // (skips markdown rendering). Used for bespoke pages like a pinned home.
@@ -130,6 +158,9 @@ function tagName(tagSlug) {
 }
 
 module.exports = {
+  // Frontmatter clean-up, shared with the admin's own reading of the files.
+  text,
+  normalizeTags,
   load,
   publishedPosts,
   postBySlug,

@@ -19,12 +19,13 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
-// Rough plain-text of a markdown body for excerpting: drop fenced code, then
-// strip the most common inline markdown punctuation. Good enough for a snippet.
+// Rough plain-text of a markdown body, to search and to excerpt: keep what is
+// inside code (people search for commands), drop the fences and backticks,
+// then strip the most common inline markdown punctuation.
 function plainText(markdown) {
   return markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`]*`/g, " ")
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, " $1 ")
+    .replace(/`([^`]*)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[#>*_~]/g, " ")
@@ -35,8 +36,11 @@ function plainText(markdown) {
 // Build an excerpt centered on the first case-insensitive match of `term`,
 // escaping the surrounding text and wrapping the match in <mark>.
 function excerptFor(text, term) {
-  const lower = text.toLowerCase();
-  const at = lower.indexOf(term.toLowerCase());
+  // Matched on the text itself, not a lowercased copy: some letters (İ) grow
+  // when lowercased, which would shift every position after them.
+  const m = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").exec(text);
+  const at = m ? m.index : -1;
+  if (m) term = m[0];
   if (at === -1) {
     return escapeHtml(text.slice(0, EXCERPT_RADIUS * 2)) + (text.length > EXCERPT_RADIUS * 2 ? "…" : "");
   }
@@ -60,7 +64,7 @@ function search(query) {
 
   const scored = [];
   for (const post of posts.publishedPosts()) {
-    const title = post.title || "";
+    const title = String(post.title || "");
     const tagText = post.postTags.map((t) => t.name).join(" ");
     const bodyPlain = plainText(post.body || "");
 

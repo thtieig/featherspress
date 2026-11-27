@@ -271,6 +271,10 @@ delete them yourself, and so does its TLS certificate: `certbot delete
 
 ## Good to know
 
+- **Dates** on the site are shown in the server's timezone unless the site's
+  `featherspress.env` sets one, e.g. `TZ=Europe/Berlin`, then restart the site.
+  On a UTC server a post written at 00:30 Berlin time otherwise shows the day
+  before.
 - **Media** uploaded in `/admin` lands in `/var/lib/featherspress/<name>/media/`
   and Apache serves it straight from disk. Uploads are capped at 25 MB and
   checked by content; SVG is refused (it can carry scripts).

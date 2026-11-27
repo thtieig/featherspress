@@ -93,7 +93,9 @@ app.get("/", (req, res) => {
 {
   const postsSlug = site.postsPath.replace(/^\/|\/$/g, ""); // "/posts/" -> "posts"
   app.get([`/${postsSlug}`, `/${postsSlug}/`], (req, res, next) => {
-    if (posts.bySlug(postsSlug)) return next(); // a real page/post overrides it
+    // A published page/post at the same slug overrides it; a draft does not.
+    const own = posts.bySlug(postsSlug);
+    if (own && own.status !== "draft") return next();
     res.type("html").send(contract.postsIndex(posts.publishedPosts()));
   });
 }
