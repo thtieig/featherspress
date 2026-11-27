@@ -184,8 +184,10 @@ test("re-running with new aliases for a site whose vhost exists says to add them
   const etc = server();
   try {
     // beta's vhost already exists, with www.beta.example.org.
-    refuses(runWith({ ALIASES: "beta.example.net" }, etc, "beta", "beta.example.org", "8802"),
-      /already has a vhost.*beta\.example\.net/s);
+    const r = runWith({ ALIASES: "beta.example.net" }, etc, "beta", "beta.example.org", "8802");
+    refuses(r, /already has a vhost.*beta\.example\.net/s);
+    assert.match(r.stderr, /certbot --apache -d beta\.example\.org -d www\.beta\.example\.org -d beta\.example\.net$/m,
+      "the certificate must keep covering the names the vhost already has");
     // Naming the aliases it already has is fine.
     const same = runWith({ ALIASES: "www.beta.example.org", PRINT_VHOST: "1" }, etc, "beta", "beta.example.org", "8802");
     assert.strictEqual(same.status, 0, same.stderr);

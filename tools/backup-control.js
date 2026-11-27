@@ -940,7 +940,9 @@ function restoreRequest(env) {
   const rollBack = (why, detail) => {
     let imported = true;
     try {
-      execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth",
+      // --exact: what the snapshot lacks (a fresh site's site.json, say) did
+      // not exist before, so whatever the failed restore wrote there goes.
+      execFileSync(node, [pkgTool, "import", snapshot, "--force", "--restore-auth", "--exact",
         "--no-safety-snapshot", "--env-file", env.FP_ENV], { stdio: "pipe" });
     } catch {
       imported = false;

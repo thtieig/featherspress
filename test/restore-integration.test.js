@@ -431,6 +431,39 @@ exec "${process.execPath}" "$@"
   assert.strictEqual(fs.existsSync(path.join(STAGING, stagedName)), false);
 });
 
+test("a rollback on a site that had no site.json leaves it without one", async () => {
+  // A fresh install has no site.json until something writes one. A restore
+  // that wrote one and then failed must not leave it behind: it can name a
+  // skin that is not there, and the site would not start.
+  healthFails(0);
+  const manifest = path.join(LIVE, "site.json");
+  const saved = fs.readFileSync(manifest);
+  fs.rmSync(manifest);
+  try {
+    const wrapper = path.join(TMP, "manifest-then-fail-node");
+    fs.writeFileSync(wrapper, `#!/bin/sh
+case "$*" in
+  *" import "*incoming.tar.gz*)
+    echo '{"title":"Broken","skin":"no-such-skin"}' > "${manifest}"
+    exit 1;;
+esac
+exec "${process.execPath}" "$@"
+`, { mode: 0o755 });
+    const env = { ...agentEnv(), NODE_BIN: wrapper };
+    fs.rmSync(env.BACKUP_ENV, { force: true });
+    await uploadAndRequest(buildSourceArchive("manifest-fail.tar.gz"), ["content", "site"]);
+
+    bc.restoreRequest(env);
+
+    const st = restoreState();
+    assert.strictEqual(st.state, "rolled-back", st.error);
+    assert.match(st.error, /previous site was put back/);
+    assert.strictEqual(fs.existsSync(manifest), false, "the site.json the failed restore wrote must be gone");
+  } finally {
+    fs.writeFileSync(manifest, saved);
+  }
+});
+
 test("a rolled-back restore also puts the backup settings back", async () => {
   healthFails(0);
   const env = agentEnv();

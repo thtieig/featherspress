@@ -83,8 +83,12 @@ if [ -f "$OWN_VHOST" ] && [ ${#ALIAS_LIST[@]} -gt 0 ]; then
   have="$(awk 'tolower($1) ~ /^server(name|alias)$/ { for (i = 2; i <= NF; i++) print tolower($i) }' "$OWN_VHOST")"
   missing=()
   for a in "${ALIAS_LIST[@]}"; do grep -qxF "$a" <<<"$have" || missing+=("$a"); done
-  [ ${#missing[@]} -eq 0 ] ||
-    die "$NAME already has a vhost ($OWN_VHOST), which a re-run does not change. Add ${missing[*]} to its ServerAlias line by hand, reload Apache, then run: $CERTBOT"
+  if [ ${#missing[@]} -gt 0 ]; then
+    # The certificate must then cover the names it has AND the new ones.
+    cert="certbot --apache"
+    for n in $have "${missing[@]}"; do cert+=" -d $n"; done
+    die "$NAME already has a vhost ($OWN_VHOST), which a re-run does not change. Add ${missing[*]} to its ServerAlias line by hand, reload Apache, then run: $cert"
+  fi
 fi
 
 # The vhost, from the template beside this script (the alias handling below

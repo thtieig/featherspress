@@ -237,6 +237,11 @@ function importPackage(opts) {
     force = false,
     restoreAuth = false,
     notifyConfigPath,
+    // "Make the site exactly like this package": a requested section the
+    // package does not carry is REMOVED rather than left as it is. The
+    // restore agent's rollback uses it with its own snapshot, where a missing
+    // site.json, media, login or alert settings means there was none before.
+    exact = false,
   } = opts;
 
   // Which sections to restore. Omitting `sections` restores every section the
@@ -254,7 +259,7 @@ function importPackage(opts) {
     // content-only restore fail against a package that legitimately carries no
     // site.json, and vice versa. The check still fires when the section IS
     // requested, so restoring `site` from an archive without one is still loud.
-    if (want.has("site") && !fs.existsSync(path.join(dir, "site.json"))) {
+    if (want.has("site") && !exact && !fs.existsSync(path.join(dir, "site.json"))) {
       throw new Error("package missing site.json");
     }
     if (want.has("content") && !fs.existsSync(path.join(dir, "content"))) {
@@ -305,7 +310,9 @@ function importPackage(opts) {
     const required = [];
     if (want.has("content")) required.push(["contentDir", contentDir]);
     if (want.has("media") && fs.existsSync(path.join(dir, "media"))) required.push(["mediaDir", mediaDir]);
-    if (want.has("site")) required.push(["manifestPath", manifestPath]);
+    if (want.has("site") && (fs.existsSync(path.join(dir, "site.json")) || (exact && manifestPath))) {
+      required.push(["manifestPath", manifestPath]);
+    }
     if (want.has("site") && skinName && fs.existsSync(path.join(dir, "skins", skinName))) {
       required.push(["skinsDir", skinsDir]);
     }
@@ -341,37 +348,51 @@ function importPackage(opts) {
     // Each section is replaced only when it was requested AND the package
     // carries it. A section the caller did not ask for is left untouched on
     // disk — that is the whole point of a selective restore.
-    if (want.has("site")) {
-      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-      fs.copyFileSync(path.join(dir, "site.json"), manifestPath);
-    }
+    const has = (p) => fs.existsSync(path.join(dir, p));
     if (want.has("content")) {
       replaceDir(contentDir, path.join(dir, "content"));
     }
-    if (want.has("media") && fs.existsSync(path.join(dir, "media"))) {
+    if (want.has("media") && has("media")) {
       replaceDir(mediaDir, path.join(dir, "media"));
+    } else if (want.has("media") && exact && mediaDir) {
+      fs.rmSync(mediaDir, { recursive: true, force: true });
+      fs.mkdirSync(mediaDir, { recursive: true });
     }
     // site.json names the skin, so the skin and favicon travel WITH `site`:
     // restoring a manifest that names a skin we did not restore leaves the
-    // service unable to boot.
-    if (want.has("site") && skinName && fs.existsSync(path.join(dir, "skins", skinName))) {
+    // service unable to boot. For the same reason site.json is written LAST:
+    // if putting its skin in place fails, the manifest that is left still
+    // names the skin that is there.
+    if (want.has("site") && skinName && has(path.join("skins", skinName))) {
       replaceDir(path.join(skinsDir, skinName), path.join(dir, "skins", skinName));
     }
-    if (want.has("site") && fs.existsSync(path.join(dir, "favicon"))) {
+    if (want.has("site") && has("favicon")) {
       replaceDir(faviconDir, path.join(dir, "favicon"));
+    } else if (want.has("site") && exact && faviconDir) {
+      fs.rmSync(faviconDir, { recursive: true, force: true });
+    }
+    if (want.has("site") && has("site.json")) {
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.copyFileSync(path.join(dir, "site.json"), manifestPath);
+    } else if (want.has("site") && exact && manifestPath) {
+      fs.rmSync(manifestPath, { force: true });
     }
     // Credentials: requested section AND explicit restoreAuth AND present.
-    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "auth-config.json"))) {
+    if (want.has("credentials") && restoreAuth && has("auth-config.json")) {
       fs.copyFileSync(path.join(dir, "auth-config.json"), authConfigPath);
       // Restore must not widen permissions on the password hash + TOTP secret,
       // whatever mode the file had inside the archive.
       fs.chmodSync(authConfigPath, 0o600);
+    } else if (want.has("credentials") && restoreAuth && exact && authConfigPath) {
+      fs.rmSync(authConfigPath, { force: true });
     }
     // The email alert settings, same rule. A package from before email alerts
-    // has none, and the ones already here are kept.
-    if (want.has("credentials") && restoreAuth && fs.existsSync(path.join(dir, "notify.json"))) {
+    // has none, and the ones already here are kept (unless exact).
+    if (want.has("credentials") && restoreAuth && has("notify.json")) {
       fs.copyFileSync(path.join(dir, "notify.json"), notifyConfigPath);
       fs.chmodSync(notifyConfigPath, 0o600);
+    } else if (want.has("credentials") && restoreAuth && exact && notifyConfigPath) {
+      fs.rmSync(notifyConfigPath, { force: true });
     }
   } finally {
     cleanup();
@@ -542,6 +563,7 @@ function parseFlags(argv) {
     else if (a === "--allow-engine-dir") flags.allowEngineDir = true;
     else if (a === "--sections") flags.sections = argv[++i];
     else if (a === "--no-safety-snapshot") flags.noSafetySnapshot = true;
+    else if (a === "--exact") flags.exact = true;
     else positional.push(a);
   }
   return { flags, positional };
@@ -707,6 +729,7 @@ function main(argv = process.argv.slice(2)) {
       sections: importSections,
       force: !!flags.force,
       restoreAuth: !!flags.restoreAuth,
+      exact: !!flags.exact,
     });
     const reowned = reownAfterRootRestore(paths);
     if (reowned) {

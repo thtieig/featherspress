@@ -711,3 +711,66 @@ test("export into an already-open file, and import from one, round-trip a site",
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The restore agent's rollback imports its snapshot with exact: a section the
+// snapshot does not carry did not exist before the restore, so it is removed.
+test("an exact import removes what the package does not carry", () => {
+  const sp = require("../tools/site-package");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-sp-exact-"));
+  try {
+    const pkg = path.join(dir, "pkg");
+    fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, "content", "posts", "a.md"), "---\ntitle: A\n---\n\na\n");
+    const live = path.join(dir, "live");
+    fs.mkdirSync(path.join(live, "media", "x"), { recursive: true });
+    fs.writeFileSync(path.join(live, "media", "x", "pic.png"), "p");
+    fs.writeFileSync(path.join(live, "site.json"), JSON.stringify({ title: "Written By A Failed Restore", skin: "gone" }));
+    fs.writeFileSync(path.join(live, "auth-config.json"), "{}");
+    fs.writeFileSync(path.join(live, "notify.json"), "{}");
+    fs.mkdirSync(path.join(live, "favicon"));
+    sp.importPackage({
+      src: pkg,
+      contentDir: path.join(live, "content"),
+      mediaDir: path.join(live, "media"),
+      manifestPath: path.join(live, "site.json"),
+      faviconDir: path.join(live, "favicon"),
+      authConfigPath: path.join(live, "auth-config.json"),
+      notifyConfigPath: path.join(live, "notify.json"),
+      skinsDir: path.join(live, "skins"),
+      bundledSkinsDir: path.join(__dirname, "..", "skins"),
+      force: true,
+      restoreAuth: true,
+      exact: true,
+    });
+    assert.ok(fs.existsSync(path.join(live, "content", "posts", "a.md")));
+    for (const gone of ["site.json", "auth-config.json", "notify.json", "favicon"]) {
+      assert.strictEqual(fs.existsSync(path.join(live, gone)), false, `${gone} must be removed`);
+    }
+    assert.deepStrictEqual(fs.readdirSync(path.join(live, "media")), [], "media is emptied");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("without exact, an import keeps what the package does not carry, and refuses a site section it lacks", () => {
+  const sp = require("../tools/site-package");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fp-sp-notexact-"));
+  try {
+    const pkg = path.join(dir, "pkg");
+    fs.mkdirSync(path.join(pkg, "content", "posts"), { recursive: true });
+    const live = path.join(dir, "live");
+    fs.mkdirSync(path.join(live, "media"), { recursive: true });
+    fs.writeFileSync(path.join(live, "media", "keep.png"), "p");
+    sp.importPackage({
+      src: pkg, contentDir: path.join(live, "content"), mediaDir: path.join(live, "media"),
+      sections: ["content", "media"], force: true,
+    });
+    assert.ok(fs.existsSync(path.join(live, "media", "keep.png")));
+    assert.throws(() => sp.importPackage({
+      src: pkg, contentDir: path.join(live, "content"), manifestPath: path.join(live, "site.json"),
+      sections: ["site"], force: true,
+    }), /missing site\.json/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
