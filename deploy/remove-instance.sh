@@ -19,18 +19,20 @@ INSTANCE="$1" ENGINE_DIR="/opt/featherspress/$1"
 [ "$(id -u)" = 0 ] || die "run this as root"
 [ -d "$ENGINE_DIR" ] || [ -d "$CONF_DIR" ] || die "there is no instance $INSTANCE on this server"
 
-for unit in "featherspress@$INSTANCE.service" \
-  "featherspress-backup@$INSTANCE.timer" "featherspress-update@$INSTANCE.timer" \
+# 1. The timers and request triggers, so nothing new starts.
+for unit in "featherspress-backup@$INSTANCE.timer" "featherspress-update@$INSTANCE.timer" \
   "featherspress-backup-control@$INSTANCE.path" "featherspress-backup-control@$INSTANCE.timer" \
   "featherspress-update-control@$INSTANCE.path" "featherspress-update-control@$INSTANCE.timer"; do
   systemctl disable --now --quiet "$unit" 2>/dev/null || true
 done
-# With the triggers gone nothing new starts; a backup, update or restore that
-# is already running is stopped too, or it carries on with its code and
-# config deleted underneath it.
+# 2. A backup, update or restore already running, or it carries on with its
+# code and config deleted underneath it. Stopped, an update rolls back, and
+# that restarts the site: which is why the site itself goes last.
 for job in backup update backup-control update-control; do
   systemctl stop "featherspress-$job@$INSTANCE.service" 2>/dev/null || true
 done
+# 3. The site.
+systemctl disable --now --quiet "featherspress@$INSTANCE.service" 2>/dev/null || true
 rm -rf "/etc/systemd/system/featherspress-backup@$INSTANCE.timer.d"
 systemctl daemon-reload
 systemctl reset-failed "featherspress*@$INSTANCE.*" 2>/dev/null || true
@@ -42,7 +44,8 @@ for site in "featherspress-$INSTANCE" "featherspress-$INSTANCE-le-ssl"; do
   fi
 done
 
-rm -rf "$ENGINE_DIR" "$CONF_DIR"
+# With the node_modules an interrupted update may have left beside the code.
+rm -rf "$ENGINE_DIR" "$ENGINE_DIR.node_modules.rollback" "$CONF_DIR"
 
 cat <<EOF
 Removed instance "$INSTANCE" (units, code, config, vhost).
