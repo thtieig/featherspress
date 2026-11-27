@@ -121,6 +121,10 @@ function startSession(req, res) {
   });
 }
 
+// One reply for every failed sign-in, so it never tells which part
+// (password or code) was wrong.
+const LOGIN_FAILED = { error: "Sign-in failed. Check your password and code." };
+
 router.post("/api/login", loginLimiter, async (req, res) => {
   if (!fs.existsSync(AUTH_CONFIG_PATH)) {
     return res.status(500).json({ error: "Not set up yet -- run `node setup.js` first." });
@@ -130,7 +134,7 @@ router.post("/api/login", loginLimiter, async (req, res) => {
   const { password, code } = req.body;
   if (!password || !code || typeof code !== "string") return res.status(400).json({ error: "Password and code required" });
   if (!bcrypt.compareSync(password, passwordHash)) {
-    return res.status(401).json({ error: "Wrong password" });
+    return res.status(401).json(LOGIN_FAILED);
   }
   let totpResult;
   try {
@@ -146,7 +150,7 @@ router.post("/api/login", loginLimiter, async (req, res) => {
   const codeHash = crypto.createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
   const matchIndex = recoveryCodeHashes.indexOf(codeHash);
   if (matchIndex === -1) {
-    return res.status(401).json({ error: "Wrong or expired code" });
+    return res.status(401).json(LOGIN_FAILED);
   }
   const remaining = recoveryCodeHashes.filter((_, i) => i !== matchIndex);
   writeAuthConfigAtomic(AUTH_CONFIG_PATH, { ...authConfig, recoveryCodeHashes: remaining });

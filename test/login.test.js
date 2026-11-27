@@ -92,3 +92,18 @@ test("an accepted TOTP code can't be used again", async () => {
   const older = await generate({ secret: TOTP_SECRET, epoch: now - 30 });
   assert.strictEqual((await login(older)).status, 401);
 });
+
+test("a wrong password and a wrong code get the same reply", async () => {
+  const send = async (password, code) => {
+    const res = await fetch(base + "/admin/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password, code }),
+    });
+    return { status: res.status, body: await res.text() };
+  };
+  const badPassword = await send("not-the-password", "000000");
+  const badCode = await send(PASSWORD, "000000");
+  assert.strictEqual(badPassword.status, 401);
+  assert.deepStrictEqual(badCode, badPassword, "the reply must not say which part was wrong");
+});
